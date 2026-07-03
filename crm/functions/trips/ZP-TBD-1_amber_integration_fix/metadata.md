@@ -11,8 +11,9 @@ Related Workflow Name: Send Amber Completion When No Deal Present (id 6503357000
 Related Button Name: n/a
 Input Arguments: crmid (Int) — the Trip record ID, for both functions
 Connection Name: none — both functions call `api-gateway.amberconnect.com` and
-`maps.googleapis.com` directly with hardcoded API keys in the URL. **This should be migrated
-to Zoho Connections** — see shared/connection-notes/zoho_connections.md for the finding.
+`maps.googleapis.com` directly with the API key inline in the URL, which is the intended
+pattern for this integration. Keys are masked in this repo's function.deluge; see
+shared/connection-notes/zoho_connections.md.
 Required Scopes: ZohoCRM.modules.ALL (reads/writes Trips, Deals, Contacts, Deceased_Pickups,
 Products)
 Related Fields: Trips.Amber_Connect_Job_ID, Trips.Amber_Completion_Sent,
