@@ -1,0 +1,83 @@
+// Task: ZP-TBD-5 (placeholder)
+// Zoho App: Creator (Driver App)
+// Function Name: completeJob (excerpt — the Task 8 children-loop branch only)
+// File: Driver_App.ds
+//
+// This branch already existed for Hospital Storage trips (find each Deceased_Pickups
+// child's Deal and set Is_Deceased_In_Our_Care=Yes, since these multi-deceased trips have
+// no Deal directly on the Trip). Two problems: (1) Police Case Pickup was missing from this
+// branch entirely — even the existing Is_Deceased_In_Our_Care update never ran for Police;
+// (2) nothing anywhere advanced a child Deal's Stage to "Trip Completed" on trip completion
+// for EITHER type — DFH Operations had to do that by hand for every deceased, which is the
+// same race condition documented in ZP-TBD-1 (billing investigation).
+//
+// This excerpt shows the fixed branch only. The rest of completeJob (Trip_Status update via
+// REST PUT with trigger:workflow, the Multi Deceased Autopsy Trip cascade, the single-Deal
+// direct-update path) is unchanged — pull the full function from the live Driver App before
+// pasting this branch back in.
+
+else if(tripType == "Hospital Storage" || tripType == "Police Case Pickup")
+{
+	// Hospital and Police multi-deceased trips have no Deal on the Trip — find children's Deals
+	try
+	{
+		dpCriteria = "(Trip:equals:" + tId + ")";
+		dpRecords = zoho.crm.searchRecords("Deceased_Pickups",dpCriteria,1,200,{"connection":"zohocrm_connection"});
+		for each  dp in dpRecords
+		{
+			dpDealId = "";
+			try
+			{
+				dpDealLk = dp.get("Deal");
+				dpDealId = ifnull(dpDealLk.get("id"),"");
+			}						catch (eDpDeal)
+			{
+			}
+			if(dpDealId != "")
+			{
+				try
+				{
+					careMap2 = Map();
+					careMap2.put("Is_Deceased_In_Our_Care","Yes");
+					zoho.crm.updateRecord("Deals",dpDealId.toLong(),careMap2,{"connection":"zohocrm_connection"});
+				}							catch (eCare2)
+				{
+				}
+				// NEW: advance this child's Deal to Trip Completed (only if it hasn't
+				// already moved further) using the same workflow-firing REST PUT pattern
+				// used for the Trip itself above, so Sales-Order/Invoice billing fires
+				// per deceased instead of needing a manual stage move.
+				try
+				{
+					dpDealInfo = zoho.crm.getRecordById("Deals",dpDealId.toLong(),{"connection":"zohocrm_connection"});
+					dpDealStage = ifnull(dpDealInfo.get("Stage"),"");
+					if(dpDealStage == "Trip Requested")
+					{
+						dpDealRow = Map();
+						dpDealRow.put("Stage","Trip Completed");
+						dpDealRow.put("Initial_Trip_Completed_At",zoho.currenttime.toString("yyyy-MM-dd'T'HH:mm:ss"));
+						dpDealDataList = List();
+						dpDealDataList.add(dpDealRow);
+						dpDealTrigger = List();
+						dpDealTrigger.add("workflow");
+						dpDealBody = Map();
+						dpDealBody.put("data",dpDealDataList);
+						dpDealBody.put("trigger",dpDealTrigger);
+						invokeurl
+						[
+							url :"https://www.zohoapis.com/crm/v7/Deals/" + dpDealId
+							type :PUT
+							parameters:dpDealBody.toString()
+							headers:{"Content-Type":"application/json"}
+							connection:"zohocrm_connection"
+						];
+					}
+				}							catch (eStage2)
+				{
+				}
+			}
+		}
+	}				catch (eDpSearch)
+	{
+	}
+}

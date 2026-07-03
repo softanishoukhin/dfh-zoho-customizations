@@ -1,0 +1,57 @@
+// Task: ZP-TBD-2 (placeholder)
+// Zoho App: Creator
+// Form: NOK_Information_Form (NOKIntake app)
+// These are excerpts from event-blocks inside the form's DS file, not standalone functions —
+// NOK_Information_Form.ds is a single multi-thousand-line file with many "on success" /
+// "on validate" blocks per Deal Type. Only the changed lines are captured here; do not treat
+// this as the full form script.
+
+// ------------------------------------------------------------------
+// FIX 1 — "Managing Mandatory Fields" on-validate block (~line 9520)
+// Deceased Name was wrongly required for Police, blocking the "unknown identity at intake"
+// scenario that Police needs to support (mirroring how Hospital already allows it).
+// ------------------------------------------------------------------
+
+// BEFORE:
+// if(isBlank(input.Deceased_Name) && input.Deal_Type != "Pre Need" && input.Deal_Type != "Hospital")
+// {
+// 	alert "Please provide the Deceased Name.";
+// 	cancel submit;
+// }
+
+// AFTER:
+if(isBlank(input.Deceased_Name) && input.Deal_Type != "Pre Need" && input.Deal_Type != "Hospital" && input.Deal_Type != "Police")
+{
+	alert "Please provide the Deceased Name.";
+	cancel submit;
+}
+
+// ------------------------------------------------------------------
+// FIX 2 — Police-new-submission block, Trip.Police_Station source field (~line 6902)
+// The form has two separate fields: "Police_Office" (a dropdown of known stations, populated
+// via the policeList Custom API action, mirrors "Select Hospital") and "Police_Office_Name"
+// (a free-text field paired with "Police Phone Number", used for the responding OFFICER's
+// contact info on the Deceased_Pickups child). The Trip's Police_Station field was wrongly
+// reading from the free-text officer field instead of the station dropdown.
+// ------------------------------------------------------------------
+
+// BEFORE:
+// policeOfficeName = ifnull(input.Police_Office_Name,"");
+
+// AFTER:
+policeOfficeName = ifnull(input.Police_Office,"");
+// (childMap.put("Police_Officer_Name", ...) elsewhere in the same block correctly continues
+// to read input.Police_Office_Name — that part was already right, only the Trip-level
+// Police_Station source was wrong.)
+
+// ------------------------------------------------------------------
+// NOT FIXED — flagged, left as-is per explicit decision this session
+// ------------------------------------------------------------------
+// Two "actions" conditions (main block ~line 5700, Police-new block ~line 6827) have a
+// parentheses/precedence bug relative to what was originally intended — the Zoho Creator
+// condition editor silently flattens explicit parentheses back out when pasted in, so a
+// straightforward fix isn't possible without restructuring the condition or moving logic
+// into the script body as a guard clause. In practice this does not appear to cause the
+// originally-suspected bug (a Deal being created immediately when a Police deceased's name
+// is known at intake is expected behavior — the same workflow-triggered Deal creation
+// Hospital already exhibits, not this precedence issue). Decision: leave as-is for now.

@@ -1,0 +1,39 @@
+// Rollback — revert the Task 8 branch in completeJob to Hospital-only, no Stage advancement:
+
+else if(tripType == "Hospital Storage")
+{
+	// Hospital trips have no Deal on the Trip — find children's Deals
+	try
+	{
+		dpCriteria = "(Trip:equals:" + tId + ")";
+		dpRecords = zoho.crm.searchRecords("Deceased_Pickups",dpCriteria,1,200,{"connection":"zohocrm_connection"});
+		for each  dp in dpRecords
+		{
+			dpDealId = "";
+			try
+			{
+				dpDealLk = dp.get("Deal");
+				dpDealId = ifnull(dpDealLk.get("id"),"");
+			}						catch (eDpDeal)
+			{
+			}
+			if(dpDealId != "")
+			{
+				try
+				{
+					careMap2 = Map();
+					careMap2.put("Is_Deceased_In_Our_Care","Yes");
+					zoho.crm.updateRecord("Deals",dpDealId.toLong(),careMap2,{"connection":"zohocrm_connection"});
+				}							catch (eCare2)
+				{
+				}
+			}
+		}
+	}				catch (eDpSearch)
+	{
+	}
+}
+
+// Widget rollback: redeploy the previous driverApp widget zip (Police-specific UI reverts to
+// showing Hospital wording, since that predates the fix — not a meaningful "rollback target",
+// just noting what reverting the zip would actually do).

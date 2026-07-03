@@ -1,0 +1,16 @@
+// Rollback — revert the police station handling inside the isPolice branch to:
+
+policeStation = "";
+try
+{
+	policeStation = ifnull(tripInfo.get("Police_Station"),"");
+}
+catch (e)
+{
+	policeStation = "";
+}
+if(policeStation != "")
+{
+	dealDataMap.put("Police_Office_Name",policeStation);
+}
+// (remove the matchedPoliceAccounts search/Police_Account block entirely)

@@ -1,0 +1,16 @@
+// Rollback — revert both DS excerpts to their BEFORE state:
+
+// Fix 1 revert ("Managing Mandatory Fields" on-validate, ~line 9520):
+if(isBlank(input.Deceased_Name) && input.Deal_Type != "Pre Need" && input.Deal_Type != "Hospital")
+{
+	alert "Please provide the Deceased Name.";
+	cancel submit;
+}
+
+// Fix 2 revert (Police-new-submission block, ~line 6902):
+policeOfficeName = ifnull(input.Police_Office_Name,"");
+
+// Widget JS revert (NOKIntake/app/app.js validate()):
+//   if (t !== 'Hospital' && !v('Deceased_Name')){
+//     fail('Deceased_Name', "Deceased Name is required.");
+//   }

@@ -1,0 +1,31 @@
+// Rollback target: the Round 1 version of createJobInAmber, i.e. function.deluge in this
+// folder MINUS the "ROUND 2 FIX" block at the end. sendCompleteStatusToAmber is unchanged
+// between Round 1 and Round 2, so it is not repeated here — restore it as-is from
+// function.deluge if a full rollback of both functions is needed.
+//
+// To roll back: remove this block from the live createJobInAmber (it is the last thing
+// before the function's closing braces):
+//
+//	// ROUND 2 FIX (2026-07-03): if this run was triggered because the trip is already
+//	// Completed and we now have a real Job ID, immediately send the completion status
+//	// too — same proven pattern as updateDealStagetoInitialTripCompleted. ...
+//	if(tripDetails.get("Trip_Status") == "Completed" && uniqueJobID != "")
+//	{
+//		try
+//		{
+//			standalone.sendCompleteStatusToAmber(crmid);
+//		}
+//		catch (eComplete)
+//		{
+//			info eComplete;
+//		}
+//	}
+//
+// Also revert the "Send Amber Completion When No Deal Present" workflow rule:
+//   - Re-add condition: Amber Connect Job ID is not empty
+//   - Re-add condition: Deal is empty
+//   - Change the instant action back from createJobInAmber to the completion wrapper
+//     function ("Send Amber Completion No Deal")
+//
+// Everything else in createJobInAmber, and all of sendCompleteStatusToAmber, is identical
+// between Round 1 and Round 2 — see function.deluge for the full current source.

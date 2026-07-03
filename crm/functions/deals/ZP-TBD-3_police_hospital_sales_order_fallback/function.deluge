@@ -1,0 +1,555 @@
+// Task: ZP-TBD-3 (placeholder)
+// Zoho App: CRM
+// Module: Deals
+// Function 1 of 2: CreateSalesOrderforPoliceCase
+// Function 2 of 2: createSalesOrderForHospitalCase (below)
+// Trigger: Workflow "Action based on Different Stage Update" (Deals, Stage = Trip Completed,
+//          branched by Pipeline)
+//
+// Both functions looked up their Trip via "select ... from Trips where Deal = '<crmid>'" —
+// which only exists for the old single-Deal-per-Trip model. Multi-deceased Police/Hospital
+// Deals (created per-deceased by onDeceasedPickupCreate) have no Trip.Deal at all; the Trip
+// is reachable only via this Deal's own Deceased_Pickups child. Before this fix, the Sales
+// Order/Invoice creation silently no-op'd for every multi-deceased case once its Deal reached
+// "Trip Completed" — nothing in the trigger chain ever threw an error, it just never built
+// any line items.
+//
+// Confirmed working live 2026-07-03 via a real ZZTEST Police case (Sales Order created
+// correctly, $1,680) and a real ZZTEST Hospital case ($4,750).
+
+void automation.CreateSalesOrderforPoliceCase(Int crmid)
+{
+// getUrl("https://httpstat.us/200?sleep=10000");
+try
+{
+	getUrl("https://www.zohoapis.com/creator/custom/delapenhafuneralhome/Sleep_API?publickey=<SLEEP_API_PUBLIC_KEY>&seconds=10");
+}
+catch (e)
+{
+	info e;
+}
+standalone.manageZeroRatedProduct(crmid);
+recordInfo = zoho.crm.getRecordById("Deals",crmid);
+salesOrderList = standalone.COQLQuery("select Subject from Sales_Orders where Deal_Name = '" + crmid + "' and Sales_Order_Type = 'Police Cases' limit 1");
+info salesOrderList;
+tripList = standalone.COQLQuery("select Name, Created_Time, Number_of_distance_in_km, Hospital, Trip_Type, Created_on_This_Field_Update from Trips where Deal = '" + crmid + "' limit 1");
+tripInfo = Map();
+haveTrip = false;
+if(tripList.size() > 0)
+{
+	tripInfo = tripList.toList().get(0);
+	haveTrip = true;
+}
+else
+{
+	// FIX (2026-07-03): Multi-deceased Police case — this Deal has no Trip.Deal — it
+	// belongs to a Deceased_Pickups child instead. Find that child, then its Trip, and
+	// only proceed once the DA has actually completed that trip.
+	dpIdList = standalone.COQLQuery("select id from Deceased_Pickups where Deal = '" + crmid + "' limit 1");
+	if(dpIdList.size() > 0)
+	{
+		dpId = ifnull(dpIdList.toList().get(0).get("id"),"");
+		if(dpId != "")
+		{
+			dpRec = zoho.crm.getRecordById("Deceased_Pickups",dpId.toLong());
+			dpTripId = "";
+			try
+			{
+				dpTripId = ifnull(dpRec.get("Trip").get("id"),"");
+			}
+			catch (e)
+			{
+				dpTripId = "";
+			}
+			if(dpTripId != "")
+			{
+				dpTripRec = zoho.crm.getRecordById("Trips",dpTripId.toLong());
+				dpTripStatus = ifnull(dpTripRec.get("Trip_Status"),"");
+				if(dpTripStatus == "Completed")
+				{
+					tripInfo = dpTripRec;
+					// No per-child "Created_on_This_Field_Update" concept — every
+					// deceased on a multi-deceased trip bills as the standard pickup.
+					tripInfo.put("Created_on_This_Field_Update","Initial_Trip");
+					haveTrip = true;
+				}
+			}
+		}
+	}
+}
+if(haveTrip)
+{
+	//info tripInfo;
+	lineItemList = list();
+	if(tripInfo.get("Trip_Type") == "Transfer to Other Funeral Home")
+	{
+		productDetails = zoho.crm.getRecordById("Products","6503357000004300027");
+	}
+	else if(tripInfo.get("Trip_Type") == "Autopsy Reschedule")
+	{
+		productDetails = zoho.crm.getRecordById("Products","6503357000004300032");
+	}
+	else if(tripInfo.get("Created_on_This_Field_Update") == "Initial_Trip")
+	{
+		pickupTripProductOPolice = "select Product_Name from Products where Parent_Product = '6503357000020022236' and Product_Category = 'Pickup'";
+		pickupTripProducts = standalone.COQLQuery(pickupTripProductOPolice);
+		if(pickupTripProducts.size() > 0)
+		{
+			pickupTripProducts = pickupTripProducts.toList();
+			productDetails = zoho.crm.getRecordById("Products",pickupTripProducts.get(0).get("id"));
+		}
+		else
+		{
+			productDetails = zoho.crm.getRecordById("Products","6503357000002869122");
+		}
+	}
+	else
+	{
+		productDetails = zoho.crm.getRecordById("Products","6503357000002869122");
+	}
+	productMap = Map();
+	productMap.put("Product_Name",productDetails.get("id"));
+	productMap.put("Quantity",ifnull(recordInfo.get("Number_of_distance_in_km"),1));
+	productMap.put("List_Price",productDetails.get("Unit_Price"));
+	lineItemList.add(productMap);
+	if(recordInfo.get("Condition") == "Decomposed")
+	{
+		productDetails = zoho.crm.getRecordById("Products","6503357000002869270");
+		productMap = Map();
+		productMap.put("Product_Name",productDetails.get("id"));
+		productMap.put("Quantity",1);
+		productMap.put("List_Price",productDetails.get("Unit_Price"));
+		lineItemList.add(productMap);
+		storageProductOfPolice = "select Product_Name from Products where Parent_Product = '6503357000020022236' and Product_Category = 'Decompose Storage'";
+		storageProducts = standalone.COQLQuery(storageProductOfPolice);
+		if(storageProducts.size() > 0)
+		{
+			storageProducts = storageProducts.toList();
+			productDetails = zoho.crm.getRecordById("Products",storageProducts.get(0).get("id"));
+		}
+		else
+		{
+			productDetails = zoho.crm.getRecordById("Products","6503357000019249225");
+		}
+	}
+	else
+	{
+		storageProductOfPolice = "select Product_Name from Products where Parent_Product = '6503357000020022236' and Product_Category = 'Storage'";
+		storageProducts = standalone.COQLQuery(storageProductOfPolice);
+		if(storageProducts.size() > 0)
+		{
+			storageProducts = storageProducts.toList();
+			productDetails = zoho.crm.getRecordById("Products",storageProducts.get(0).get("id"));
+		}
+		else
+		{
+			productDetails = zoho.crm.getRecordById("Products","6503357000002869275");
+		}
+	}
+	productMap = Map();
+	productMap.put("Product_Name",productDetails.get("id"));
+	productMap.put("Quantity",1);
+	productMap.put("List_Price",productDetails.get("Unit_Price"));
+	lineItemList.add(productMap);
+	if(recordInfo.get("Autopsy_Required") == "Yes")
+	{
+		autopsyTripProductOfPolice = "select Product_Name from Products where Parent_Product = '6503357000020022236' and Product_Category = 'Autopsy Trip'";
+		autopsyTripProducts = standalone.COQLQuery(autopsyTripProductOfPolice);
+		if(autopsyTripProducts.size() > 0)
+		{
+			autopsyTripProducts = autopsyTripProducts.toList();
+			productDetails = zoho.crm.getRecordById("Products",autopsyTripProducts.get(0).get("id"));
+			productMap = Map();
+			productMap.put("Product_Name",productDetails.get("id"));
+			productMap.put("Quantity",1);
+			productMap.put("List_Price",productDetails.get("Unit_Price"));
+			lineItemList.add(productMap);
+		}
+	}
+	if(lineItemList.size() > 0)
+	{
+		soMap = Map();
+		soMap.put("Subject",recordInfo.get("Deal_Name") + "-" + ifnull(recordInfo.get("Name_of_Deceased"),"") + "-" + ifnull(tripInfo.get("Created_Time").toString("dd-MM-yyyy hh:mm:ss a"),""));
+		soMap.put("Sales_Order_Type","Police Cases");
+		soMap.put("Deal_Name",crmid);
+		try
+		{
+			soMap.put("Parent_Account",recordInfo.get("Police_Account").get("id"));
+		}
+		catch (e)
+		{
+			info e;
+		}
+		try
+		{
+			relatedPoliceContact = zoho.crm.getRelatedRecords("Contacts","Accounts",recordInfo.get("Police_Account").get("id"));
+		}
+		catch (e)
+		{
+			relatedPoliceContact = list();
+		}
+		if(relatedPoliceContact.size() > 0)
+		{
+			relatedPoliceContactInfo = zoho.crm.getRecordById("Contacts",relatedPoliceContact.get(0).get("id"));
+			soMap.put("Contact_Name",relatedPoliceContact.get(0).get("id"));
+			soMap.put("Billing_City",ifnull(relatedPoliceContactInfo.get("Mailing_City"),""));
+			soMap.put("Billing_Code",ifnull(relatedPoliceContactInfo.get("Mailing_Zip"),""));
+			soMap.put("Billing_Country",ifnull(relatedPoliceContactInfo.get("Mailing_Country"),""));
+			soMap.put("Billing_State",ifnull(relatedPoliceContactInfo.get("Mailing_State"),""));
+			soMap.put("Billing_Street",ifnull(relatedPoliceContactInfo.get("Mailing_Street"),""));
+		}
+		if(!isNull(recordInfo.get("Account_Name")))
+		{
+			soMap.put("Account_Name",recordInfo.get("Account_Name").get("id"));
+		}
+		dataMap = Map();
+		recordList = list();
+		soMap.put("Ordered_Items",lineItemList);
+		recordList.add(soMap);
+		dataMap.put("data",recordList);
+		info dataMap;
+		createSalesOrder = Map();
+		if(salesOrderList.size() == 0)
+		{
+			createSalesOrder = invokeurl
+			[
+				url :"https://www.zohoapis.com/crm/v2.1/Sales_Orders"
+				type :POST
+				parameters:dataMap.toString()
+				connection:"zohooauth"
+			];
+		}
+		else
+		{
+			createSalesOrder = invokeurl
+			[
+				url :"https://www.zohoapis.com/crm/v2.1/Sales_Orders/" + salesOrderList.toList().get(0).get("id")
+				type :PUT
+				parameters:dataMap.toString()
+				connection:"zohooauth"
+			];
+		}
+		info createSalesOrder;
+		standalone.save_api_responses("Create_Sales_Order","Deals",crmid,createSalesOrder);
+		if(!isNull(recordInfo.get("Account_Name")))
+		{
+			standalone.createInvoiceBasedOnSalesOrderForPolice(crmid);
+		}
+	}
+}
+}
+
+// ============================================================
+// Function 2: createSalesOrderForHospitalCase
+// ============================================================
+void automation.createSalesOrderForHospitalCase(Int crmid)
+{
+try
+{
+	getUrl("https://www.zohoapis.com/creator/custom/delapenhafuneralhome/Sleep_API?publickey=<SLEEP_API_PUBLIC_KEY>&seconds=10");
+}
+catch (e)
+{
+	info e;
+}
+standalone.manageZeroRatedProduct(crmid);
+recordInfo = zoho.crm.getRecordById("Deals",crmid);
+salesOrderList = standalone.COQLQuery("select Subject from Sales_Orders where Deal_Name = '" + crmid + "' and Sales_Order_Type = 'Hospital Cases' limit 1");
+tripList = standalone.COQLQuery("select Name, Created_Time, Number_of_distance_in_km, Hospital, Trip_Type, Created_on_This_Field_Update from Trips where Deal = '" + crmid + "'");
+lineItemList = list();
+usedFallbackTrip = false;
+fallbackTripInfo = Map();
+if(tripList.size() == 0)
+{
+	// FIX (2026-07-03): Multi-deceased Hospital case — this Deal has no Trip.Deal — it
+	// belongs to a Deceased_Pickups child instead. Find that child, then its Trip, and
+	// only proceed once the DA has actually completed that trip.
+	dpIdList = standalone.COQLQuery("select id from Deceased_Pickups where Deal = '" + crmid + "' limit 1");
+	if(dpIdList.size() > 0)
+	{
+		dpId = ifnull(dpIdList.toList().get(0).get("id"),"");
+		if(dpId != "")
+		{
+			dpRec = zoho.crm.getRecordById("Deceased_Pickups",dpId.toLong());
+			dpTripId = "";
+			try
+			{
+				dpTripId = ifnull(dpRec.get("Trip").get("id"),"");
+			}
+			catch (e)
+			{
+				dpTripId = "";
+			}
+			if(dpTripId != "")
+			{
+				dpTripRec = zoho.crm.getRecordById("Trips",dpTripId.toLong());
+				dpTripStatus = ifnull(dpTripRec.get("Trip_Status"),"");
+				if(dpTripStatus == "Completed")
+				{
+					// No per-child "Created_on_This_Field_Update" concept — every
+					// deceased on a multi-deceased trip bills as the standard pickup.
+					dpTripRec.put("Created_on_This_Field_Update","Initial_Trip");
+					fallbackTripInfo = dpTripRec;
+					usedFallbackTrip = true;
+				}
+			}
+		}
+	}
+}
+if(tripList.size() > 0 || usedFallbackTrip)
+{
+	tripLoopList = List();
+	if(tripList.size() > 0)
+	{
+		tripLoopList = tripList.toList();
+	}
+	else
+	{
+		tripLoopList.add(fallbackTripInfo);
+	}
+	for each  tripInfo in tripLoopList
+	{
+		info tripInfo;
+		if(tripInfo.get("Trip_Type") == "Transfer to Other Funeral Home")
+		{
+			productDetails = zoho.crm.getRecordById("Products","6503357000004300027");
+			productMap = Map();
+			productMap.put("Product_Name",productDetails.get("id"));
+			productMap.put("Quantity",1);
+			productMap.put("List_Price",productDetails.get("Unit_Price"));
+			lineItemList.add(productMap);
+		}
+		else if(tripInfo.get("Trip_Type") == "Autopsy Reschedule")
+		{
+			if(!isNull(recordInfo.get("Selected_Hospital")))
+			{
+				autopsyTripProductOfHospital = "select Product_Name from Products where Product_of_This_Hospital = '" + recordInfo.get("Selected_Hospital").get("id") + "' and Product_Category = 'Autopsy Trip'";
+				autopsyTripProducts = standalone.COQLQuery(autopsyTripProductOfHospital);
+				autopsyTripProducts = autopsyTripProducts.toList();
+				if(autopsyTripProducts.size() > 0)
+				{
+					productDetails = zoho.crm.getRecordById("Products",autopsyTripProducts.get(0).get("id"));
+				}
+				else
+				{
+					productDetails = zoho.crm.getRecordById("Products","6503357000004300032");
+				}
+			}
+			else
+			{
+				productDetails = zoho.crm.getRecordById("Products","6503357000004300032");
+			}
+			productMap = Map();
+			productMap.put("Product_Name",productDetails.get("id"));
+			productMap.put("Quantity",1);
+			productMap.put("List_Price",productDetails.get("Unit_Price"));
+			lineItemList.add(productMap);
+		}
+		else if(tripInfo.get("Created_on_This_Field_Update") == "Initial_Trip" || tripInfo.get("Trip_Type") == "Hospital Storage")
+		{
+			if(!isNull(recordInfo.get("Selected_Hospital")))
+			{
+				pickupTripProductOfHospital = "select Product_Name from Products where Product_of_This_Hospital = '" + recordInfo.get("Selected_Hospital").get("id") + "' and Product_Category = 'Pickup'";
+				pickupTripProducts = standalone.COQLQuery(pickupTripProductOfHospital);
+				if(pickupTripProducts.size() > 0)
+				{
+					pickupTripProducts = pickupTripProducts.toList();
+					productDetails = zoho.crm.getRecordById("Products",pickupTripProducts.get(0).get("id"));
+				}
+				else
+				{
+					productDetails = zoho.crm.getRecordById("Products","6503357000003769464");
+				}
+			}
+			else
+			{
+				productDetails = zoho.crm.getRecordById("Products","6503357000003769464");
+			}
+			productMap = Map();
+			productMap.put("Product_Name",productDetails.get("id"));
+			productMap.put("Quantity",1);
+			productMap.put("List_Price",productDetails.get("Unit_Price"));
+			lineItemList.add(productMap);
+		}
+	}
+	if(recordInfo.get("Condition") == "Decomposed")
+	{
+		if(!isNull(recordInfo.get("Selected_Hospital")))
+		{
+			decomposeProductOfHospital = "select Product_Name from Products where Product_of_This_Hospital = '" + recordInfo.get("Selected_Hospital").get("id") + "' and Product_Category = 'Decompose'";
+			decomposeProducts = standalone.COQLQuery(decomposeProductOfHospital);
+			if(decomposeProducts.size() > 0)
+			{
+				decomposeProducts = decomposeProducts.toList();
+				productDetails = zoho.crm.getRecordById("Products",decomposeProducts.get(0).get("id"));
+				productMap = Map();
+				productMap.put("Product_Name",productDetails.get("id"));
+				productMap.put("Quantity",1);
+				productMap.put("List_Price",productDetails.get("Unit_Price"));
+				lineItemList.add(productMap);
+			}
+		}
+	}
+	if(!isNull(recordInfo.get("Selected_Hospital")))
+	{
+		storageProductOfHospital = "select Product_Name from Products where Product_of_This_Hospital = '" + recordInfo.get("Selected_Hospital").get("id") + "' and Product_Category = 'Storage'";
+		storageProducts = standalone.COQLQuery(storageProductOfHospital);
+		if(storageProducts.size() > 0)
+		{
+			storageProducts = storageProducts.toList();
+			productDetails = zoho.crm.getRecordById("Products",storageProducts.get(0).get("id"));
+			productMap = Map();
+			productMap.put("Product_Name",productDetails.get("id"));
+			productMap.put("Quantity",1);
+			productMap.put("List_Price",productDetails.get("Unit_Price"));
+			lineItemList.add(productMap);
+		}
+		if(recordInfo.get("Autopsy_Required") == "Yes")
+		{
+			if(recordInfo.get("Selected_Hospital").get("id") == "6503357000022426824")
+			{
+				if(!isNull(recordInfo.get("Hospital_Autopsy_Location")) && recordInfo.get("Hospital_Autopsy_Location").contains("DFH"))
+				{
+					pmeFeeProductOfHospital = "select Product_Name from Products where Product_of_This_Hospital = '" + recordInfo.get("Selected_Hospital").get("id") + "' and Product_Category = 'PME Fee'";
+					pmeFeeProducts = standalone.COQLQuery(pmeFeeProductOfHospital);
+					if(pmeFeeProducts.size() > 0)
+					{
+						pmeFeeProducts = pmeFeeProducts.toList();
+						productDetails = zoho.crm.getRecordById("Products",pmeFeeProducts.get(0).get("id"));
+						productMap = Map();
+						productMap.put("Product_Name",productDetails.get("id"));
+						productMap.put("Quantity",1);
+						productMap.put("List_Price",productDetails.get("Unit_Price"));
+						lineItemList.add(productMap);
+					}
+				}
+				else if(!isNull(recordInfo.get("Hospital_Autopsy_Location")) && recordInfo.get("Hospital_Autopsy_Location").contains("2"))
+				{
+					pmeTransportFeeProductOfHospital = "select Product_Name from Products where Product_of_This_Hospital = '" + recordInfo.get("Selected_Hospital").get("id") + "' and Product_Category = 'PME Transport Fee'";
+					pmeTransportFeeProducts = standalone.COQLQuery(pmeTransportFeeProductOfHospital);
+					if(pmeTransportFeeProducts.size() > 0)
+					{
+						pmeTransportFeeProducts = pmeTransportFeeProducts.toList();
+						productDetails = zoho.crm.getRecordById("Products",pmeTransportFeeProducts.get(0).get("id"));
+						productMap = Map();
+						productMap.put("Product_Name",productDetails.get("id"));
+						productMap.put("Quantity",1);
+						productMap.put("List_Price",productDetails.get("Unit_Price"));
+						lineItemList.add(productMap);
+					}
+				}
+			}
+			else if(recordInfo.get("Selected_Hospital").get("id") == "6503357000022426825")
+			{
+				pmeTransportFeeProductOfHospital = "select Product_Name from Products where Product_of_This_Hospital = '" + recordInfo.get("Selected_Hospital").get("id") + "' and Product_Category = 'PME Transport Fee'";
+				pmeTransportFeeProducts = standalone.COQLQuery(pmeTransportFeeProductOfHospital);
+				if(pmeTransportFeeProducts.size() > 0)
+				{
+					pmeTransportFeeProducts = pmeTransportFeeProducts.toList();
+					productDetails = zoho.crm.getRecordById("Products",pmeTransportFeeProducts.get(0).get("id"));
+					productMap = Map();
+					productMap.put("Product_Name",productDetails.get("id"));
+					productMap.put("Quantity",1);
+					productMap.put("List_Price",productDetails.get("Unit_Price"));
+					lineItemList.add(productMap);
+				}
+			}
+			else if(!isNull(recordInfo.get("Selected_Hospital")))
+			{
+				pmeFeeProductOfHospital = "select Product_Name from Products where Product_of_This_Hospital = '" + recordInfo.get("Selected_Hospital").get("id") + "' and Product_Category = 'PME Fee'";
+				pmeFeeProducts = standalone.COQLQuery(pmeFeeProductOfHospital);
+				if(pmeFeeProducts.size() > 0)
+				{
+					pmeFeeProducts = pmeFeeProducts.toList();
+					productDetails = zoho.crm.getRecordById("Products",pmeFeeProducts.get(0).get("id"));
+					productMap = Map();
+					productMap.put("Product_Name",productDetails.get("id"));
+					productMap.put("Quantity",1);
+					productMap.put("List_Price",productDetails.get("Unit_Price"));
+					lineItemList.add(productMap);
+				}
+				pmeTransportFeeProductOfHospital = "select Product_Name from Products where Product_of_This_Hospital = '" + recordInfo.get("Selected_Hospital").get("id") + "' and Product_Category = 'PME Transport Fee'";
+				pmeTransportFeeProducts = standalone.COQLQuery(pmeTransportFeeProductOfHospital);
+				if(pmeTransportFeeProducts.size() > 0)
+				{
+					pmeTransportFeeProducts = pmeTransportFeeProducts.toList();
+					productDetails = zoho.crm.getRecordById("Products",pmeTransportFeeProducts.get(0).get("id"));
+					productMap = Map();
+					productMap.put("Product_Name",productDetails.get("id"));
+					productMap.put("Quantity",1);
+					productMap.put("List_Price",productDetails.get("Unit_Price"));
+					lineItemList.add(productMap);
+				}
+			}
+		}
+	}
+	if(lineItemList.size() > 0)
+	{
+		soMap = Map();
+		soMap.put("Subject",recordInfo.get("Deal_Name") + "-" + ifnull(recordInfo.get("Name_of_Deceased"),"") + "-" + ifnull(tripInfo.get("Created_Time").toString("dd-MM-yyyy hh:mm:ss a"),""));
+		soMap.put("Sales_Order_Type","Hospital Cases");
+		soMap.put("Deal_Name",crmid);
+		if(!isNull(recordInfo.get("Account_Name")))
+		{
+			soMap.put("Account_Name",recordInfo.get("Account_Name").get("id"));
+		}
+		if(!isNull(recordInfo.get("Selected_Hospital")))
+		{
+			soMap.put("Parent_Account",recordInfo.get("Selected_Hospital").get("id"));
+			relatedHospitalContact = zoho.crm.getRelatedRecords("Contacts","Accounts",recordInfo.get("Selected_Hospital").get("id"));
+			if(relatedHospitalContact.size() > 0)
+			{
+				relatedHospitalContactInfo = zoho.crm.getRecordById("Contacts",relatedHospitalContact.get(0).get("id"));
+				soMap.put("Contact_Name",relatedHospitalContact.get(0).get("id"));
+				soMap.put("Billing_City",ifnull(relatedHospitalContactInfo.get("Mailing_City"),""));
+				soMap.put("Billing_Code",ifnull(relatedHospitalContactInfo.get("Mailing_Zip"),""));
+				soMap.put("Billing_Country",ifnull(relatedHospitalContactInfo.get("Mailing_Country"),""));
+				soMap.put("Billing_State",ifnull(relatedHospitalContactInfo.get("Mailing_State"),""));
+				soMap.put("Billing_Street",ifnull(relatedHospitalContactInfo.get("Mailing_Street"),""));
+			}
+		}
+		else if(!isNull(recordInfo.get("Contact_Name")))
+		{
+			soMap.put("Contact_Name",recordInfo.get("Contact_Name").get("id"));
+			contactInfo = zoho.crm.getRecordById("Contacts",recordInfo.get("Contact_Name").get("id"));
+			soMap.put("Billing_City",ifnull(contactInfo.get("Mailing_City"),""));
+			soMap.put("Billing_Code",ifnull(contactInfo.get("Mailing_Zip"),""));
+			soMap.put("Billing_Country",ifnull(contactInfo.get("Mailing_Country"),""));
+			soMap.put("Billing_State",ifnull(contactInfo.get("Mailing_State"),""));
+			soMap.put("Billing_Street",ifnull(contactInfo.get("Mailing_Street"),""));
+		}
+		dataMap = Map();
+		recordList = list();
+		soMap.put("Ordered_Items",lineItemList);
+		recordList.add(soMap);
+		dataMap.put("data",recordList);
+		info dataMap;
+		createSalesOrder = Map();
+		if(salesOrderList.size() == 0)
+		{
+			createSalesOrder = invokeurl
+			[
+				url :"https://www.zohoapis.com/crm/v2.1/Sales_Orders"
+				type :POST
+				parameters:dataMap.toString()
+				connection:"zohooauth"
+			];
+			info createSalesOrder;
+			standalone.createInvoiceBasedOnSalesOrderForHospital(crmid);
+		}
+		else
+		{
+			createSalesOrder = invokeurl
+			[
+				url :"https://www.zohoapis.com/crm/v2.1/Sales_Orders/" + salesOrderList.toList().get(0).get("id")
+				type :PUT
+				parameters:dataMap.toString()
+				connection:"zohooauth"
+			];
+			info createSalesOrder;
+			standalone.createInvoiceBasedOnSalesOrderForHospital(crmid);
+		}
+		standalone.save_api_responses("Create_Sales_Order","Deals",crmid,createSalesOrder);
+	}
+}
+}

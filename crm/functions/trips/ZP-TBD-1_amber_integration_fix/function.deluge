@@ -1,0 +1,328 @@
+// Task: ZP-TBD-1 (placeholder — assign real Zoho Projects task ID)
+// Zoho App: CRM
+// Module: Trips
+// Function 1 of 2: createJobInAmber
+// Function 2 of 2: standalone.sendCompleteStatusToAmber (below)
+// Trigger: Workflow "Send Amber Completion When No Deal Present" (Trip_Status = Completed
+//          AND Amber_Completion_Sent = false), also called directly from createJobInAmber
+//          itself once a Job ID is confirmed.
+//
+// SECRETS MASKED — see shared/connection-notes/zoho_connections.md. Do not paste real
+// key values into this file. Pull them from the live function (or the Connection, once
+// migrated) at deployment time.
+//
+// Pulled live and confirmed matching production on 2026-07-03.
+
+void automation.createJobInAmber(Int crmid)
+{
+tripDetails = zoho.crm.getRecordById("Trips",crmid);
+// ================= RESOLVE THE DECEASED / DEAL =================
+// If the Trip has its own Deal (single deceased), use it exactly as before.
+// If not (multi-deceased police/hospital case), pull the Deal from the
+// Deceased_Pickups child linked to this Trip. If no Deal exists yet, the
+// job is created as "Unknown Deceased".
+haveDeal = false;
+dealDetails = Map();
+dealId = "";
+try
+{
+	dealId = ifnull(tripDetails.get("Deal").get("id"),"");
+}
+catch (eTripDeal)
+{
+	dealId = "";
+}
+if(dealId == "")
+{
+	dpIdList = standalone.COQLQuery("select id from Deceased_Pickups where Trip = '" + crmid + "' limit 1");
+	if(dpIdList.size() > 0)
+	{
+		try
+		{
+			dpId = dpIdList.toList().get(0).get("id");
+			dpRec = zoho.crm.getRecordById("Deceased_Pickups",dpId.toLong());
+			dealId = ifnull(dpRec.get("Deal").get("id"),"");
+		}
+		catch (eDp)
+		{
+			dealId = "";
+		}
+	}
+}
+if(dealId != "")
+{
+	try
+	{
+		dealDetails = zoho.crm.getRecordById("Deals",dealId.toLong());
+		haveDeal = true;
+	}
+	catch (eDealGet)
+	{
+		haveDeal = false;
+	}
+}
+// ================= CUSTOMER IDENTITY =================
+customerName = "Unknown Deceased";
+customerContactNo = "";
+deathDateStr = "";
+if(haveDeal)
+{
+	deathDateStr = ifnull(dealDetails.get("Date_of_Death"),"");
+	try
+	{
+		customerName = dealDetails.get("Contact_Name").get("name");
+		contactDetails = zoho.crm.getRecordById("Contacts",dealDetails.get("Contact_Name").get("id"));
+		customerContactNo = ifnull(contactDetails.get("Mobile"),"");
+	}
+	catch (eContact)
+	{
+		try
+		{
+			customerName = dealDetails.get("Account_Name").get("name");
+		}
+		catch (eAccount)
+		{
+			customerName = "Unknown Deceased";
+		}
+		customerContactNo = "";
+	}
+}
+amberMap = Map();
+amberMap.put("JobTitle",tripDetails.get("Name") + " - " + deathDateStr + " #" + tripDetails.get("Unique_ID") + " " + randomnumber(1,10000));
+if(tripDetails.get("Trip_Type") == "First Call" || tripDetails.get("Trip_Type") == "Ashes Pickup" || tripDetails.get("Trip_Type") == "Police Case Pickup" || tripDetails.get("Trip_Type") == "Document Pickup" || tripDetails.get("Trip_Type") == "Airport Pickup" || tripDetails.get("Trip_Type") == "Wholesale Airport")
+{
+	amberMap.put("JobType","pickup");
+}
+else if(tripDetails.get("Trip_Type") == "Funeral" || tripDetails.get("Trip_Type") == "Autopsy Initial" || tripDetails.get("Trip_Type") == "Autopsy Reschedule" || tripDetails.get("Trip_Type") == "Pre-Visit" || tripDetails.get("Trip_Type") == "Burial Order" || tripDetails.get("Trip_Type") == "MOH Trip")
+{
+	amberMap.put("JobType","service");
+}
+else if(tripDetails.get("Trip_Type") == "Crematory Dropoff" || tripDetails.get("Trip_Type") == "Airport Dropoff" || tripDetails.get("Trip_Type") == "Transfer to Other Funeral Home" || tripDetails.get("Trip_Type") == "Wholesale Local" || tripDetails.get("Trip_Type") == "Hospital Storage")
+{
+	amberMap.put("JobType","dropoff");
+}
+amberMap.put("JobDate",tripDetails.get("Scheduled_Date").toString("dd-MM-yyyy"));
+amberMap.put("JobDescription",ifnull(tripDetails.get("Trip_Instructions"),""));
+amberMap.put("CustomerName",customerName);
+amberMap.put("CustomerContactNo",customerContactNo);
+if(amberMap.get("JobType") == "pickup")
+{
+	address = tripDetails.get("Pickup_Street_Address");
+	geoCodeQuery = tripDetails.get("Pickup_Street_Address");
+	if(!isNull(tripDetails.get("Pickup_City")))
+	{
+		address = address + ", " + tripDetails.get("Pickup_City");
+		geoCodeQuery = geoCodeQuery + "+" + tripDetails.get("Pickup_City");
+	}
+}
+else
+{
+	address = tripDetails.get("Destination_Street_Address");
+	geoCodeQuery = tripDetails.get("Destination_Street_Address");
+	if(!isNull(tripDetails.get("Destination_City")))
+	{
+		address = address + ", " + tripDetails.get("Destination_City");
+		geoCodeQuery = geoCodeQuery + "+" + tripDetails.get("Destination_City");
+	}
+}
+info geoCodeQuery;
+amberMap.put("DropLattitude","");
+amberMap.put("DropLongitude","");
+amberMap.put("DropAddress","");
+amberMap.put("Tags","");
+amberMap.put("JobAssignment","MANUAL");
+if(!isNull(tripDetails.get("Amber_Vehicle")))
+{
+	vehicleInfo = zoho.crm.getRecordById("Products",tripDetails.get("Amber_Vehicle").get("id"));
+}
+else
+{
+	vehicleInfo = zoho.crm.getRecordById("Products",tripDetails.get("Vehicle").get("id"));
+}
+amberMap.put("VehicleId",vehicleInfo.get("Amber_Auth_Token"));
+amberMap.put("Remarks","");
+apiKey = "<GOOGLE_MAPS_API_KEY>"; // see shared/connection-notes/zoho_connections.md — masked, do not fill in here
+url = "https://maps.googleapis.com/maps/api/geocode/json?address=" + encodeUrl(geoCodeQuery + ",Jamaica") + "&key=" + apiKey;
+info url;
+geoLocationResponse = invokeurl
+[
+	url :url
+	type :GET
+];
+info geoLocationResponse;
+try
+{
+	if(geoLocationResponse.get("status") == "OK")
+	{
+		if(geoCodeQuery == "Mobay Ops Center+Montego Bay")
+		{
+			formattedAddress = "Mobay Ops Center,Montego Bay,Jamaica";
+			latitude = 18.479176;
+			longitude = -77.907307;
+			info "Latitude: " + latitude;
+			info "Longitude: " + longitude;
+		}
+		else if(geoCodeQuery == "Albion Road+Montego Bay")
+		{
+			formattedAddress = "Albion Road,Montego Bay,Jamaica";
+			latitude = 18.481150517538;
+			longitude = -77.9140809418262;
+			info "Latitude: " + latitude;
+			info "Longitude: " + longitude;
+		}
+		else
+		{
+			location = geoLocationResponse.get("results").get(0).get("geometry").get("location");
+			formattedAddress = geoLocationResponse.get("results").get(0).get("formatted_address");
+			latitude = location.get("lat");
+			longitude = location.get("lng");
+			info "Latitude: " + latitude;
+			info "Longitude: " + longitude;
+		}
+	}
+	amberMap.put("Address",formattedAddress);
+	amberMap.put("Lattitude",latitude);
+	amberMap.put("Longitude",longitude);
+	info amberMap;
+	if(isNull(tripDetails.get("Amber_Connect_Job_ID")) || tripDetails.get("Amber_Connect_Job_ID") == "N/A")
+	{
+		createAmberJob = invokeurl
+		[
+			url :"https://api-gateway.amberconnect.com/v1/openapi/addfuneraljob?APIKey=<AMBER_API_KEY>"
+			type :POST
+			body:amberMap.toString()
+		];
+	}
+	else
+	{
+		amberMap.put("JobId",tripDetails.get("Amber_Connect_Job_ID"));
+		info amberMap;
+		createAmberJob = invokeurl
+		[
+			url :"https://api-gateway.amberconnect.com/v1/openapi/editfuneraljob?APIKey=<AMBER_API_KEY>"
+			type :POST
+			body:amberMap.toString()
+		];
+	}
+	try
+	{
+		uniqueJobID = createAmberJob.get("JobId");
+		updateTripRecordMap = Map();
+		updateTripRecordMap.put("Amber_Connect_Job_ID",uniqueJobID);
+		zoho.crm.updateRecord("Trips",crmid,updateTripRecordMap);
+	}
+	catch (e)
+	{
+		uniqueJobID = "";
+		info e;
+	}
+	info createAmberJob;
+	// ROUND 2 FIX (2026-07-03): if this run was triggered because the trip is already
+	// Completed and we now have a real Job ID, immediately send the completion status
+	// too — same proven pattern as updateDealStagetoInitialTripCompleted. This closes
+	// the gap where a trip created fully-formed and completed with no intermediate
+	// edit never got a Job ID (and therefore never got completion sent either), since
+	// the legacy creation rules ("Create Job in Amber" [off], "...on Update" [edit-only],
+	// "...V2" [unreliable timer]) never fired for it.
+	if(tripDetails.get("Trip_Status") == "Completed" && uniqueJobID != "")
+	{
+		try
+		{
+			standalone.sendCompleteStatusToAmber(crmid);
+		}
+		catch (eComplete)
+		{
+			info eComplete;
+		}
+	}
+}
+catch (e)
+{
+	info e;
+}
+}
+
+// ============================================================
+// Function 2: standalone.sendCompleteStatusToAmber
+// ============================================================
+string standalone.sendCompleteStatusToAmber(Int crmid)
+{
+tripDetails = zoho.crm.getRecordById("Trips",crmid);
+// =========================
+// DUPLICATE CHECK
+// =========================
+if(tripDetails.get("Amber_Completion_Sent") == true)
+{
+	return "Already sent to Amber";
+}
+// =========================
+// BUILD AMBER COMPLETION PAYLOAD
+// Uses only the Trip + vehicle token; no Deal is required, so this works for
+// both single-deceased and multi-deceased (no Trip.Deal) trips. This is the
+// Round 1 fix — the original version of this function loaded the Deal up front
+// and crashed on Trips with no Deal.
+// =========================
+amberMap = Map();
+amberMap.put("JobId",tripDetails.get("Amber_Connect_Job_ID"));
+if(tripDetails.get("Trip_Type") == "First Call" || tripDetails.get("Trip_Type") == "Ashes Pickup" || tripDetails.get("Trip_Type") == "Police Case Pickup" || tripDetails.get("Trip_Type") == "Document Pickup" || tripDetails.get("Trip_Type") == "Airport Pickup" || tripDetails.get("Trip_Type") == "Wholesale Airport")
+{
+	amberMap.put("JobType","pickup");
+}
+else if(tripDetails.get("Trip_Type") == "Funeral" || tripDetails.get("Trip_Type") == "Autopsy Initial" || tripDetails.get("Trip_Type") == "Autopsy Reschedule" || tripDetails.get("Trip_Type") == "Pre-Visit" || tripDetails.get("Trip_Type") == "Burial Order" || tripDetails.get("Trip_Type") == "MOH Trip")
+{
+	amberMap.put("JobType","service");
+}
+else if(tripDetails.get("Trip_Type") == "Crematory Dropoff" || tripDetails.get("Trip_Type") == "Airport Dropoff" || tripDetails.get("Trip_Type") == "Transfer to Other Funeral Home" || tripDetails.get("Trip_Type") == "Wholesale Local" || tripDetails.get("Trip_Type") == "Hospital Storage")
+{
+	amberMap.put("JobType","dropoff");
+}
+amberMap.put("Status","started");
+// Vehicle Token
+try
+{
+	if(!isNull(tripDetails.get("Amber_Vehicle")))
+	{
+		vehicleInfo = zoho.crm.getRecordById("Products",tripDetails.get("Amber_Vehicle").get("id"));
+	}
+	else
+	{
+		vehicleInfo = zoho.crm.getRecordById("Products",tripDetails.get("Vehicle").get("id"));
+	}
+	if(!isNull(vehicleInfo.get("Amber_Auth_Token")))
+	{
+		amberMap.put("VehicleId",vehicleInfo.get("Amber_Auth_Token"));
+	}
+}
+catch (e)
+{
+	info e;
+}
+amberMap.put("Remarks","Trip completed from CRM");
+info amberMap;
+// =========================
+// SEND TO AMBER
+// =========================
+response = invokeurl
+[
+	url :"https://api-gateway.amberconnect.com/v1/openapi/updatefuneraljobstatus?APIKey=<AMBER_API_KEY>"
+	type :POST
+	body:amberMap.toString()
+];
+info response;
+amberMap.put("Status","completed");
+response = invokeurl
+[
+	url :"https://api-gateway.amberconnect.com/v1/openapi/updatefuneraljobstatus?APIKey=<AMBER_API_KEY>"
+	type :POST
+	body:amberMap.toString()
+];
+info response;
+// =========================
+// MARK COMPLETION SENT
+// =========================
+finalUpdate = Map();
+finalUpdate.put("Amber_Completion_Sent",true);
+finalUpdate.put("Amber_Completion_Response",response.toString());
+zoho.crm.updateRecord("Trips",crmid,finalUpdate);
+return "";
+}

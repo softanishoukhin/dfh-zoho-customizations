@@ -1,0 +1,102 @@
+// Task: ZP-TBD-4 (placeholder)
+// Zoho App: CRM
+// Module: Deceased_Pickups / Deals
+// Function Name: onDeceasedPickupCreate
+// Trigger: Workflow "On Deceased Pickup Create" (Deceased_Pickups, on create)
+//
+// The isPolice branch was only writing the station name as plain text
+// (Deal.Police_Office_Name). Deals.Police_Account (a real lookup to Accounts, mirroring
+// Deals.Selected_Hospital for the Hospital branch) already existed on the module but was
+// never populated. Fix mirrors Hospital's own pattern exactly: resolve the station name to
+// a real Account via a name search, same as Hospital resolves its hospital name.
+//
+// NOTE: this file shows the isPolice branch only (with the fix applied) — the rest of the
+// function (isHospital branch, the primaryDeal/else branch, Operations creation, hang tag
+// generation) is unchanged from what's live. Pull the full function from CRM before pasting
+// this branch back in, rather than reconstructing the whole function from this excerpt.
+
+else if(isPolice)
+{
+	if(newAccountId != "")
+	{
+		am = Map();
+		am.put("id",newAccountId);
+		dealDataMap.put("Account_Name",am);
+	}
+	dealDataMap.put("Name_of_Deceased",displayName);
+	dealDataMap.put("Deal_Name",displayName);
+	if(dodVal != "")
+	{
+		dealDataMap.put("Date_of_Death",dodVal);
+	}
+	tripOwnerId = "";
+	try
+	{
+		tripOwnerId = ifnull(tripInfo.get("Owner").get("id"),"");
+	}
+	catch (e)
+	{
+		tripOwnerId = "";
+	}
+	if(tripOwnerId != "")
+	{
+		ow = Map();
+		ow.put("id",tripOwnerId);
+		dealDataMap.put("Owner",ow);
+	}
+	dealDataMap.put("Pipeline","6503357000002869022");
+	dealDataMap.put("Layout","6503357000000091023");
+	dealDataMap.put("Stage","Trip Requested");
+	dealDataMap.put("Is_Deceased_at_Hospital",false);
+	dealDataMap.put("Is_Deceased_In_Our_Care","No");
+	dealDataMap.put("Deceased_Autopsy_if_applicable",false);
+	dealDataMap.put("Repatriation_Autopsy_if_applicable",false);
+	// Copy crime scene pickup address from the Trip
+	pickupStreet = "";
+	pickupCity = "";
+	try { pickupStreet = ifnull(tripInfo.get("Pickup_Street_Address"),""); } catch (e) { pickupStreet = ""; }
+	try { pickupCity = ifnull(tripInfo.get("Pickup_City"),""); } catch (e) { pickupCity = ""; }
+	if(pickupStreet != "") { dealDataMap.put("Location_Street_1",pickupStreet); }
+	if(pickupCity != "") { dealDataMap.put("Location_City",pickupCity); }
+	// Police station from Trip
+	policeStation = "";
+	try
+	{
+		policeStation = ifnull(tripInfo.get("Police_Station"),"");
+	}
+	catch (e)
+	{
+		policeStation = "";
+	}
+	if(policeStation != "")
+	{
+		dealDataMap.put("Police_Office_Name",policeStation);
+		// FIX (2026-07-03): resolve the station name to a real Account, mirroring the
+		// isHospital branch's Selected_Hospital resolution above.
+		try
+		{
+			matchedPoliceAccounts = zoho.crm.searchRecords("Accounts","(Account_Name:equals:" + policeStation + ")");
+			if(!matchedPoliceAccounts.isEmpty())
+			{
+				policeAccountId = ifnull(matchedPoliceAccounts.get(0).get("id"),"");
+				if(policeAccountId != "")
+				{
+					pam = Map();
+					pam.put("id",policeAccountId);
+					dealDataMap.put("Police_Account",pam);
+				}
+			}
+		}
+		catch (e)
+		{
+		}
+	}
+	// NOK from child record (if already set)
+	try { nokId = ifnull(dp.get("NOK_Contact").get("id"),""); } catch (e) { nokId = ""; }
+	if(nokId != "")
+	{
+		ct = Map();
+		ct.put("id",nokId);
+		dealDataMap.put("Contact_Name",ct);
+	}
+}

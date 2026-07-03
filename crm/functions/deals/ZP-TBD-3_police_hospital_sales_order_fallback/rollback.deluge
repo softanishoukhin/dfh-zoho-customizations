@@ -1,0 +1,24 @@
+// Rollback for CreateSalesOrderforPoliceCase — restore this trip-lookup section
+// (removes the Deceased_Pickups fallback entirely):
+
+tripList = standalone.COQLQuery("select Name, Created_Time, Number_of_distance_in_km, Hospital, Trip_Type, Created_on_This_Field_Update from Trips where Deal = '" + crmid + "' limit 1");
+if(tripList.size() > 0)
+{
+	tripInfo = tripList.toList().get(0);
+	// ... rest of function body unchanged, gated on this if block instead of haveTrip
+}
+
+// Rollback for createSalesOrderForHospitalCase — restore this trip-lookup section:
+
+tripList = standalone.COQLQuery("select Name, Created_Time, Number_of_distance_in_km, Hospital, Trip_Type, Created_on_This_Field_Update from Trips where Deal = '" + crmid + "'");
+lineItemList = list();
+if(tripList.size() > 0)
+{
+	for each  tripInfo in tripList.toList()
+	{
+		// ... rest of loop body unchanged
+	}
+}
+
+// Everything else in both functions (line-item building, Sales Order create/update, invoice
+// calls) is identical before and after this fix — see function.deluge for full current source.
