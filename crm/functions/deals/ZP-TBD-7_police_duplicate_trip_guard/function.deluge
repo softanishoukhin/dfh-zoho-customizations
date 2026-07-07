@@ -1,0 +1,117 @@
+void automation.createTripFromDealForPoliceCases(Int crmid)
+{
+//recordInfo = zoho.crm.getRecordById("Deals",crmid);
+// --- GUARD: skip trip creation for secondary (multiple-deceased) deals ---
+// A secondary deal already has a Deceased Pickups record whose Deal lookup
+// points at it. For those, the Trip exists and the pickup flow owns the deal,
+// so do NOT create another Trip.
+thisDealId = ifnull(crmid,"").trim();
+// <-- map to this function's deal-id var
+if(thisDealId != "")
+{
+	dpCriteria = "(Deal:equals:" + thisDealId + ")";
+	dpRecords = List();
+	try
+	{
+		dpRecords = zoho.crm.searchRecords("Deceased_Pickups",dpCriteria,1,1,{"connection":"zohooauth"});
+	}
+	catch (e)
+	{
+		dpRecords = List();
+	}
+	if(dpRecords.size() > 0)
+	{
+		return;
+		// secondary deal -> stop here, no trip creation
+	}
+}
+// --- end guard --- (existing trip-creation logic continues below)
+dealDetails = invokeurl
+[
+	url :"https://www.zohoapis.com/crm/v7/Deals/" + crmid
+	type :GET
+	connection:"zohooauth"
+];
+current_time = zoho.currenttime.toTime();
+start_time = (zoho.currentdate + " 09:00:00").toTime();
+end_time = (zoho.currentdate + " 17:00:00").toTime();
+recordInfo = dealDetails.get("data").get(0);
+pipeline = recordInfo.get("Pipeline");
+trips = zoho.crm.getRelatedRecords("Trips","Deals",crmid);
+//Arrival Time Confirmed
+tripAvailable = false;
+tripId = null;
+for each trip in trips
+{
+	if(pipeline == "Police Cases" || pipeline == "Hospital Cases")
+	{
+		if(trip.get("Created_on_This_Field_Update") == "Initial_Trip")
+		{
+			tripId = trip.get("id");
+			tripAvailable = true;
+			break;
+		}
+	}
+}
+tripMap = Map();
+if(tripAvailable == false)
+{
+	tripMap.put("Name","Police Pickup for " + recordInfo.get("Account_Name").get("name"));
+	tripMap.put("Trip_Type","Police Case Pickup");
+	tripMap.put("Created_on_This_Field_Update","Initial_Trip");
+	if(recordInfo.get("Stage") == "Trip Completed")
+	{
+		tripMap.put("Trip_Status","Completed");
+	}
+	else
+	{
+		tripMap.put("Trip_Status","Requested");
+	}
+	tripMap.put("Deal",crmid);
+	tripMap.put("Pickup_Street_Address",recordInfo.get("Location_Street_1"));
+	//tripMap.put("Pickup_Street_Address_2",recordInfo.get("Street_2"));
+	tripMap.put("Pickup_City",recordInfo.get("Location_City"));
+	tripMap.put("Pickup_Sector_Code",recordInfo.get("Location_Zip"));
+	if(recordInfo.get("DFH_Destination") == "Montego Bay" || recordInfo.get("DFH_Destination") == "45 Union Street")
+	{
+		tripMap.put("Destination_Street_Address","Delapenha Funeral Home (Montego Bay)");
+		tripMap.put("Destination_Street_Address_2","45 Union Street");
+		tripMap.put("Destination_City","Montego Bay");
+	}
+	else if(recordInfo.get("DFH_Destination") == "Mobay Ops Center")
+	{
+		tripMap.put("Destination_Street_Address","Mobay Ops Center");
+		tripMap.put("Destination_Street_Address_2","");
+		tripMap.put("Destination_City","Montego Bay");
+	}
+	else
+	{
+		tripMap.put("Destination_Street_Address","Delapenha Funeral Home (Kingston)");
+		tripMap.put("Destination_Street_Address_2","20A West Kings House Road");
+		tripMap.put("Destination_City","Kingston");
+	}
+	if(current_time >= start_time && current_time <= end_time)
+	{
+		// 		tripMap.put("Owner","6503357000007169001");
+		//Kristie Robinson
+		tripMap.put("Owner",zoho.crm.getOrgVariable("tripOwnerID"));
+	}
+	else
+	{
+		tripMap.put("Owner",recordInfo.get("Owner").get("id"));
+	}
+	tripCreationResult = zoho.crm.createRecord("Trips",tripMap,{"trigger":{"workflow"}});
+	info tripCreationResult;
+	tripAccountRelation = Map();
+	tripAccountRelation.put("Trips",tripCreationResult.get("id"));
+	tripAccountRelation.put("Related_Account_Record",recordInfo.get("Account_Name").get("id"));
+	zoho.crm.createRecord("Trips_Accounts_Relation",tripAccountRelation);
+	dealMap = Map();
+	dealMap.put("Trips",tripCreationResult.get("id"));
+	zoho.crm.updateRecord("Deals",crmid,dealMap);
+}
+else
+{
+	zoho.crm.updateRecord("Trips",tripId,tripMap);
+}
+}

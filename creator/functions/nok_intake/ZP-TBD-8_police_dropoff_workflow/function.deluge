@@ -1,0 +1,89 @@
+// New action branches inside widgetLookup(string action, string value), inserted immediately
+// before the final `else { res.put("error","unknown action"); }` in NOK_Information_Form.ds.
+// `res` is the shared response Map already pre-populated with `res.put("action",action);` at
+// the top of widgetLookup. `<CRM_FUNCTIONS_ZAPIKEY>` is the same shared REST-execute key used
+// throughout this org — masked here, see shared/connection-notes/zoho_connections.md.
+
+else if(action == "createPoliceDropoff")
+{
+	zapikey = "<CRM_FUNCTIONS_ZAPIKEY>";
+	encodedPayload = encodeUrl(ifnull(value,"{}"));
+	bridgeResp = Map();
+	try
+	{
+		bridgeResp = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v7/functions/createpolicedropoffcase/actions/execute?auth_type=apikey&zapikey=" + zapikey + "&payloadJson=" + encodedPayload
+			type :POST
+		];
+	}
+	catch (e)
+	{
+		res.put("status","error");
+		res.put("message","Create call failed: " + e.toString());
+	}
+	try
+	{
+		details = bridgeResp.get("details");
+		outputStr = "" + ifnull(details.get("output"),"");
+		if(outputStr != "")
+		{
+			inner = outputStr.toMap();
+			res.put("status","" + ifnull(inner.get("status"),"error"));
+			res.put("message","" + ifnull(inner.get("message"),""));
+			res.put("created",ifnull(inner.get("created"),List()));
+		}
+	}
+	catch (eParse)
+	{
+		res.put("status","error");
+		res.put("message","Create returned unparseable result: " + bridgeResp.toString());
+	}
+}
+else if(action == "getDropoffHangTagFile")
+{
+	// getHandTagFileApi (gethandtagfileapi1) already supports an opsId-only mode —
+	// no new CRM function needed for retrieval, only this bridge.
+	inVal = Map();
+	try
+	{
+		inVal = ifnull(value,"{}").toMap();
+	}
+	catch (e)
+	{
+		inVal = Map();
+	}
+	opsIdIn = ifnull(inVal.get("ops_id"),"");
+	zapikey = "<CRM_FUNCTIONS_ZAPIKEY>";
+	bridgeResp = Map();
+	try
+	{
+		bridgeResp = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v7/functions/gethandtagfileapi1/actions/execute?auth_type=apikey&zapikey=" + zapikey + "&tripId=&opsId=" + opsIdIn
+			type :POST
+		];
+	}
+	catch (e)
+	{
+		res.put("status","error");
+		res.put("message","Hand tag read failed: " + e.toString());
+	}
+	try
+	{
+		details = bridgeResp.get("details");
+		outputStr = "" + ifnull(details.get("output"),"");
+		if(outputStr != "")
+		{
+			inner = outputStr.toMap();
+			res.put("status","" + ifnull(inner.get("status"),"error"));
+			res.put("message","" + ifnull(inner.get("message"),""));
+			res.put("file_bytes","" + ifnull(inner.get("file_bytes"),""));
+		}
+	}
+	catch (eParse)
+	{
+		res.put("status","error");
+		res.put("message","Hand tag read returned unparseable result");
+	}
+}

@@ -1,0 +1,176 @@
+string standalone.generateHangTagForDealNoTrip(String dealId, String opsId)
+{
+dId = ifnull(dealId,"").trim();
+oId = ifnull(opsId,"").trim();
+result = Map();
+result.put("status","error");
+result.put("message","");
+result.put("dealId",dId);
+result.put("opsId",oId);
+result.put("merged_document_id","");
+result.put("attached",false);
+if(dId == "" || oId == "")
+{
+	result.put("message","Missing dealId or opsId");
+	return result.toString();
+}
+dealInfo = Map();
+try
+{
+	dealResp = invokeurl
+	[
+		url :"https://www.zohoapis.com/crm/v7/Deals/" + dId
+		type :GET
+		connection:"zohooauth"
+	];
+	if(dealResp.containKey("data"))
+	{
+		dl = dealResp.get("data");
+		if(!dl.isEmpty())
+		{
+			dealInfo = dl.get(0);
+		}
+	}
+}
+catch (e)
+{
+	result.put("message","Exception fetching Deal " + dId + ": " + e.toString());
+	return result.toString();
+}
+if(!dealInfo.containKey("id"))
+{
+	result.put("message","Deal not found for id " + dId);
+	return result.toString();
+}
+deceasedName = ifnull(dealInfo.get("Name_of_Deceased"),"");
+dodString = "";
+dodValue = ifnull(dealInfo.get("Date_of_Death"),"");
+if(dodValue != "")
+{
+	try
+	{
+		dodString = dodValue.toString("dd-MMM-yyyy");
+	}
+	catch (e)
+	{
+		dodString = "" + dodValue;
+	}
+}
+pipeline = ifnull(dealInfo.get("Pipeline"),"");
+hangTagPipelines = {"First Call","Police Cases","Hospital Cases"};
+if(!hangTagPipelines.contains(pipeline))
+{
+	result.put("status","skipped");
+	result.put("message","Pipeline '" + pipeline + "' is out of scope. Skipping.");
+	return result.toString();
+}
+// Drop-off has no pickup address: show the Police Account name if the case has
+// one, otherwise a fixed "Police Drop Off" label (per Andrea, confirmed).
+addressValue = "Police Drop Off";
+try
+{
+	policeAccountName = ifnull(dealInfo.get("Police_Account").get("name"),"");
+	if(policeAccountName != "")
+	{
+		addressValue = policeAccountName;
+	}
+}
+catch (e)
+{
+}
+data = Map();
+data.put("Deceased_Name",deceasedName);
+data.put("DOD",dodString);
+data.put("Pickup_City","");
+data.put("Pickup_Address",addressValue);
+data.put("Type_Code","P");
+document_id = "7qarn6b270b9610d94067b582ac866578250c";
+output_settings = Map();
+output_settings.put("doc_name",deceasedName + " - Hang Tag");
+mergedId = "";
+try
+{
+	document_info = zoho.writer.mergeAndStore(document_id,data,output_settings,"zohooauth");
+	mergedId = ifnull(document_info.get("document_id"),"");
+}
+catch (e)
+{
+	result.put("message","Writer mergeAndStore failed: " + e.toString());
+	return result.toString();
+}
+if(mergedId == "")
+{
+	result.put("message","mergeAndStore returned no document_id");
+	return result.toString();
+}
+result.put("merged_document_id",mergedId);
+downloadFile = "";
+try
+{
+	downloadFile = invokeurl
+	[
+		url :"https://zohoapis.com/writer/api/v1/documents/" + mergedId + "?format=pdf"
+		type :GET
+		connection:"zohooauth"
+	];
+}
+catch (e)
+{
+	result.put("message","PDF download failed: " + e.toString());
+	return result.toString();
+}
+priorDeleted = 0;
+try
+{
+	attListResp = invokeurl
+	[
+		url :"https://www.zohoapis.com/crm/v8/Operations/" + oId + "/Attachments?fields=id,File_Name,Created_Time&per_page=200"
+		type :GET
+		connection:"zohooauth"
+	];
+	attList = List();
+	try
+	{
+		if(attListResp.containKey("data"))
+		{
+			attList = attListResp.get("data");
+		}
+	}
+	catch (eParse)
+	{
+		attList = List();
+	}
+	for each att in attList
+	{
+		attId = ifnull(att.get("id"),"");
+		fname = "" + ifnull(att.get("File_Name"),"");
+		if(attId != "" && fname.replaceAll(" ","").toLowerCase().contains("hangtag"))
+		{
+			delResp = invokeurl
+			[
+				url :"https://www.zohoapis.com/crm/v8/Operations/" + oId + "/Attachments/" + attId
+				type :DELETE
+				connection:"zohooauth"
+			];
+			priorDeleted = priorDeleted + 1;
+		}
+	}
+}
+catch (e)
+{
+}
+try
+{
+	attachResult = zoho.crm.attachFile("Operations",oId,downloadFile,"zohooauth");
+	result.put("attach_outcome","" + attachResult);
+}
+catch (e)
+{
+	result.put("message","attachFile to Operations " + oId + " failed: " + e.toString());
+	return result.toString();
+}
+result.put("status","success");
+result.put("message","Hand tag attached to Operations " + oId);
+result.put("attached",true);
+return result.toString();
+}

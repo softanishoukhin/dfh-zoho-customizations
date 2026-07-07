@@ -1,0 +1,84 @@
+void automation.onPoliceDropoffNameCorrected(Int crmid)
+{
+recordInfo = zoho.crm.getRecordById("Deals",crmid);
+newName = ifnull(recordInfo.get("Name_of_Deceased"),"");
+if(newName == "")
+{
+	return;
+}
+dealUpdateMap = Map();
+dealUpdateMap.put("Deal_Name",newName);
+try
+{
+	zoho.crm.updateRecord("Deals",crmid,dealUpdateMap);
+}
+catch (e)
+{
+}
+accountId = "";
+try
+{
+	accountId = ifnull(recordInfo.get("Account_Name").get("id"),"");
+}
+catch (e)
+{
+	accountId = "";
+}
+if(accountId != "")
+{
+	acctUpdateMap = Map();
+	acctUpdateMap.put("Account_Name",newName);
+	try
+	{
+		zoho.crm.updateRecord("Accounts",accountId.toLong(),acctUpdateMap);
+	}
+	catch (e)
+	{
+	}
+}
+opsId = "";
+try
+{
+	opsRecords = zoho.crm.searchRecords("Operations","(Related_Deal:equals:" + crmid + ")",1,1);
+	if(!opsRecords.isEmpty())
+	{
+		opsId = ifnull(opsRecords.get(0).get("id"),"");
+	}
+}
+catch (e)
+{
+	opsId = "";
+}
+if(opsId != "")
+{
+	dodString = "DOD Unknown";
+	dodValue = ifnull(recordInfo.get("Date_of_Death"),"");
+	if(dodValue != "")
+	{
+		try
+		{
+			dodString = dodValue.toString("dd-MMM-yyyy");
+		}
+		catch (e)
+		{
+			dodString = "" + dodValue;
+		}
+	}
+	opsUpdateMap = Map();
+	opsUpdateMap.put("Name",newName + " - " + dodString + " - Ops Record");
+	try
+	{
+		zoho.crm.updateRecord("Operations",opsId.toLong(),opsUpdateMap);
+	}
+	catch (e)
+	{
+	}
+	try
+	{
+		standalone.generateHangTagForDealNoTrip(crmid + "",opsId);
+	}
+	catch (e)
+	{
+	}
+}
+}

@@ -1,0 +1,20 @@
+// ROLLBACK — ZP-TBD-7
+// Revert the guard block at the top of createTripFromDealForPoliceCases from:
+//
+//     if(dpRecords.size() > 0)
+//     {
+//         return;
+//     }
+//
+// back to the original, broken (always-false) guard:
+//
+//     for each dp in dpRecords
+//     {
+//         if(isNull(dp.get("id")))
+//         {
+//             return;
+//         }
+//     }
+//
+// Not recommended — this restores the duplicate-trip bug (POL-KM-01 failure). Documented for
+// completeness only.

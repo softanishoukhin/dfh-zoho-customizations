@@ -1,0 +1,18 @@
+// ROLLBACK NOTES — ZP-TBD-8 (Creator/widget side)
+//
+// 1) Remove the two new action branches (createPoliceDropoff, getDropoffHangTagFile) from
+//    widgetLookup in NOK_Information_Form.ds.
+//
+// 2) Revert NOKIntake/app/widget.html: remove the "Police Dropoff" option from the Deal_Type
+//    select, and remove the #wrap_Dropoff_Block markup.
+//
+// 3) Revert NOKIntake/app/app.js: remove the "Police Dropoff" entry from RULES, remove the
+//    isDropoff handling added to applyDealType(), and remove all functions listed in
+//    widget-js-changes.md (renderDropoffSets, dropoffValidate, buildDropoffPayload,
+//    dropoffResultCard, submitDropoff, printDropoffHangTag, plus the DROPOFF_* constants).
+//
+// 4) Repack and redeploy dist/NOKIntake.zip.
+//
+// Must be done together with the CRM-side rollback (see
+// crm/functions/deals/ZP-TBD-8_police_dropoff_workflow/rollback.deluge) — the widget calls those
+// functions directly.

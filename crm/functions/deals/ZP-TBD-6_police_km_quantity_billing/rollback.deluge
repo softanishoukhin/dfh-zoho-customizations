@@ -1,0 +1,23 @@
+// ROLLBACK NOTES — ZP-TBD-6 (Police KM-Based Quantity Billing)
+//
+// This ticket touched 4 things. To roll back:
+//
+// 1) CreateSalesOrderforPoliceCase — revert these two lines in the pickup line item block:
+//        productMap.put("Quantity",ifnull(tripInfo.get("Number_of_distance_in_km"),1));
+//    back to (pre-fix, read from the Deal instead of the Trip):
+//        productMap.put("Quantity",ifnull(recordInfo.get("Number_of_distance_in_km"),1));
+//    And revert the Autopsy Trip line item's quantity lookup (the autopsyTripIdList /
+//    autopsyChildRec / Parent_Trip fallback block) back to a flat:
+//        productMap.put("Quantity",1);
+//
+// 2) updateSalesOrderOnNumberOfDistanceinKMUpdate — pre-fix version only mirrored KM to the
+//    Deal once and never patched the Sales Order (the real update call was commented out).
+//    Restore that commented-out state, or simply disable the workflow rule
+//    "Update Sales Order on Km Update" (id 6503357000016798049) to fully disable this path.
+//
+// 3) patchPickupQuantityOnSalesOrder / patchAutopsyTripQuantityOnSalesOrder — both new in this
+//    ticket. Rollback = delete both functions (nothing else calls them except
+//    updateSalesOrderOnNumberOfDistanceinKMUpdate, reverted in step 2).
+//
+// No field, workflow rule, or module changes were made in this ticket — rollback is
+// function-code only.

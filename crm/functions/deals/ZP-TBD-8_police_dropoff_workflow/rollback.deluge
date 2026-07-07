@@ -1,0 +1,21 @@
+// ROLLBACK NOTES — ZP-TBD-8 (Police Dropoffs Workflow, CRM side)
+//
+// 1) Delete the 4 new functions: createPoliceDropoffCase, createOnePoliceDropoffDeceased,
+//    generateHangTagForDealNoTrip, onPoliceDropoffNameCorrected. Nothing else calls them.
+//
+// 2) CreateSalesOrderforPoliceCase — revert to the ZP-TBD-6/7 version (see that ticket's
+//    function.deluge) by removing the `isDropoff` computation and reverting the outer gate from
+//    `if(haveTrip || isDropoff)` back to `if(haveTrip)`, and un-wrapping the pickup-line-item
+//    block from its own `if(haveTrip)` (it was already inside the outer gate before this ticket).
+//
+// 3) createTripFromDealForPoliceCases — revert to the ZP-TBD-7 version (see that ticket's
+//    function.deluge) by removing GUARD 2 (the `Is_Deceased_In_Our_Care == "Yes"` check and its
+//    redundant second Deal fetch).
+//
+// 4) handleWorkflowTriggerAndActionByTimelineProcess — remove only the final
+//    "Police Dropoff - deceased name corrected while in our care" if-block. Every other branch
+//    in that function pre-dates this ticket and must be left untouched.
+//
+// Not recommended without also reverting the Creator/widget side (see
+// creator/functions/nok_intake/ZP-TBD-8_police_dropoff_workflow) — the widget calls these
+// functions directly.

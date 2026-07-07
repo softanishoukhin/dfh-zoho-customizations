@@ -1,0 +1,67 @@
+string standalone.patchPickupQuantityOnSalesOrder(Int dealId, Float newKm)
+{
+salesOrderList = standalone.COQLQuery("select Subject from Sales_Orders where Deal_Name = '" + dealId + "' and Sales_Order_Type = 'Police Cases' limit 1");
+if(salesOrderList.size() == 0)
+{
+	return "";
+}
+salesOrderDetails = invokeurl
+[
+	url :"https://www.zohoapis.com/crm/v7/Sales_Orders/" + salesOrderList.toList().get(0).get("id")
+	type :GET
+	connection:"zohooauth"
+];
+salesOrderInfo = salesOrderDetails.get("data").get(0);
+lineItemList = list();
+if(salesOrderInfo.get("Ordered_Items").size() > 0)
+{
+	lineItemList = salesOrderInfo.get("Ordered_Items");
+}
+pickupProductOfPolice = "select Product_Name from Products where Parent_Product = '6503357000020022236' and Product_Category = 'Pickup'";
+pickupProducts = standalone.COQLQuery(pickupProductOfPolice);
+pickupProductID = "";
+if(pickupProducts.size() > 0)
+{
+	pickupProductID = pickupProducts.toList().get(0).get("id");
+}
+else
+{
+	pickupProductID = "6503357000002869122";
+}
+existingIndex = -1;
+for each item in lineItemList
+{
+	if(item.contains("Product_Name"))
+	{
+		productName = item.get("Product_Name");
+		if(productName != null && productName.contains("id") && productName.get("id") == pickupProductID)
+		{
+			existingIndex = lineItemList.indexOf(item);
+			break;
+		}
+	}
+}
+if(existingIndex >= 0)
+{
+	existingItem = lineItemList.get(existingIndex);
+	existingItem.put("Quantity",newKm);
+	lineItemList.remove(existingIndex);
+	lineItemList.add(existingItem);
+	salesOrderMap = Map();
+	salesOrderMap.put("Ordered_Items",lineItemList);
+	recordList = list();
+	recordList.add(salesOrderMap);
+	dataMap = Map();
+	dataMap.put("data",recordList);
+	updateSalesOrder = invokeurl
+	[
+		url :"https://www.zohoapis.com/crm/v2.1/Sales_Orders/" + salesOrderList.toList().get(0).get("id")
+		type :PUT
+		parameters:dataMap.toString()
+		connection:"zohooauth"
+	];
+	info updateSalesOrder;
+	standalone.createInvoiceBasedOnSalesOrderForPolice(dealId);
+}
+return "done";
+}

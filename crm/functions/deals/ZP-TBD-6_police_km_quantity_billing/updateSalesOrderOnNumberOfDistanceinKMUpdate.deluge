@@ -1,0 +1,92 @@
+void automation.updateSalesOrderOnNumberOfDistanceinKMUpdate(Int crmid)
+{
+recordInfo = zoho.crm.getRecordById("Trips",crmid);
+tripType = ifnull(recordInfo.get("Trip_Type"),"");
+newKm = ifnull(recordInfo.get("Number_of_distance_in_km"),1);
+if(tripType == "Multi Deceased Autopsy Trip")
+{
+	// Parent trip has no Deal of its own — cascade this KM to every child's Sales Order.
+	childCriteria = "(Parent_Trip:equals:" + crmid + ")";
+	children = list();
+	try
+	{
+		children = zoho.crm.searchRecords("Trips",childCriteria,1,200);
+	}
+	catch (e)
+	{
+		children = list();
+	}
+	for each child in children
+	{
+		childDealId = "";
+		try
+		{
+			childDealId = ifnull(child.get("Deal").get("id"),"");
+		}
+		catch (e)
+		{
+			childDealId = "";
+		}
+		if(childDealId != "")
+		{
+			standalone.patchAutopsyTripQuantityOnSalesOrder(childDealId.toLong(),newKm);
+		}
+	}
+	return;
+}
+dealId = "";
+try
+{
+	dealId = ifnull(recordInfo.get("Deal").get("id"),"");
+}
+catch (e)
+{
+	dealId = "";
+}
+if(dealId == "")
+{
+	dpList = standalone.COQLQuery("select Deal from Deceased_Pickups where Trip = '" + crmid + "' limit 1");
+	if(dpList.size() > 0)
+	{
+		try
+		{
+			dealId = ifnull(dpList.toList().get(0).get("Deal").get("id"),"");
+		}
+		catch (e)
+		{
+			dealId = "";
+		}
+	}
+}
+if(dealId == "")
+{
+	return;
+}
+// Pipeline field needs a REST GET — zoho.crm.getRecordById does not reliably
+// return Deals.Pipeline in this org (see shared/connection-notes).
+dealDetails = invokeurl
+[
+	url :"https://www.zohoapis.com/crm/v7/Deals/" + dealId
+	type :GET
+	connection:"zohooauth"
+];
+dealInfo = dealDetails.get("data").get(0);
+if(isnull(dealInfo.get("Number_of_distance_in_km")))
+{
+	dealMap = Map();
+	dealMap.put("Number_of_distance_in_km",newKm);
+	zoho.crm.updateRecord("Deals",dealId.toLong(),dealMap);
+}
+if(dealInfo.get("Pipeline") != "Police Cases")
+{
+	return;
+}
+if(tripType == "Autopsy Initial")
+{
+	standalone.patchAutopsyTripQuantityOnSalesOrder(dealId.toLong(),newKm);
+}
+else
+{
+	standalone.patchPickupQuantityOnSalesOrder(dealId.toLong(),newKm);
+}
+}

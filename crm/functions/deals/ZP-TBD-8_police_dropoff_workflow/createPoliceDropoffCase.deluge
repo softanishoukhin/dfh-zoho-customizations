@@ -1,0 +1,62 @@
+string standalone.createPoliceDropoffCase(String payloadJson)
+{
+result = Map();
+result.put("status","error");
+result.put("message","");
+result.put("created",List());
+payload = Map();
+try
+{
+	payload = payloadJson.toMap();
+}
+catch (e)
+{
+	result.put("message","Invalid payload: " + e.toString());
+	return result.toString();
+}
+callTakenBy = ifnull(payload.get("call_taken_by"),"");
+dfhDestination = ifnull(payload.get("dfh_destination"),"Mobay Ops Center");
+deceasedList = List();
+try
+{
+	deceasedList = payload.get("deceased").toList();
+}
+catch (e)
+{
+	result.put("message","Missing deceased list");
+	return result.toString();
+}
+if(deceasedList.size() == 0)
+{
+	result.put("message","No deceased provided");
+	return result.toString();
+}
+createdList = List();
+for each d in deceasedList
+{
+	oneResultStr = standalone.createOnePoliceDropoffDeceased(d,callTakenBy,dfhDestination);
+	oneResultMap = Map();
+	try
+	{
+		oneResultMap = oneResultStr.toMap();
+	}
+	catch (e)
+	{
+		oneResultMap = Map();
+	}
+	if(ifnull(oneResultMap.get("dealId"),"") != "")
+	{
+		createdList.add(oneResultMap);
+	}
+}
+if(createdList.size() > 0)
+{
+	result.put("status","success");
+}
+else
+{
+	result.put("message","No cases were created");
+}
+result.put("created",createdList);
+return result.toString();
+}

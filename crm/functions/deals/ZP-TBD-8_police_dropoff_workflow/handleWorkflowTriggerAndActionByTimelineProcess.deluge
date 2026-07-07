@@ -1,0 +1,246 @@
+// NOTE: this is the org's existing catch-all dispatcher (workflow "Custom Manage - Trigger on
+// Any Field Update", id 6503357000013615196, fires on ANY Deals edit). Only the FINAL if-block
+// ("Police Dropoff - deceased name corrected while in our care") was added in ZP-TBD-8. Every
+// other branch pre-dates this ticket and is included here only so this file is a true, complete
+// snapshot of the live function -- do not attribute the rest to this ticket.
+void automation.handleWorkflowTriggerAndActionByTimelineProcess(Int crmid)
+{
+recordInfo = invokeurl
+[
+	url :"https://www.zohoapis.com/crm/v8/Deals/" + crmid
+	type :GET
+	connection:"zohooauth"
+];
+recordInfo = recordInfo.get("data").get(0);
+// ClothesReceivedProcess
+returnedValue = standalone.isThisFieldUpdatedThenGetValue(crmid);
+returnedValue = returnedValue.toList();
+if(returnedValue.size() > 0)
+{
+	// Only proceed if the field was updated and has the correct value
+	if(recordInfo.get("Clothes_Received") == "Yes" && returnedValue.contains("Clothes_Received"))
+	{
+		dealMap = Map();
+		dealMap.put("Clothes_Received_Date",zoho.currentdate.toString("yyyy-MM-dd"));
+		// Update with workflow triggers enabled
+		zoho.crm.updateRecord("Deals",crmid,dealMap);
+		//, {"triggers":{"workflow"}}
+	}
+	//End Clothes Recieved Process
+	// OwnerProcess
+	if(returnedValue.contains("Owner"))
+	{
+		updateOwnerOnAllRelatedRecords = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v7/functions/updatetotaldealamount/actions/execute?auth_type=apikey&zapikey=<CRM_FUNCTIONS_ZAPIKEY>&crmid=" + crmid
+			type :GET
+		];
+		standalone.updateDealOwnerOnBooksContact(crmid);
+	}
+	//End Owner Process
+	//Installment 1 Invoice
+	if(returnedValue.contains("Installment_1_Due_Date") && recordInfo.get("Payment_Type") == "Installments" && !isNull(recordInfo.get("Installment_1_Amount")))
+	{
+		createInvoiceForInstallment1 = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v7/functions/createinvoiceifpaymenttypeisintallments/actions/execute?auth_type=apikey&zapikey=<CRM_FUNCTIONS_ZAPIKEY>&crmid=" + crmid
+			type :GET
+		];
+	}
+	//End Installment 1 Invoice
+	//Installment 2 Invoice
+	if(returnedValue.contains("Installment_2_Due_Date") && recordInfo.get("Payment_Type") == "Installments" && !isNull(recordInfo.get("Installment_2_Amount")))
+	{
+		createInvoiceForInstallment1 = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v7/functions/createinvoiceforinstallment2/actions/execute?auth_type=apikey&zapikey=<CRM_FUNCTIONS_ZAPIKEY>&crmid=" + crmid
+			type :GET
+		];
+	}
+	//End Installment 2 Invoice
+	//Installment 3 Invoice
+	if(returnedValue.contains("Installment_3_Due_Date") && recordInfo.get("Payment_Type") == "Installments" && !isNull(recordInfo.get("Installment_3_Amount")))
+	{
+		createInvoiceForInstallment1 = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v7/functions/createinvoiceforinstallment3/actions/execute?auth_type=apikey&zapikey=<CRM_FUNCTIONS_ZAPIKEY>&crmid=" + crmid
+			type :GET
+		];
+	}
+	//End Installment 3 Invoice
+	//Based on Departure Date
+	if(returnedValue.contains("Departing_Date_Time") || returnedValue.contains("Departing_Date_Time_2") || returnedValue.contains("Departing_Date_Time_3") || returnedValue.contains("Departing_Date_Time_4"))
+	{
+		standalone.createTaskSubmitForCustomEntry(crmid);
+	}
+	//End Based on Departure Date
+	//Start Cremation Date
+	if(returnedValue.contains("Cremation_Date") && !isNull(recordInfo.get("Account_Name")) && !isNull(recordInfo.get("Cremation_Date")))
+	{
+		createeventforcremationdate = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v7/functions/createeventforcremationdate/actions/execute?auth_type=apikey&zapikey=<CRM_FUNCTIONS_ZAPIKEY>&crmid=" + crmid
+			type :GET
+		];
+	}
+	//End Cremation Date
+	//Start ID Date
+	if(returnedValue.contains("ID_Date") && !isNull(recordInfo.get("Account_Name")) && !isNull(recordInfo.get("ID_Date")))
+	{
+		createeventforiddate = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v7/functions/createeventforiddate/actions/execute?auth_type=apikey&zapikey=<CRM_FUNCTIONS_ZAPIKEY>&crmid=" + crmid
+			type :GET
+		];
+	}
+	//End ID Date
+	//Form D Uploaded Start
+	if(returnedValue.contains("Form_D_Uploaded") && recordInfo.get("Form_D_Uploaded") == true && recordInfo.get("Stage") == "Burial Order Received" && (recordInfo.get("Type") == "Cremation with Service" || recordInfo.get("Type") == "Cremation Only"))
+	{
+		createtasksendformstoparishsuperintendent = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v7/functions/createtasksendformstoparishsuperintendent/actions/execute?auth_type=apikey&zapikey=<CRM_FUNCTIONS_ZAPIKEY>&crmid=" + crmid
+			type :GET
+		];
+	}
+	//End Form D Uploaded
+	//Start Stage Cremation Completed
+	if(returnedValue.contains("Stage") && recordInfo.get("Stage") == "Cremation Completed")
+	{
+		createtaskfollowupregardingcremainspickup = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v7/functions/createtaskfollowupregardingcremainspickup/actions/execute?auth_type=apikey&zapikey=<CRM_FUNCTIONS_ZAPIKEY>&crmid=" + crmid
+			type :GET
+		];
+	}
+	//End Stage Cremation Completed
+	//Create Deceased Account Record
+	if((returnedValue.contains("Name_of_Deceased") || returnedValue.contains("Date_of_Death")) && !isNull(recordInfo.get("Name_of_Deceased")) && !isNull(recordInfo.get("Date_of_Death")))
+	{
+		createdeceasedaccountrecord = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v7/functions/createdeceasedaccountrecord/actions/execute?auth_type=apikey&zapikey=<CRM_FUNCTIONS_ZAPIKEY>&crmid=" + crmid
+			type :GET
+		];
+		arguments = Map();
+		arguments.put("crmid",crmid);
+		updateCrematoryDropOffTrip = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v7/functions/ondealeditforpickup/actions/execute?auth_type=oauth"
+			type :GET
+			parameters:arguments
+			connection:"zohooauth"
+		];
+	}
+	//End Deceased Account Record
+	//Update Deal Pipeline on Type Update
+	if((returnedValue.contains("Type") || returnedValue.contains("Pipeline")) && !isNull(recordInfo.get("Type")))
+	{
+		updatedealpipelineontypeupdate = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v7/functions/updatedealpipelineontypeupdate/actions/execute?auth_type=apikey&zapikey=<CRM_FUNCTIONS_ZAPIKEY>&crmid=" + crmid + "&dealType=" + recordInfo.get("Type")
+			type :GET
+		];
+		info updatedealpipelineontypeupdate;
+	}
+	//End Update Deal Pipeline on Type Update
+	//Start Arrival Time Confirmed
+	if(returnedValue.contains("Arrival_Time_Confirmed") && recordInfo.get("Arrival_Time_Confirmed") == true)
+	{
+		confirmearrivingtrip = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v7/functions/confirmearrivingtrip/actions/execute?auth_type=apikey&zapikey=<CRM_FUNCTIONS_ZAPIKEY>&crmid=" + crmid + "&updatedField=Arriving_Date_Time"
+			type :GET
+		];
+	}
+	if(returnedValue.contains("Arrival_Time_2_Confirmed") && recordInfo.get("Arrival_Time_2_Confirmed") == true)
+	{
+		confirmearrivingtrip = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v7/functions/confirmearrivingtrip/actions/execute?auth_type=apikey&zapikey=<CRM_FUNCTIONS_ZAPIKEY>&crmid=" + crmid + "&updatedField=Arriving_Date_Time_2"
+			type :GET
+		];
+	}
+	if(returnedValue.contains("Arrival_Time_3_Confirmed") && recordInfo.get("Arrival_Time_3_Confirmed") == true)
+	{
+		confirmearrivingtrip = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v7/functions/confirmearrivingtrip/actions/execute?auth_type=apikey&zapikey=<CRM_FUNCTIONS_ZAPIKEY>&crmid=" + crmid + "&updatedField=Arriving_Date_Time_3"
+			type :GET
+		];
+	}
+	if(returnedValue.contains("Arrival_Time_4_Confirmed") && recordInfo.get("Arrival_Time_4_Confirmed") == true)
+	{
+		confirmearrivingtrip = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v7/functions/confirmearrivingtrip/actions/execute?auth_type=apikey&zapikey=<CRM_FUNCTIONS_ZAPIKEY>&crmid=" + crmid + "&updatedField=Arriving_Date_Time_4"
+			type :GET
+		];
+	}
+	//End Arrival Time Confirmed
+	if(returnedValue.contains("Hospital_Release_Date") || returnedValue.contains("Receiving_Release_Date"))
+	{
+		if(!isNull(recordInfo.get("Hospital_Release_Date")) && !isNull(recordInfo.get("Receiving_Release_Date")))
+		{
+			if(recordInfo.get("Pipeline") == "Hospital Cases" && recordInfo.get("Stage") == "DFH Not Selected")
+			{
+				arguments = Map();
+				arguments.put("crmid",crmid);
+				createInvoiceOnSelectingDFHNotSelected = invokeurl
+				[
+					url :"https://www.zohoapis.com/crm/v7/functions/createinvoiceonselectingdfhnotselected/actions/execute?auth_type=oauth"
+					type :GET
+					parameters:arguments
+					connection:"zohooauth"
+				];
+			}
+		}
+	}
+	if(returnedValue.contains("Receiving_Letter_of_No_Interest_Date") || returnedValue.contains("Letter_of_No_Interest_Date"))
+	{
+		if(!isNull(recordInfo.get("Receiving_Letter_of_No_Interest_Date")) && !isNull(recordInfo.get("Letter_of_No_Interest_Date")))
+		{
+			if(recordInfo.get("Pipeline") == "Police Cases" && recordInfo.get("Stage") == "DFH Not Selected")
+			{
+				arguments = Map();
+				arguments.put("crmid",crmid);
+				createInvoiceOnSelectingDFHNotSelected = invokeurl
+				[
+					url :"https://www.zohoapis.com/crm/v7/functions/generatedelayedloniinvoice/actions/execute?auth_type=oauth"
+					type :GET
+					parameters:arguments
+					connection:"zohooauth"
+				];
+			}
+		}
+	}
+	if(returnedValue.contains("Crematorium") && !isNull(recordInfo.get("Cremation_Date")))
+	{
+		if(recordInfo.get("Pipeline") == "Cremation with Service" || recordInfo.get("Pipeline") == "Cremation Only" || recordInfo.get("Pipeline") == "Repatriation with Cremation" || recordInfo.get("Pipeline") == "Ship Ins" && recordInfo.get("Service_Type") == "Cremation")
+	{
+			arguments = Map();
+			arguments.put("crmid",crmid);
+			updateCrematoryDropOffTrip = invokeurl
+			[
+				url :"https://www.zohoapis.com/crm/v7/functions/createtripsoncremationdate/actions/execute?auth_type=oauth"
+				type :GET
+				parameters:arguments
+				connection:"zohooauth"
+			];
+		}
+	}
+	//Police Dropoff - deceased name corrected while in our care (ZP-TBD-8, NEW)
+	if(returnedValue.contains("Name_of_Deceased") && recordInfo.get("Pipeline") == "Police Cases" && recordInfo.get("Is_Deceased_In_Our_Care") == "Yes")
+	{
+		tripCheck = standalone.COQLQuery("select id from Trips where Deal = '" + crmid + "' limit 1");
+		if(tripCheck.size() == 0)
+		{
+			policeDropoffRename = invokeurl
+			[
+				url :"https://www.zohoapis.com/crm/v7/functions/onpolicedropoffnamecorrected/actions/execute?auth_type=apikey&zapikey=<CRM_FUNCTIONS_ZAPIKEY>&crmid=" + crmid
+				type :GET
+			];
+		}
+	}
+}
+}

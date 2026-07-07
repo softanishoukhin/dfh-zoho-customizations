@@ -1,0 +1,274 @@
+void automation.CreateSalesOrderforPoliceCase(Int crmid)
+{
+// getUrl("https://httpstat.us/200?sleep=10000");
+try
+{
+	getUrl("https://www.zohoapis.com/creator/custom/delapenhafuneralhome/Sleep_API?publickey=69fNOfX03TwjyaAgAYyRTJSBd&seconds=10");
+}
+catch (e)
+{
+	info e;
+}
+standalone.manageZeroRatedProduct(crmid);
+recordInfo = zoho.crm.getRecordById("Deals",crmid);
+salesOrderList = standalone.COQLQuery("select Subject from Sales_Orders where Deal_Name = '" + crmid + "' and Sales_Order_Type = 'Police Cases' limit 1");
+info salesOrderList;
+tripList = standalone.COQLQuery("select Name, Created_Time, Number_of_distance_in_km, Hospital, Trip_Type, Created_on_This_Field_Update from Trips where Deal = '" + crmid + "' limit 1");
+info salesOrderList;
+tripInfo = Map();
+haveTrip = false;
+if(tripList.size() > 0)
+{
+	tripInfo = tripList.toList().get(0);
+	haveTrip = true;
+}
+else
+{
+	// Multi-deceased Police case: this Deal has no Trip.Deal — it belongs to a
+	// Deceased_Pickups child instead. Find that child, then its Trip, and only
+	// proceed once the DA has actually completed that trip.
+	dpIdList = standalone.COQLQuery("select id from Deceased_Pickups where Deal = '" + crmid + "' limit 1");
+	if(dpIdList.size() > 0)
+	{
+		try
+		{
+			dpInfo = dpIdList.toList().get(0);
+			dpId = dpInfo.get("id");
+		}
+		catch (e)
+		{
+			dpId = "";
+		}
+		if(dpId != "")
+		{
+			dpRec = zoho.crm.getRecordById("Deceased_Pickups",dpId.toLong());
+			dpTripId = "";
+			try
+			{
+				dpTripId = ifnull(dpRec.get("Trip").get("id"),"");
+			}
+			catch (e)
+			{
+				dpTripId = "";
+			}
+			if(dpTripId != "")
+			{
+				dpTripRec = zoho.crm.getRecordById("Trips",dpTripId.toLong());
+				dpTripStatus = ifnull(dpTripRec.get("Trip_Status"),"");
+				if(dpTripStatus == "Completed")
+				{
+					tripInfo = dpTripRec;
+					// No per-child "Created_on_This_Field_Update" concept — every deceased
+					// on a multi-deceased trip bills as the standard pickup.
+					tripInfo.put("Created_on_This_Field_Update","Initial_Trip");
+					haveTrip = true;
+				}
+			}
+		}
+	}
+}
+if(haveTrip)
+{
+	//info tripInfo;
+	lineItemList = list();
+	if(tripInfo.get("Trip_Type") == "Transfer to Other Funeral Home")
+	{
+		productDetails = zoho.crm.getRecordById("Products","6503357000004300027");
+	}
+	else if(tripInfo.get("Trip_Type") == "Autopsy Reschedule")
+	{
+		productDetails = zoho.crm.getRecordById("Products","6503357000004300032");
+	}
+	else if(tripInfo.get("Created_on_This_Field_Update") == "Initial_Trip")
+	{
+		pickupTripProductOPolice = "select Product_Name from Products where Parent_Product = '6503357000020022236' and Product_Category = 'Pickup'";
+		pickupTripProducts = standalone.COQLQuery(pickupTripProductOPolice);
+		if(pickupTripProducts.size() > 0)
+		{
+			pickupTripProducts = pickupTripProducts.toList();
+			productDetails = zoho.crm.getRecordById("Products",pickupTripProducts.get(0).get("id"));
+		}
+		else
+		{
+			productDetails = zoho.crm.getRecordById("Products","6503357000002869122");
+		}
+	}
+	else
+	{
+		productDetails = zoho.crm.getRecordById("Products","6503357000002869122");
+	}
+	productMap = Map();
+	productMap.put("Product_Name",productDetails.get("id"));
+	// FIX (ZP-TBD-6): quantity now reads the TRIP's own KM, not the Deal's stale mirror.
+	productMap.put("Quantity",ifnull(tripInfo.get("Number_of_distance_in_km"),1));
+	productMap.put("List_Price",productDetails.get("Unit_Price"));
+	lineItemList.add(productMap);
+	if(recordInfo.get("Condition") == "Decomposed")
+	{
+		productDetails = zoho.crm.getRecordById("Products","6503357000002869270");
+		//Decomp fee
+		productMap = Map();
+		productMap.put("Product_Name",productDetails.get("id"));
+		productMap.put("Quantity",1);
+		productMap.put("List_Price",productDetails.get("Unit_Price"));
+		lineItemList.add(productMap);
+		storageProductOfPolice = "select Product_Name from Products where Parent_Product = '6503357000020022236' and Product_Category = 'Decompose Storage'";
+		storageProducts = standalone.COQLQuery(storageProductOfPolice);
+		if(storageProducts.size() > 0)
+		{
+			storageProducts = storageProducts.toList();
+			productDetails = zoho.crm.getRecordById("Products",storageProducts.get(0).get("id"));
+		}
+		else
+		{
+			productDetails = zoho.crm.getRecordById("Products","6503357000019249225");
+		}
+	}
+	else
+	{
+		storageProductOfPolice = "select Product_Name from Products where Parent_Product = '6503357000020022236' and Product_Category = 'Storage'";
+		storageProducts = standalone.COQLQuery(storageProductOfPolice);
+		if(storageProducts.size() > 0)
+		{
+			storageProducts = storageProducts.toList();
+			productDetails = zoho.crm.getRecordById("Products",storageProducts.get(0).get("id"));
+		}
+		else
+		{
+			productDetails = zoho.crm.getRecordById("Products","6503357000002869275");
+		}
+	}
+	productMap = Map();
+	productMap.put("Product_Name",productDetails.get("id"));
+	productMap.put("Quantity",1);
+	productMap.put("List_Price",productDetails.get("Unit_Price"));
+	lineItemList.add(productMap);
+	//AutopsyTrip
+	if(recordInfo.get("Autopsy_Required") == "Yes")
+	{
+		autopsyTripProductOfPolice = "select Product_Name from Products where Parent_Product = '6503357000020022236' and Product_Category = 'Autopsy Trip'";
+		autopsyTripProducts = standalone.COQLQuery(autopsyTripProductOfPolice);
+		if(autopsyTripProducts.size() > 0)
+		{
+			autopsyTripProducts = autopsyTripProducts.toList();
+			productDetails = zoho.crm.getRecordById("Products",autopsyTripProducts.get(0).get("id"));
+			// FIX (ZP-TBD-6): look up this deceased's own Autopsy Initial trip's KM,
+			// falling back to the shared Multi Deceased Autopsy Trip parent's KM when
+			// the child's own is empty (the real dispatch KM is usually on the parent).
+			autopsyTripIdList = standalone.COQLQuery("select id from Trips where Deal = '" + crmid + "' and Trip_Type = 'Autopsy Initial' limit 1");
+			autopsyTripKm = 1;
+			if(autopsyTripIdList.size() > 0)
+			{
+				try
+				{
+					autopsyChildId = autopsyTripIdList.toList().get(0).get("id");
+					autopsyChildRec = zoho.crm.getRecordById("Trips",autopsyChildId.toLong());
+					childKm = autopsyChildRec.get("Number_of_distance_in_km");
+					if(!isNull(childKm))
+					{
+						autopsyTripKm = childKm;
+					}
+					else
+					{
+						parentTripId = "";
+						try
+						{
+							parentTripId = ifnull(autopsyChildRec.get("Parent_Trip").get("id"),"");
+						}
+						catch (e)
+						{
+							parentTripId = "";
+						}
+						if(parentTripId != "")
+						{
+							parentTripRec = zoho.crm.getRecordById("Trips",parentTripId.toLong());
+							autopsyTripKm = ifnull(parentTripRec.get("Number_of_distance_in_km"),1);
+						}
+					}
+				}
+				catch (e)
+				{
+					autopsyTripKm = 1;
+				}
+			}
+			productMap = Map();
+			productMap.put("Product_Name",productDetails.get("id"));
+			productMap.put("Quantity",autopsyTripKm);
+			productMap.put("List_Price",productDetails.get("Unit_Price"));
+			lineItemList.add(productMap);
+		}
+	}
+	//End Autopsy Trip
+	if(lineItemList.size() > 0)
+	{
+		soMap = Map();
+		soMap.put("Subject",recordInfo.get("Deal_Name") + "-" + ifnull(recordInfo.get("Name_of_Deceased"),"") + "-" + ifnull(tripInfo.get("Created_Time").toString("dd-MM-yyyy hh:mm:ss a"),""));
+		soMap.put("Sales_Order_Type","Police Cases");
+		soMap.put("Deal_Name",crmid);
+		try
+		{
+			soMap.put("Parent_Account",recordInfo.get("Police_Account").get("id"));
+		}
+		catch (e)
+		{
+			info e;
+		}
+		try
+		{
+			relatedPoliceContact = zoho.crm.getRelatedRecords("Contacts","Accounts",recordInfo.get("Police_Account").get("id"));
+		}
+		catch (e)
+		{
+			relatedPoliceContact = list();
+		}
+		if(relatedPoliceContact.size() > 0)
+		{
+			relatedPoliceContactInfo = zoho.crm.getRecordById("Contacts",relatedPoliceContact.get(0).get("id"));
+			soMap.put("Contact_Name",relatedPoliceContact.get(0).get("id"));
+			soMap.put("Billing_City",ifnull(relatedPoliceContactInfo.get("Mailing_City"),""));
+			soMap.put("Billing_Code",ifnull(relatedPoliceContactInfo.get("Mailing_Zip"),""));
+			soMap.put("Billing_Country",ifnull(relatedPoliceContactInfo.get("Mailing_Country"),""));
+			soMap.put("Billing_State",ifnull(relatedPoliceContactInfo.get("Mailing_State"),""));
+			soMap.put("Billing_Street",ifnull(relatedPoliceContactInfo.get("Mailing_Street"),""));
+		}
+		if(!isNull(recordInfo.get("Account_Name")))
+		{
+			soMap.put("Account_Name",recordInfo.get("Account_Name").get("id"));
+		}
+		dataMap = Map();
+		recordList = list();
+		soMap.put("Ordered_Items",lineItemList);
+		recordList.add(soMap);
+		dataMap.put("data",recordList);
+		info dataMap;
+		createSalesOrder = Map();
+		if(salesOrderList.size() == 0)
+		{
+			createSalesOrder = invokeurl
+			[
+				url :"https://www.zohoapis.com/crm/v2.1/Sales_Orders"
+				type :POST
+				parameters:dataMap.toString()
+				connection:"zohooauth"
+			];
+		}
+		else
+		{
+			createSalesOrder = invokeurl
+			[
+				url :"https://www.zohoapis.com/crm/v2.1/Sales_Orders/" + salesOrderList.toList().get(0).get("id")
+				type :PUT
+				parameters:dataMap.toString()
+				connection:"zohooauth"
+			];
+		}
+		info createSalesOrder;
+		standalone.save_api_responses("Create_Sales_Order","Deals",crmid,createSalesOrder);
+		if(!isNull(recordInfo.get("Account_Name")))
+		{
+			standalone.createInvoiceBasedOnSalesOrderForPolice(crmid);
+		}
+	}
+}
+//standalone.create_record_to_the_creator(crmid);
+}

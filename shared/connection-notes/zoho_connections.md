@@ -16,3 +16,15 @@ as `<AMBER_API_KEY>` / `<GOOGLE_MAPS_API_KEY>` — this repo (and GitHub) never 
 values, only the live Deluge functions do. That's just standard practice for what goes in
 Git, not a comment on whether the live approach is right — it is. Pull the real values from
 the live function when reconstructing it for deployment; don't paste them back into this repo.
+
+## CRM Functions REST-execute key (`<CRM_FUNCTIONS_ZAPIKEY>`)
+
+A single shared zapikey is used org-wide for calling CRM Functions' REST API (API-key auth,
+`.../crm/v7/functions/<lowercase_api_name>/actions/execute?auth_type=apikey&zapikey=...`). This
+is the pattern used whenever a Creator widget (portal context) needs to reach a CRM
+Standalone/Automation function that must run in CRM admin/system context — most commonly for
+`zoho.writer` merges and CRM Attachments access, which don't work reliably from portal context.
+Seen in: Driver App's `generateHangTag`/`getHangTagFile` bridges, and NOK Intake's
+`createPoliceDropoff`/`getDropoffHangTagFile` widgetLookup actions (ZP-TBD-8). Masked as
+`<CRM_FUNCTIONS_ZAPIKEY>` everywhere in this repo — pull the real value from the live function's
+own REST API tab when reconstructing for deployment.

@@ -1,0 +1,239 @@
+string standalone.createOnePoliceDropoffDeceased(Map d, String callTakenBy, String dfhDestination)
+{
+out = Map();
+out.put("dealId","");
+out.put("opsId","");
+out.put("dealName","");
+unidentified = false;
+try
+{
+	unidentified = d.get("unidentified") == true;
+}
+catch (e)
+{
+	unidentified = false;
+}
+firstName = ifnull(d.get("first_name"),"").trim();
+lastName = ifnull(d.get("last_name"),"").trim();
+sex = ifnull(d.get("sex"),"");
+dodStr = ifnull(d.get("date_of_death"),"");
+position = ifnull(d.get("position"),1);
+sexFull = "";
+if(sex == "M")
+{
+	sexFull = "Male";
+}
+else if(sex == "F")
+{
+	sexFull = "Female";
+}
+fullName = (firstName + " " + lastName).trim();
+displayName = fullName;
+if(unidentified || fullName == "")
+{
+	sexLabel = "Unknown";
+	if(sexFull != "")
+	{
+		sexLabel = sexFull;
+	}
+	dodDisp = "Unknown";
+	if(dodStr != "")
+	{
+		dodDisp = dodStr;
+	}
+	seqStr = "" + position;
+	if(position < 10)
+	{
+		seqStr = "0" + position;
+	}
+	displayName = "Unidentified " + sexLabel + " DOD " + dodDisp + " " + seqStr;
+}
+acctMap = Map();
+acctMap.put("Account_Name",displayName);
+newAccountId = "";
+try
+{
+	acctResult = zoho.crm.createRecord("Accounts",acctMap);
+	if(acctResult.containKey("id"))
+	{
+		newAccountId = ifnull(acctResult.get("id"),"");
+	}
+}
+catch (e)
+{
+	newAccountId = "";
+}
+if(newAccountId == "")
+{
+	return out.toString();
+}
+dealMap = Map();
+am = Map();
+am.put("id",newAccountId);
+dealMap.put("Account_Name",am);
+dealMap.put("Deal_Name",displayName);
+dealMap.put("Name_of_Deceased",displayName);
+dealMap.put("Type","Police");
+dealMap.put("Pipeline","Police Cases");
+dealMap.put("Layout","6503357000000091023");
+// Stage is a MANDATORY field on Deal creation in this org — cannot be omitted.
+// Start at the normal value; a separate update below moves it to Trip Completed
+// to fire billing as a genuine edit event.
+dealMap.put("Stage","Trip Requested");
+dealMap.put("Is_Deceased_In_Our_Care","Yes");
+dealMap.put("Is_Deceased_at_Hospital",false);
+dealMap.put("Deceased_Autopsy_if_applicable",false);
+if(sexFull != "")
+{
+	dealMap.put("Sex",sexFull);
+}
+dodIso = "";
+if(dodStr != "")
+{
+	try
+	{
+		dodDateObj = dodStr.toDate("dd-MMM-yyyy");
+		dodIso = dodDateObj.toString("yyyy-MM-dd");
+	}
+	catch (e)
+	{
+		dodIso = "";
+	}
+}
+if(dodIso != "")
+{
+	dealMap.put("Date_of_Death",dodIso);
+}
+condVal = ifnull(d.get("condition"),"");
+if(condVal != "")
+{
+	dealMap.put("Condition",condVal);
+}
+sizeVal = ifnull(d.get("deceased_size"),"");
+if(sizeVal != "")
+{
+	dealMap.put("Deceased_Size",sizeVal);
+}
+dealContainer = Map();
+dealList = List();
+dealList.add(dealMap);
+dealContainer.put("data",dealList);
+newDealId = "";
+try
+{
+	dealResp = invokeurl
+	[
+		url :"https://www.zohoapis.com/crm/v7/Deals"
+		type :POST
+		parameters:dealContainer.toString()
+		connection:"zohooauth"
+	];
+	info dealResp;
+	if(dealResp.containKey("data"))
+	{
+		dd = dealResp.get("data");
+		if(!dd.isEmpty() && ifnull(dd.get(0).get("status"),"") == "success")
+		{
+			newDealId = ifnull(dd.get(0).get("details").get("id"),"");
+		}
+	}
+}
+catch (e)
+{
+	newDealId = "";
+}
+if(newDealId == "")
+{
+	return out.toString();
+}
+out.put("dealId",newDealId);
+out.put("dealName",displayName);
+stageUpdateMap = Map();
+stageUpdateMap.put("Stage","Trip Completed");
+stageContainer = Map();
+stageList = List();
+stageList.add(stageUpdateMap);
+stageContainer.put("data",stageList);
+stageTrigger = List();
+stageTrigger.add("workflow");
+stageContainer.put("trigger",stageTrigger);
+try
+{
+	invokeurl
+	[
+		url :"https://www.zohoapis.com/crm/v7/Deals/" + newDealId
+		type :PUT
+		parameters:stageContainer.toString()
+		connection:"zohooauth"
+	]
+}
+catch (e)
+{
+}
+opsDodStr = "DOD Unknown";
+if(dodStr != "")
+{
+	opsDodStr = dodStr;
+}
+opsMap = Map();
+opsMap.put("Name",displayName + " - " + opsDodStr + " - Ops Record");
+rd = Map();
+rd.put("id",newDealId);
+opsMap.put("Related_Deal",rd);
+dz = Map();
+dz.put("id",newAccountId);
+opsMap.put("Deceased",dz);
+locVal = ifnull(d.get("location"),"");
+if(locVal != "")
+{
+	opsMap.put("Location",locVal);
+}
+fridgeVal = ifnull(d.get("refrigerator"),"");
+if(fridgeVal != "")
+{
+	opsMap.put("Refrigerator",fridgeVal);
+}
+rowVal = ifnull(d.get("row"),"");
+if(rowVal != "")
+{
+	opsMap.put("Row",rowVal);
+}
+drawerVal = ifnull(d.get("drawer"),"");
+if(drawerVal != "")
+{
+	opsMap.put("Drawer",drawerVal);
+}
+if(condVal != "")
+{
+	opsMap.put("Condition",condVal);
+}
+if(sizeVal != "")
+{
+	opsMap.put("Deceased_Size",sizeVal);
+}
+newOpsId = "";
+try
+{
+	opsCreate = zoho.crm.createRecord("Operations",opsMap);
+	if(opsCreate.containKey("id"))
+	{
+		newOpsId = ifnull(opsCreate.get("id"),"");
+	}
+}
+catch (e)
+{
+	newOpsId = "";
+}
+out.put("opsId",newOpsId);
+if(newOpsId != "")
+{
+	try
+	{
+		standalone.generateHangTagForDealNoTrip(newDealId,newOpsId);
+	}
+	catch (e)
+	{
+	}
+}
+return out.toString();
+}
