@@ -1,0 +1,18 @@
+string standalone.isQuoteAwaitingAcceptance(Int crmid)
+{
+	suppressed = "false";
+	try
+	{
+		sdResp = standalone.COQLQuery("select System_Info from System_Data where Module_Name = 'Deals' and Module_ID = '" + crmid + "' and Name = 'Awaiting_Quote_Acceptance' limit 1");
+		sdList = sdResp.toList();
+		if(sdList.size() > 0 && ifnull(sdList.get(0).get("System_Info"),"") == "true")
+		{
+			suppressed = "true";
+		}
+	}
+	catch (e)
+	{
+		suppressed = "false";
+	}
+	return suppressed;
+}

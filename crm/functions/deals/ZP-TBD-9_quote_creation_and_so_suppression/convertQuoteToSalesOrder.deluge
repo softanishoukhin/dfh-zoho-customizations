@@ -1,0 +1,48 @@
+string standalone.convertQuoteToSalesOrder(String dealId)
+{
+	dId = ifnull(dealId,"").trim();
+	if(dId == "")
+	{
+		return "Missing dealId";
+	}
+	try
+	{
+		standalone.setQuoteAwaitingAcceptance(dId.toLong(),false);
+	}
+	catch (e)
+	{
+	}
+	try
+	{
+		releaseMap = Map();
+		releaseMap.put("Trigger_Based_On_Subform",zoho.currenttime);
+		zoho.crm.updateRecord("Deals",dId.toLong(),releaseMap,{"trigger":{"workflow"}});
+	}
+	catch (e)
+	{
+		return "Failed to release Deal: " + e.toString();
+	}
+	try
+	{
+		q = Map();
+		q.put("select_query","select id from Quotes where Deal_Name = '" + dId + "' limit 1");
+		qResp = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v2/coql"
+			type :POST
+			parameters:q.toString()
+			connection:"zohooauth"
+		];
+		if(qResp.containKey("data") && qResp.get("data").size() > 0)
+		{
+			quoteId = qResp.get("data").get(0).get("id");
+			stageMap = Map();
+			stageMap.put("Quote_Stage","Closed Won");
+			zoho.crm.updateRecord("Quotes",quoteId.toLong(),stageMap);
+		}
+	}
+	catch (e)
+	{
+	}
+	return "Quote converted -- Sales Order/Invoice process released.";
+}

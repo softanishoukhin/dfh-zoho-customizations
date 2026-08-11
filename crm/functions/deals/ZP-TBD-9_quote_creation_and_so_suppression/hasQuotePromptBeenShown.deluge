@@ -1,0 +1,21 @@
+string standalone.hasQuotePromptBeenShown(Int crmid)
+{
+	shown = "false";
+	try
+	{
+		sdResp = standalone.COQLQuery("select System_Info from System_Data where (Module_Name = 'Deals' and Module_ID = '" + crmid + "') and Name = 'Quote_Prompt_Shown' limit 1");
+		if(sdResp.size() > 0)
+		{
+			sdList = sdResp.toList();
+			if(ifnull(sdList.get(0).get("System_Info"),"") == "true")
+			{
+				shown = "true";
+			}
+		}
+	}
+	catch (e)
+	{
+		shown = "false";
+	}
+	return shown;
+}

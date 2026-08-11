@@ -1,0 +1,681 @@
+void automation.onDeceasedPickupCreate(Int pickupId)
+{
+pId = ifnull(pickupId,"").trim();
+if(pId == "")
+{
+	return;
+}
+dp = Map();
+try
+{
+	dp = zoho.crm.getRecordById("Deceased_Pickups",pId.toLong());
+}
+catch (e)
+{
+	info e;
+	return;
+}
+if(!dp.containKey("id"))
+{
+	return;
+}
+existingDealId = "";
+try
+{
+	existingDealId = ifnull(dp.get("Deal").get("id"),"");
+}
+catch (e)
+{
+	existingDealId = "";
+}
+if(existingDealId != "")
+{
+	return;
+}
+firstName = ifnull(dp.get("First_Name"),"");
+lastName = ifnull(dp.get("Last_Name"),"");
+fullName = (firstName + " " + lastName).trim();
+dodVal = ifnull(dp.get("Date_of_Death"),"");
+pickupNumber = ifnull(dp.get("Name"),"");
+tripId = "";
+try
+{
+	tripId = ifnull(dp.get("Trip").get("id"),"");
+}
+catch (e)
+{
+	tripId = "";
+}
+if(tripId == "")
+{
+	return;
+}
+tripInfo = Map();
+try
+{
+	tripInfo = zoho.crm.getRecordById("Trips",tripId.toLong());
+}
+catch (e)
+{
+	return;
+}
+tripType = ifnull(tripInfo.get("Trip_Type"),"");
+isHospital = tripType == "Hospital Storage";
+isPolice = tripType == "Police Case Pickup";
+displayName = fullName;
+if(displayName == "")
+{
+	displayName = ("Unknown Deceased - " + pickupNumber).trim();
+}
+newAccountId = "";
+acctMap = Map();
+acctMap.put("Account_Name",displayName);
+if(firstName != "")
+{
+	acctMap.put("Deceased_First_Name",firstName);
+}
+if(lastName != "")
+{
+	acctMap.put("Deceased_Last_Name",lastName);
+}
+if(dodVal != "")
+{
+	acctMap.put("Date_of_Death",dodVal);
+}
+try
+{
+	acctResult = zoho.crm.createRecord("Accounts",acctMap);
+	if(acctResult.containKey("id"))
+	{
+		newAccountId = ifnull(acctResult.get("id"),"");
+	}
+}
+catch (e)
+{
+	newAccountId = "";
+}
+dealDataMap = Map();
+tripLk = Map();
+tripLk.put("id",tripId);
+// FIX (this task): onDeceasedPickupCreate never converted the plain
+// NOK_First_Name/NOK_Last_Name/NOK_Relationship/NOK_Phone/NOK_Email TEXT
+// fields NOK_Information_Form.ds writes onto Deceased_Pickups into an
+// actual Contact -- the Hospital branch never attempted it at all, and the
+// Police branch tried to read a NOK_Contact LOOKUP field that nothing
+// upstream ever populated (always resolved empty). Build the Contact here,
+// once, for both branches, from the real text fields.
+nokId = "";
+nokFirst = ifnull(dp.get("NOK_First_Name"),"");
+nokLast = ifnull(dp.get("NOK_Last_Name"),"");
+if((isHospital || isPolice) && nokFirst != "" && nokLast != "")
+{
+	nokMap = Map();
+	nokMap.put("First_Name",nokFirst);
+	nokMap.put("Last_Name",nokLast);
+	nokRelationship = ifnull(dp.get("NOK_Relationship"),"");
+	if(nokRelationship != "")
+	{
+		nokMap.put("Relation_to_Deceased",nokRelationship);
+	}
+	nokPhone = ifnull(dp.get("NOK_Phone"),"");
+	if(nokPhone != "")
+	{
+		nokMap.put("Mobile",nokPhone);
+	}
+	nokEmail = ifnull(dp.get("NOK_Email"),"");
+	if(nokEmail != "")
+	{
+		nokMap.put("Email",nokEmail);
+	}
+	nokMap.put("Contact_Role_s",{"NOK"});
+	try
+	{
+		if(nokEmail != "")
+		{
+			nokQueryMap = Map();
+			nokQueryMap.put("select_query","select id from Contacts where Email = '" + nokEmail + "' limit 1");
+			nokQueryResp = invokeurl
+			[
+				url :"https://www.zohoapis.com/crm/v7/coql"
+				type :POST
+				parameters:nokQueryMap.toString()
+				connection:"zohooauth"
+			];
+			if(nokQueryResp.containKey("data") && nokQueryResp.get("data").size() > 0)
+			{
+				existingNokId = nokQueryResp.get("data").get(0).get("id");
+				zoho.crm.updateRecord("Contacts",existingNokId.toLong(),nokMap);
+				nokId = existingNokId;
+			}
+			else
+			{
+				nokCreateResult = zoho.crm.createRecord("Contacts",nokMap);
+				nokId = ifnull(nokCreateResult.get("id"),"");
+			}
+		}
+		else
+		{
+			nokCreateResult = zoho.crm.createRecord("Contacts",nokMap);
+			nokId = ifnull(nokCreateResult.get("id"),"");
+		}
+	}
+	catch (e)
+	{
+		nokId = "";
+	}
+}
+// FIX (follow-up, same task): write the Contact back onto
+// Deceased_Pickups.NOK_Contact immediately -- without this,
+// automation.onDeceasedPickupCheckIn (which fires on driver check-in /
+// trip completion and has its OWN correct find-or-create NOK logic keyed
+// off this exact field) always finds it empty and creates a SECOND,
+// duplicate Contact, overwriting Deals.Contact_Name to point at its own
+// new one. Confirmed via a real test Deal
+// (crm.zoho.com/.../Potentials/6503357000077020001) before this fix.
+if(nokId != "")
+{
+	nokLinkUpd = Map();
+	nokLinkMap = Map();
+	nokLinkMap.put("id",nokId);
+	nokLinkUpd.put("NOK_Contact",nokLinkMap);
+	try
+	{
+		zoho.crm.updateRecord("Deceased_Pickups",pId.toLong(),nokLinkUpd);
+	}
+	catch (e)
+	{
+	}
+}
+if(isHospital)
+{
+	dealDataMap.put("Type","Hospital");
+	if(newAccountId != "")
+	{
+		am = Map();
+		am.put("id",newAccountId);
+		dealDataMap.put("Account_Name",am);
+	}
+	dealDataMap.put("Name_of_Deceased",displayName);
+	dealDataMap.put("Deal_Name",displayName);
+	if(dodVal != "")
+	{
+		dealDataMap.put("Date_of_Death",dodVal);
+	}
+	tripOwnerId = "";
+	try
+	{
+		tripOwnerId = ifnull(tripInfo.get("Owner").get("id"),"");
+	}
+	catch (e)
+	{
+		tripOwnerId = "";
+	}
+	if(tripOwnerId != "")
+	{
+		ow = Map();
+		ow.put("id",tripOwnerId);
+		dealDataMap.put("Owner",ow);
+	}
+	dealDataMap.put("Pipeline","6503357000003769097");
+	dealDataMap.put("Layout","6503357000000091023");
+	dealDataMap.put("Stage","Trip Requested");
+	dealDataMap.put("Is_Deceased_at_Hospital",true);
+	dealDataMap.put("Is_Deceased_In_Our_Care","No");
+	dealDataMap.put("Deceased_Autopsy_if_applicable",false);
+	dealDataMap.put("Repatriation_Autopsy_if_applicable",false);
+	hospitalName = "";
+	try
+	{
+		hospitalName = ifnull(tripInfo.get("Hospital").get("name"),"");
+	}
+	catch (e)
+	{
+		hospitalName = "";
+	}
+	hospitalLk = "";
+	if(hospitalName != "")
+	{
+		try
+		{
+			matchedHospitalAccounts = zoho.crm.searchRecords("Accounts","(Account_Name:equals:" + hospitalName + ")");
+			if(!matchedHospitalAccounts.isEmpty())
+			{
+				hospitalLk = ifnull(matchedHospitalAccounts.get(0).get("id"),"");
+			}
+		}
+		catch (e)
+		{
+			hospitalLk = "";
+		}
+	}
+	if(hospitalLk != "")
+	{
+		hm = Map();
+		hm.put("id",hospitalLk);
+		dealDataMap.put("Selected_Hospital",hm);
+	}
+	// FIX (this task, part 1): link the NOK Contact to the Deal for
+	// Hospital too -- previously never attempted here at all.
+	if(nokId != "")
+	{
+		ct = Map();
+		ct.put("id",nokId);
+		dealDataMap.put("Contact_Name",ct);
+	}
+}
+else if(isPolice)
+{
+	dealDataMap.put("Type","Police");
+	if(newAccountId != "")
+	{
+		am = Map();
+		am.put("id",newAccountId);
+		dealDataMap.put("Account_Name",am);
+	}
+	dealDataMap.put("Name_of_Deceased",displayName);
+	dealDataMap.put("Deal_Name",displayName);
+	if(dodVal != "")
+	{
+		dealDataMap.put("Date_of_Death",dodVal);
+	}
+	tripOwnerId = "";
+	try
+	{
+		tripOwnerId = ifnull(tripInfo.get("Owner").get("id"),"");
+	}
+	catch (e)
+	{
+		tripOwnerId = "";
+	}
+	if(tripOwnerId != "")
+	{
+		ow = Map();
+		ow.put("id",tripOwnerId);
+		dealDataMap.put("Owner",ow);
+	}
+	dealDataMap.put("Pipeline","6503357000002869022");
+	dealDataMap.put("Layout","6503357000000091023");
+	dealDataMap.put("Stage","Trip Requested");
+	dealDataMap.put("Is_Deceased_at_Hospital",false);
+	dealDataMap.put("Is_Deceased_In_Our_Care","No");
+	dealDataMap.put("Deceased_Autopsy_if_applicable",false);
+	dealDataMap.put("Repatriation_Autopsy_if_applicable",false);
+	// Copy crime scene pickup address from the Trip
+	pickupStreet = "";
+	pickupCity = "";
+	try
+	{
+		pickupStreet = ifnull(tripInfo.get("Pickup_Street_Address"),"");
+	}
+	catch (e)
+	{
+		pickupStreet = "";
+	}
+	try
+	{
+		pickupCity = ifnull(tripInfo.get("Pickup_City"),"");
+	}
+	catch (e)
+	{
+		pickupCity = "";
+	}
+	if(pickupStreet != "")
+	{
+		dealDataMap.put("Location_Street_1",pickupStreet);
+	}
+	if(pickupCity != "")
+	{
+		dealDataMap.put("Location_City",pickupCity);
+	}
+	// Police station from Trip
+	policeStation = "";
+	try
+	{
+		policeStation = ifnull(tripInfo.get("Police_Station"),"");
+	}
+	catch (e)
+	{
+		policeStation = "";
+	}
+	if(policeStation != "")
+	{
+		dealDataMap.put("Police_Office_Name",policeStation);
+		try
+		{
+			matchedPoliceAccounts = zoho.crm.searchRecords("Accounts","(Account_Name:equals:" + policeStation + ")");
+			if(!matchedPoliceAccounts.isEmpty())
+			{
+				policeAccountId = ifnull(matchedPoliceAccounts.get(0).get("id"),"");
+				if(policeAccountId != "")
+				{
+					pam = Map();
+					pam.put("id",policeAccountId);
+					dealDataMap.put("Police_Account",pam);
+				}
+			}
+		}
+		catch (e)
+		{
+		}
+	}
+	// FIX (this task, part 1): nokId is now computed once, above, from the
+	// real NOK_First_Name/NOK_Last_Name text fields -- previously this
+	// block tried to read a NOK_Contact lookup that was never populated.
+	if(nokId != "")
+	{
+		ct = Map();
+		ct.put("id",nokId);
+		dealDataMap.put("Contact_Name",ct);
+	}
+}
+else
+{
+	primaryDealId = "";
+	try
+	{
+		primaryDealId = ifnull(tripInfo.get("Deal").get("id"),"");
+	}
+	catch (e)
+	{
+		primaryDealId = "";
+	}
+	if(primaryDealId == "")
+	{
+		return;
+	}
+	primaryDeal = Map();
+	try
+	{
+		dealResp = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v7/Deals/" + primaryDealId
+			type :GET
+			connection:"zohooauth"
+		];
+		if(dealResp.containKey("data"))
+		{
+			dl = dealResp.get("data");
+			if(!dl.isEmpty())
+			{
+				primaryDeal = dl.get(0);
+			}
+		}
+	}
+	catch (e)
+	{
+		return;
+	}
+	if(!primaryDeal.containKey("id"))
+	{
+		return;
+	}
+	ownerId = "";
+	try
+	{
+		ownerId = ifnull(primaryDeal.get("Owner").get("id"),"");
+	}
+	catch (e)
+	{
+		ownerId = "";
+	}
+	try
+	{
+		nokId = ifnull(primaryDeal.get("Contact_Name").get("id"),"");
+	}
+	catch (e)
+	{
+		nokId = "";
+	}
+	if(newAccountId != "")
+	{
+		am = Map();
+		am.put("id",newAccountId);
+		dealDataMap.put("Account_Name",am);
+	}
+	dealDataMap.put("Name_of_Deceased",displayName);
+	dealDataMap.put("Deal_Name",displayName);
+	if(dodVal != "")
+	{
+		dealDataMap.put("Date_of_Death",dodVal);
+	}
+	if(ownerId != "")
+	{
+		ow = Map();
+		ow.put("id",ownerId);
+		dealDataMap.put("Owner",ow);
+	}
+	if(nokId != "")
+	{
+		ct = Map();
+		ct.put("id",nokId);
+		dealDataMap.put("Contact_Name",ct);
+	}
+	dealDataMap.put("Deceased_Autopsy_if_applicable",false);
+	dealDataMap.put("Is_Deceased_at_Hospital",false);
+	dealDataMap.put("Is_Deceased_In_Our_Care","No");
+	dealDataMap.put("Repatriation_Autopsy_if_applicable",false);
+	dealDataMap.put("Type",primaryDeal.get("Type"));
+	if(primaryDeal.get("Pipeline") == "Pre Need")
+	{
+		dealDataMap.put("Pipeline","6503357000001556214");
+		dealDataMap.put("Stage","Requested");
+		dealDataMap.put("Layout","6503357000000091023");
+	}
+	else if(primaryDeal.get("Pipeline") == "Funeral w/Burial")
+	{
+		dealDataMap.put("Pipeline","6503357000006886532");
+		dealDataMap.put("Layout","6503357000006886002");
+		dealDataMap.put("Stage","Requested");
+	}
+	else if(primaryDeal.get("Pipeline") == "Cremation Only")
+	{
+		dealDataMap.put("Pipeline","6503357000011060073");
+		dealDataMap.put("Layout","6503357000008248362");
+		dealDataMap.put("Stage","Requested");
+	}
+	else if(primaryDeal.get("Pipeline") == "Cremation with Service")
+	{
+		dealDataMap.put("Pipeline","6503357000008248886");
+		dealDataMap.put("Layout","6503357000008248362");
+		dealDataMap.put("Stage","Requested");
+	}
+	else if(primaryDeal.get("Pipeline") == "Wholesale")
+	{
+		dealDataMap.put("Pipeline","6503357000026041005");
+		dealDataMap.put("Layout","6503357000008248362");
+		dealDataMap.put("Stage","Requested");
+	}
+	else if(primaryDeal.get("Pipeline") == "First Call")
+	{
+		dealDataMap.put("Pipeline","6503357000021094078");
+		dealDataMap.put("Layout","6503357000008248362");
+		dealDataMap.put("Stage","Requested");
+	}
+	else if(primaryDeal.get("Pipeline") == "Full Body Repatriation")
+	{
+		dealDataMap.put("Pipeline","6503357000011893001");
+		dealDataMap.put("Layout","6503357000008248362");
+		dealDataMap.put("Stage","Requested");
+	}
+	else if(primaryDeal.get("Pipeline") == "Repatriation with Cremation")
+	{
+		dealDataMap.put("Pipeline","6503357000011893005");
+		dealDataMap.put("Layout","6503357000008248362");
+		dealDataMap.put("Stage","Requested");
+	}
+	else if(primaryDeal.get("Pipeline") == "Ship In")
+	{
+		dealDataMap.put("Pipeline","6503357000005951027");
+		dealDataMap.put("Layout","6503357000005708092");
+		dealDataMap.put("Stage","Requested");
+	}
+	else if(primaryDeal.get("Pipeline") == "Repatriation")
+	{
+		dealDataMap.put("Pipeline","6503357000004836030");
+		dealDataMap.put("Stage","Requested");
+		dealDataMap.put("Layout","6503357000000091023");
+	}
+	else if(primaryDeal.get("Pipeline") == "Police Cases")
+	{
+		dealDataMap.put("Pipeline","6503357000002869022");
+		dealDataMap.put("Stage","Trip Requested");
+		dealDataMap.put("Layout","6503357000000091023");
+	}
+	else if(primaryDeal.get("Pipeline") == "Hospital")
+	{
+		dealDataMap.put("Pipeline","6503357000003769097");
+		dealDataMap.put("Stage","Trip Requested");
+		dealDataMap.put("Layout","6503357000000091023");
+	}
+	else
+	{
+		dealDataMap.put("Pipeline","6503357000001556206");
+		dealDataMap.put("Stage","Requested");
+		dealDataMap.put("Layout","6503357000000091023");
+	}
+}
+dealRecordsContainer = Map();
+dealRecordList = list();
+dealRecordList.add(dealDataMap);
+dealRecordsContainer.put("data",dealRecordList);
+newDealId = "";
+cr = Map();
+try
+{
+	cr = invokeurl
+	[
+		url :"https://www.zohoapis.com/crm/v8/Deals"
+		type :POST
+		parameters:dealRecordsContainer.toString()
+		connection:"zohooauth"
+	];
+}
+catch (e)
+{
+	return;
+}
+try
+{
+	if(cr.containKey("data"))
+	{
+		crData = cr.get("data");
+		if(!crData.isEmpty())
+		{
+			firstRec = crData.get(0);
+			if(ifnull(firstRec.get("status"),"") == "success")
+			{
+				crDetails = firstRec.get("details");
+				newDealId = ifnull(crDetails.get("id"),"");
+			}
+		}
+	}
+}
+catch (e)
+{
+	newDealId = "";
+}
+if(newDealId == "")
+{
+	return;
+}
+upd = Map();
+dm = Map();
+dm.put("id",newDealId);
+upd.put("Deal",dm);
+try
+{
+	zoho.crm.updateRecord("Deceased_Pickups",pId.toLong(),upd);
+}
+catch (e)
+{
+}
+opsId = "";
+opsExisting = List();
+try
+{
+	opsExisting = zoho.crm.searchRecords("Operations","(Related_Deal:equals:" + newDealId + ")",1,1);
+}
+catch (e)
+{
+	opsExisting = List();
+}
+for each  op in opsExisting
+{
+	if(ifnull(op.get("id"),"") != "")
+	{
+		opsId = op.get("id");
+		break;
+	}
+}
+if(opsId == "")
+{
+	opsDodStr = "DOD Unknown";
+	if(dodVal != "")
+	{
+		try
+		{
+			opsDodStr = dodVal.toString("dd-MMM-yyyy");
+		}
+		catch (e)
+		{
+			opsDodStr = "" + dodVal;
+		}
+	}
+	opsMap = Map();
+	opsMap.put("Name",displayName + " - " + opsDodStr + " - Ops Record");
+	rt = Map();
+	rt.put("id",tripId);
+	opsMap.put("Related_Trip",rt);
+	rd = Map();
+	rd.put("id",newDealId);
+	opsMap.put("Related_Deal",rd);
+	if(newAccountId != "")
+	{
+		dz = Map();
+		dz.put("id",newAccountId);
+		opsMap.put("Deceased",dz);
+	}
+	if(nokId != "")
+	{
+		nk = Map();
+		nk.put("id",nokId);
+		opsMap.put("NOK",nk);
+	}
+	try
+	{
+		opsCreate = zoho.crm.createRecord("Operations",opsMap);
+		if(opsCreate.containKey("id"))
+		{
+			opsId = ifnull(opsCreate.get("id"),"");
+		}
+	}
+	catch (e)
+	{
+		opsId = "";
+	}
+}
+if(opsId != "")
+{
+	upd2 = Map();
+	om = Map();
+	om.put("id",opsId);
+	upd2.put("Operations_Record",om);
+	try
+	{
+		zoho.crm.updateRecord("Deceased_Pickups",pId.toLong(),upd2);
+	}
+	catch (e)
+	{
+	}
+}
+if(fullName != "")
+{
+	try
+	{
+		standalone.generateHangTagForDeal(newDealId,tripId);
+	}
+	catch (e)
+	{
+	}
+}
+}

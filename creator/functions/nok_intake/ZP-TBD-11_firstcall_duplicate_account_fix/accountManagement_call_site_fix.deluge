@@ -1,0 +1,71 @@
+// FILE: NOK_Information_Form.ds
+// Applies in BOTH places (near-identical blocks in this Creator form):
+//   1. The general "actions" branch (~line 5950):
+//      actions (Deal_Type != "Hospital" && Deal_Type != "Police" || (deal_id is not null && deal_id != ""))
+//   2. The Hospital-existing-deal branch (~line 6567):
+//      actions (Deal_Type == "Hospital" && deal_id is not null && deal_id != "")
+//
+// ROOT CAUSE: thisapp.accountManagement(theForm) only reuses an existing
+// Account when theForm.account_id is already populated -- true when
+// editing an existing NOK form record, but NEVER true on a brand-new
+// submission that only just matched an existing Deal via the
+// duplicate-confirm popup (Duplicate_Confirmed/Matched_Deal_Id). Deal
+// reuse itself works correctly (cust_deal_id gets set to Matched_Deal_Id,
+// so the later Deal PUT reuses the existing Deal) -- but accountManagement
+// has no equivalent awareness, so it always creates a fresh Account, even
+// though the matched Deal already has one.
+
+// BEFORE (buggy):
+//
+//	cust_deal_id = ifnull(input.deal_id,"");
+//	if(cust_deal_id == "" && input.Duplicate_Confirmed == true && !isEmpty(input.Matched_Deal_Id))
+//	{
+//		cust_deal_id = input.Matched_Deal_Id;
+//		input.deal_id = cust_deal_id;
+//	}
+//	theFormCollection = NOK_Information_Form[ID == input.ID];
+//	updateAccount = thisapp.accountManagement(theFormCollection);
+//	if(updateAccount.containKey("id"))
+//	{
+//		input.account_id = updateAccount.get("id");
+//	}
+
+// AFTER (fixed) -- look up the matched Deal's existing Account BEFORE
+// calling accountManagement, and skip the create call entirely if found:
+
+cust_deal_id = ifnull(input.deal_id,"");
+if(cust_deal_id == "" && input.Duplicate_Confirmed == true && !isEmpty(input.Matched_Deal_Id))
+{
+	cust_deal_id = input.Matched_Deal_Id;
+	input.deal_id = cust_deal_id;
+}
+theFormCollection = NOK_Information_Form[ID == input.ID];
+// accountManagement() only reuses an Account when theForm.account_id is
+// already populated -- look up the matched Deal's Account first so a
+// matched Deal never gets a second, duplicate Account.
+existingAccountIdForDupe = "";
+if(cust_deal_id != "")
+{
+	try
+	{
+		existingDealForAcct = zoho.crm.getRecordById("Deals",cust_deal_id.toLong());
+		existingAccountIdForDupe = ifnull(existingDealForAcct.get("Account_Name").get("id"),"");
+	}
+	catch (eAcctLookup)
+	{
+		existingAccountIdForDupe = "";
+	}
+}
+if(existingAccountIdForDupe != "")
+{
+	updateAccount = Map();
+	updateAccount.put("id",existingAccountIdForDupe);
+}
+else
+{
+	updateAccount = thisapp.accountManagement(theFormCollection);
+}
+if(updateAccount.containKey("id"))
+{
+	input.account_id = updateAccount.get("id");
+}

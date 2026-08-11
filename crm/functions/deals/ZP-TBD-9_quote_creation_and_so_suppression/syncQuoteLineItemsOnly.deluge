@@ -1,0 +1,110 @@
+string standalone.syncQuoteLineItemsOnly(Int crmid)
+{
+	// Cheap sync ONLY -- updates the existing Quote's Product_Details and
+	// nothing else. Deliberately does NOT regenerate the PDF, re-upload to
+	// WorkDrive, or send any email -- those only belong to
+	// createOrUpdateQuoteFromDeal's first-time create/send flow.
+	//
+	// REDESIGNED 2026-08-10: called from the top of each of the 4 SO-creation
+	// automation functions (createSalesOrderForDifferentPipelines,
+	// createSalesOrderFromDeals, createSalesOrderForHospitalCase,
+	// CreateSalesOrderforPoliceCase), right where they already return early
+	// on isQuoteAwaitingAcceptance == true. Those functions are triggered by
+	// the SAME existing workflow rule ("Create or Update Sales Order from
+	// Deals V2") that already fires on Trigger_Based_On_Subform changing --
+	// which gets stamped from EVERY page (detail, create, edit) whenever
+	// Product_Selection changes. By the time this runs (workflow's own
+	// now+1min buffer has elapsed), the change is guaranteed persisted
+	// server-side, so a direct read here needs no client-passed row data,
+	// no delimited-string encoding, none of the pre-commit staleness
+	// workarounds the client-script side needed. This also means it's the
+	// only mechanism that can catch product changes made via the Edit page
+	// (confirmed live 2026-08-10: beforeRowUpdate/beforeRowDelete don't fire
+	// there at all, only on the detail page).
+	existingQuoteId = "";
+	try
+	{
+		q = Map();
+		q.put("select_query","select id from Quotes where Deal_Name = '" + crmid + "' limit 1");
+		qResp = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v2/coql"
+			type :POST
+			parameters:q.toString()
+			connection:"zohooauth"
+		];
+		if(qResp.containKey("data") && qResp.get("data").size() > 0)
+		{
+			existingQuoteId = qResp.get("data").get(0).get("id");
+		}
+	}
+	catch (e)
+	{
+		existingQuoteId = "";
+	}
+	if(existingQuoteId == "")
+	{
+		return "No existing Quote to sync -- nothing to do.";
+	}
+	dealInfo = Map();
+	try
+	{
+		dealInfo = zoho.crm.getRecordById("Deals",crmid);
+	}
+	catch (e)
+	{
+		return "Deal not found.";
+	}
+	productRows = ifnull(dealInfo.get("Product_Selection"),List());
+	quotedItems = List();
+	for each row in productRows
+	{
+		childProd = Map();
+		try
+		{
+			childProd = row.get("Child_Product");
+		}
+		catch (e)
+		{
+			childProd = Map();
+		}
+		prodId = "";
+		try
+		{
+			prodId = ifnull(childProd.get("id"),"");
+		}
+		catch (e)
+		{
+			prodId = "";
+		}
+		if(prodId == "")
+		{
+			continue;
+		}
+		qty = ifnull(row.get("Quantity"),1);
+		price = ifnull(row.get("Unit_Price"),ifnull(row.get("Price"),0));
+		disc = ifnull(row.get("Discount"),0);
+		qi = Map();
+		pn = Map();
+		pn.put("id",prodId);
+		qi.put("product",pn);
+		qi.put("quantity",qty);
+		qi.put("list_price",price);
+		if(disc != 0)
+		{
+			qi.put("Discount",disc);
+		}
+		quotedItems.add(qi);
+	}
+	updMap = Map();
+	updMap.put("Product_Details",quotedItems);
+	try
+	{
+		zoho.crm.updateRecord("Quotes",existingQuoteId.toLong(),updMap);
+		return "Quote line items synced.";
+	}
+	catch (e)
+	{
+		return "Failed to sync Quote line items: " + e;
+	}
+}

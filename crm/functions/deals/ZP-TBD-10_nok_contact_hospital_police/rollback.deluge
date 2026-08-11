@@ -1,0 +1,50 @@
+// ROLLBACK to PRE-FIX-#1 state: replace the entire NOK-contact block in
+// onDeceasedPickupCreate.deluge (from "nokId = "";" through the
+// NOK_Contact write-back) with this original version. This restores the
+// original (broken) behavior: Hospital never links a Contact at all;
+// Police tries to read a NOK_Contact lookup that's never populated.
+
+dealDataMap = Map();
+tripLk = Map();
+tripLk.put("id",tripId);
+nokId = "";
+if(isHospital)
+{
+	// ... (unchanged Hospital dealDataMap fields, no NOK Contact_Name link)
+}
+else if(isPolice)
+{
+	// ... (unchanged Police dealDataMap fields up to here)
+	// NOK from child record (if already set)
+	try
+	{
+		nokId = ifnull(dp.get("NOK_Contact").get("id"),"");
+	}
+	catch (e)
+	{
+		nokId = "";
+	}
+	if(nokId != "")
+	{
+		ct = Map();
+		ct.put("id",nokId);
+		dealDataMap.put("Contact_Name",ct);
+	}
+}
+
+// PARTIAL ROLLBACK (undo FIX #2 only, keep FIX #1): remove just this block
+// from the current onDeceasedPickupCreate.deluge, right after nokId is
+// computed --
+//
+//   if(nokId != "")
+//   {
+//       nokLinkUpd = Map();
+//       nokLinkMap = Map();
+//       nokLinkMap.put("id",nokId);
+//       nokLinkUpd.put("NOK_Contact",nokLinkMap);
+//       try { zoho.crm.updateRecord("Deceased_Pickups",pId.toLong(),nokLinkUpd); }
+//       catch (e) { }
+//   }
+//
+// This reintroduces the duplicate-Contact bug on trip completion but keeps
+// NOK Contact creation working at intake time.

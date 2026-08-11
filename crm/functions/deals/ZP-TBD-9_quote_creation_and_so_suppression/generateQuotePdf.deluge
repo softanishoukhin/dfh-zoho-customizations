@@ -1,0 +1,228 @@
+string standalone.generateQuotePdf(String quoteId, String dealId)
+{
+qId = ifnull(quoteId,"").trim();
+dId = ifnull(dealId,"").trim();
+if(qId == "" || dId == "")
+{
+	return "";
+}
+quoteInfo = Map();
+try 
+{
+	quoteResp = invokeurl
+	[
+		url :"https://www.zohoapis.com/crm/v8/Quotes/" + qId
+		type :GET
+		connection:"zohooauth"
+	];
+	if(quoteResp.containKey("data"))
+	{
+		quoteList = quoteResp.get("data");
+		if(!quoteList.isEmpty())
+		{
+			quoteInfo = quoteList.get(0);
+		}
+	}
+}
+catch (e)
+{
+	return "";
+}
+if(!quoteInfo.containKey("id"))
+{
+	return "";
+}
+dealInfo = Map();
+try 
+{
+	dealInfo = zoho.crm.getRecordById("Deals",dId.toLong());
+}
+catch (e)
+{
+	dealInfo = Map();
+}
+subject = ifnull(quoteInfo.get("Subject"),"Quote");
+contactName = "";
+try 
+{
+	contactName = ifnull(quoteInfo.get("Contact_Name").get("name"),"");
+}
+catch (e)
+{
+	contactName = "";
+}
+dealName = "";
+try 
+{
+	dealName = ifnull(quoteInfo.get("Deal_Name").get("name"),"");
+}
+catch (e)
+{
+	dealName = "";
+}
+subTotal = ifnull(quoteInfo.get("Sub_Total"),0).round(2);
+grandTotal = ifnull(quoteInfo.get("Grand_Total"),0).round(2);
+items = ifnull(quoteInfo.get("Quoted_Items"),List());
+// Real Quoted_Items subform, passed through as a List of Maps using
+// the exact sub-field keys the template's merge picker generated.
+quotedItemsForMerge = List();
+for each  row in items
+{
+	pn = "";
+	try 
+	{
+		pn = ifnull(row.get("Product_Name").get("name"),"");
+	}
+	catch (e)
+	{
+		pn = "";
+	}
+	itemRow = Map();
+	itemRow.put("Quoted_Items.Product_Name",pn);
+	itemRow.put("Quoted_Items.Quantity",ifnull(row.get("Quantity"),0));
+	itemRow.put("Quoted_Items.List_Price",ifnull(row.get("List_Price"),0).round(2));
+	itemRow.put("Quoted_Items.Discount",ifnull(row.get("Discount"),0).round(2));
+	itemRow.put("Quoted_Items.Tax",ifnull(row.get("Tax"),0).round(2));
+	itemRow.put("Quoted_Items.Net_Total",ifnull(row.get("Net_Total"),0).round(2));
+	quotedItemsForMerge.add(itemRow);
+}
+// ---- upload to the Deal's WorkDrive folder (create it first if needed) ----
+wdFolderID = "";
+try 
+{
+	wdFolderID = ifnull(dealInfo.get("Zoho_WD_Folder_ID"),"");
+}
+catch (e)
+{
+	wdFolderID = "";
+}
+if(wdFolderID == "")
+{
+	try 
+	{
+		folderAttr = Map();
+		folderAttr.put("name",ifnull(dealInfo.get("Deal_Name"),"Deal") + "(" + dId + ")");
+		folderAttr.put("parent_id","uhul88e7a49070ac44e4dbea2c0fcf4aa597c");
+		folderData = Map();
+		folderData.put("attributes",folderAttr);
+		folderData.put("type","files");
+		folderContainer = Map();
+		folderContainer.put("data",folderData);
+		folderResp = invokeurl
+		[
+			url :"https://www.zohoapis.com/workdrive/api/v1/files"
+			type :POST
+			parameters:folderContainer.toString()
+			headers:{"Accept":"application/vnd.api+json"}
+			connection:"zohooauth"
+		];
+		wdFolderID = folderResp.get("data").get("id");
+		wdUpdMap = Map();
+		wdUpdMap.put("Zoho_WD_Folder_ID",wdFolderID);
+		zoho.crm.updateRecord("Deals",dId.toLong(),wdUpdMap);
+	}
+	catch (e)
+	{
+		wdFolderID = "";
+	}
+}
+if(wdFolderID == "")
+{
+	return "";
+}
+// ---- these ARE the template's real merge field names, confirmed
+// ---- live via Get_All_Fields -- not placeholders ----
+data = Map();
+data.put("Subject",subject);
+data.put("Contact_Name",contactName);
+data.put("Deal_Name",dealName);
+data.put("Created_Time",zoho.currentdate.toString("dd-MMM-yyyy"));
+data.put("Quoted_Items",quotedItemsForMerge);
+data.put("Sub_Total",subTotal);
+data.put("Grand_Total",grandTotal);
+document_id = "0votx2af8768ad5a3464fabc49a89d3f4abb1";
+output_settings = Map();
+output_settings.put("doc_name",subject + " - Quote");
+output_settings.put("overwrite_existing_file","true");
+output_settings.put("folder_id",wdFolderID);
+output_settings.put("output_format","pdf");
+mergedId = "";
+try 
+{
+	param = Map();
+	param.put("merge_data",{"data":data});
+	param.put("output_settings",output_settings);
+	document_info = invokeurl
+	[
+		url :"https://www.zohoapis.com/writer/api/v2/documents/" + document_id + "/merge/store"
+		type :POST
+		parameters:param
+		connection:"zohooauth"
+	];
+	//info document_info;
+	// 	document_info = zoho.writer.mergeAndStore(document_id,data,output_settings,"zohooauth");
+	mergedId = ifnull(document_info.get("records").get(0).get("document_id"),"");
+}
+catch (e)
+{
+	return "";
+}
+if(mergedId == "")
+{
+	return "";
+}
+publicUrl = "";
+try 
+{
+	if(mergedId != "")
+	{
+		//info mergedId;
+		shareAttr = Map();
+		shareAttr.put("resource_id",mergedId);
+		shareAttr.put("shared_type","everyone");
+		shareAttr.put("role_id","4");
+		shareData = Map();
+		shareData.put("attributes",shareAttr);
+		shareData.put("type","permissions");
+		shareContainer = Map();
+		shareContainer.put("data",shareData);
+		shareResp = invokeurl
+		[
+			url :"https://www.zohoapis.com/workdrive/api/v1/permissions"
+			type :POST
+			parameters:shareContainer.toString()
+			headers:{"Accept":"application/vnd.api+json"}
+			connection:"zohoworkdrive"
+		];
+		try 
+		{
+			publicUrl = ifnull(shareResp.get("data").get("attributes").get("permalink"),"");
+		}
+		catch (e)
+		{
+			publicUrl = "";
+		}
+		if(publicUrl == "")
+		{
+			publicUrl = "https://workdrive.zoho.com/file/" + mergedId;
+		}
+	}
+}
+catch (e)
+{
+	publicUrl = "";
+}
+if(publicUrl != "")
+{
+	try 
+	{
+		urlUpdMap = Map();
+		urlUpdMap.put("Quote_Public_URL",publicUrl);
+		zoho.crm.updateRecord("Quotes",qId.toLong(),urlUpdMap);
+	}
+	catch (e)
+	{
+	}
+}
+return publicUrl;
+}

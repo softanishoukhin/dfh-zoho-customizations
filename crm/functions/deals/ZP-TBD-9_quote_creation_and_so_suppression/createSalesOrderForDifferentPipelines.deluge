@@ -1,0 +1,94 @@
+void automation.createSalesOrderForDifferentPipelines(Int crmid)
+{
+if(standalone.isQuoteAwaitingAcceptance(crmid) == "true")
+{
+	// Keep the Quote's line items in sync -- this workflow already fires
+	// ~1 minute after Trigger_Based_On_Subform changes, which gets stamped
+	// from every page (detail, create, edit) whenever Product_Selection
+	// changes. By now the change is guaranteed persisted, so this is a
+	// reliable, cheap backstop (no PDF/email side effects) -- see
+	// syncQuoteLineItemsOnly.deluge.
+	try
+	{
+		standalone.syncQuoteLineItemsOnly(crmid);
+	}
+	catch (e)
+	{
+	}
+	return;
+}
+recordInfo = invokeurl
+[
+	url :"https://www.zohoapis.com/crm/v7/Deals/" + crmid
+	type :GET
+	connection:"zohooauth"
+];
+recordInfo = recordInfo.get("data").get(0);
+standalone.manageCasketPackageProduct(crmid);
+standalone.manageMediaSelectoinsRecord(recordInfo,crmid);
+if(recordInfo.get("Pipeline") == "Ship Ins" || recordInfo.get("Pipeline") == "Funeral with Burial" || recordInfo.get("Pipeline") == "Cremation with Service" || recordInfo.get("Pipeline") == "Cremation Only" || recordInfo.get("Pipeline") == "Full Body Repatriation" || recordInfo.get("Pipeline") == "Repatriation with Cremation")
+{
+	info 123;
+	createSO = invokeurl
+	[
+		url :"https://www.zohoapis.com/crm/v7/functions/createsalesordersforshipins/actions/execute?auth_type=apikey&zapikey=<CRM_FUNCTION_EXECUTE_API_KEY>&crmid=" + crmid
+		type :POST
+	];
+}
+else if(recordInfo.get("Pipeline") == "Police Cases")
+{
+	createSO = invokeurl
+	[
+		url :"https://www.zohoapis.com/crm/v7/functions/createsalesorderforpolicecase/actions/execute?auth_type=apikey&zapikey=<CRM_FUNCTION_EXECUTE_API_KEY>&crmid=" + crmid
+		type :POST
+	];
+	info createSO;
+}
+else if(recordInfo.get("Pipeline") == "Hospital Cases")
+{
+	createSO = invokeurl
+	[
+		url :"https://www.zohoapis.com/crm/v7/functions/createsalesorderforhospitalcase/actions/execute?auth_type=apikey&zapikey=<CRM_FUNCTION_EXECUTE_API_KEY>&crmid=" + crmid
+		type :POST
+	];
+}
+standalone.updateDealAmount(crmid);
+trips = zoho.crm.getRelatedRecords("Trips","Deals",crmid);
+tripAvailable = false;
+tripId = null;
+for each  trip in trips
+{
+	if(trip.get("Trip_Type") == "Funeral" && trip.get("Created_on_This_Field_Update") == "Trip_on_Funeral_Date")
+	{
+		tripId = trip.get("id");
+		tripAvailable = true;
+		break;
+	}
+}
+tripMap = Map();
+info tripAvailable;
+selectedProductsInDeal = recordInfo.get("Product_Selection");
+for each  selectedProductInDeal in selectedProductsInDeal
+{
+	try
+	{
+		if(selectedProductInDeal.get("Parent_Product").get("id") == "6503357000020030033" && selectedProductInDeal.get("Child_Product").get("id") != "6503357000062770001")
+		{
+			childProduct = zoho.crm.getRecordById("Products",selectedProductInDeal.get("Child_Product").get("id"));
+			if(childProduct.get("Availability_Based") == true)
+			{
+				tripMap.put("Vehicle",selectedProductInDeal.get("Child_Product").get("id"));
+				break;
+			}
+		}
+	}
+	catch (e)
+	{
+		info e;
+	}
+}
+if(tripAvailable == true && !tripMap.isEmpty())
+{
+	zoho.crm.updateRecord("Trips",tripId,tripMap,{"trigger":{"workflow"}});
+}
+}

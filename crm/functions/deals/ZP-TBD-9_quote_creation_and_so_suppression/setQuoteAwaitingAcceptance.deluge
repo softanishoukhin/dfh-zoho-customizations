@@ -1,0 +1,43 @@
+string standalone.setQuoteAwaitingAcceptance(Int crmid, Boolean value)
+{
+	valStr = "false";
+	if(value == true)
+	{
+		valStr = "true";
+	}
+	existingID = "";
+	try
+	{
+		sdResp = standalone.COQLQuery("select id from System_Data where Module_Name = 'Deals' and Module_ID = '" + crmid + "' and Name = 'Awaiting_Quote_Acceptance' limit 1");
+		sdList = sdResp.toList();
+		if(sdList.size() > 0)
+		{
+			existingID = sdList.get(0).get("id");
+		}
+	}
+	catch (e)
+	{
+		existingID = "";
+	}
+	sdMap = Map();
+	sdMap.put("Name","Awaiting_Quote_Acceptance");
+	sdMap.put("Module_Name","Deals");
+	sdMap.put("Module_ID",crmid);
+	sdMap.put("System_Info",valStr);
+	try
+	{
+		if(existingID != "")
+		{
+			zoho.crm.updateRecord("System_Data",existingID.toLong(),sdMap);
+		}
+		else
+		{
+			zoho.crm.createRecord("System_Data",sdMap);
+		}
+	}
+	catch (e)
+	{
+		return "error: " + e.toString();
+	}
+	return "ok";
+}

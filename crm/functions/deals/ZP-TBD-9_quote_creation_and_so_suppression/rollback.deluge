@@ -1,0 +1,22 @@
+// ROLLBACK: remove this exact 3-line block from the very start of each of
+// the 4 modified SO-creation functions (right after the opening brace) to
+// restore their pre-Quote-feature behavior. Nothing else in any of those
+// 4 functions was changed by this task -- see the individual .deluge files
+// in this folder for their full current (with-guard) bodies.
+
+if(standalone.isQuoteAwaitingAcceptance(crmid) == "true")
+{
+	return;
+}
+
+// Applies to:
+//   automation.createSalesOrderForDifferentPipelines
+//   automation.createSalesOrderFromDeals
+//   automation.createSalesOrderForHospitalCase
+//   automation.CreateSalesOrderforPoliceCase
+//
+// Also for a full rollback: deactivate/delete the "Create/Update Quote" and
+// "Convert Quote to Sales Order" Deal buttons, and the 5 new standalone
+// functions (isQuoteAwaitingAcceptance, setQuoteAwaitingAcceptance,
+// generateQuotePdf, createOrUpdateQuoteFromDeal, convertQuoteToSalesOrder)
+// can simply be deleted -- nothing else in the org calls them.

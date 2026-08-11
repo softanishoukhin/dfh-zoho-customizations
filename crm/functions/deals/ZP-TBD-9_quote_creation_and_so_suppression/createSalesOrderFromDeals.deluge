@@ -1,0 +1,259 @@
+void automation.createSalesOrderFromDeals(Int crmid)
+{
+if(standalone.isQuoteAwaitingAcceptance(crmid) == "true")
+{
+	// Keep the Quote's line items in sync -- see
+	// createSalesOrderForDifferentPipelines.deluge for the full reasoning.
+	try
+	{
+		standalone.syncQuoteLineItemsOnly(crmid);
+	}
+	catch (e)
+	{
+	}
+	return;
+}
+standalone.manageZeroRatedProduct(crmid);
+recordInfo = zoho.crm.getRecordById("Deals",crmid);
+taxFieldResponse = invokeurl
+[
+	url :"https://www.zohoapis.com/crm/v8/settings/fields/6503357000000002797?module=Products"
+	type :GET
+	connection:"zohooauth"
+];
+taxFieldMap = Map();
+fieldsList = taxFieldResponse.get("fields");
+if(fieldsList != null && fieldsList.size() > 0)
+{
+	pickListValues = fieldsList.get(0).get("pick_list_values");
+	for each  pickVal in pickListValues
+	{
+		actualValue = pickVal.get("actual_value");
+		valParts = actualValue.toList(" - ");
+		taxName = valParts.get(0);
+		pctPart = valParts.get(1).replaceAll(" %","").trim();
+		pctNum = pctPart.toDecimal();
+		entry = Map();
+		entry.put("id",pickVal.get("id"));
+		entry.put("percentage",pctNum);
+		entry.put("name",taxName);
+		taxFieldMap.put(actualValue,entry);
+	}
+}
+queryMap = Map();
+queryMap.put("select_query","select Subject from Sales_Orders where Deal_Name = '" + crmid + "' and Sales_Order_Type = 'Pre-Need' limit 1");
+salesOrderList = invokeurl
+[
+	url :"https://www.zohoapis.com/crm/v7/coql"
+	type :POST
+	parameters:queryMap.toString()
+	connection:"zohooauth"
+];
+lineItemList = list();
+salesOrderExists = false;
+if(salesOrderList.get("data").size() > 0)
+{
+	salesOrderExists = true;
+	salesOrderDetails = invokeurl
+	[
+		url :"https://www.zohoapis.com/crm/v7/Sales_Orders/" + salesOrderList.get("data").get(0).get("id")
+		type :GET
+		connection:"zohooauth"
+	];
+	salesOrderInfo = salesOrderDetails.get("data").get(0);
+}
+existingProductSet = list();
+for each  item in lineItemList
+{
+	parentProductID = "";
+	productNameID = "";
+	if(item.contains("Parent_Product"))
+	{
+		parentProduct = item.get("Parent_Product");
+		if(parentProduct != null && parentProduct.contains("id"))
+		{
+			parentProductID = parentProduct.get("id");
+		}
+	}
+	if(item.contains("Product_Name"))
+	{
+		productName = item.get("Product_Name");
+		if(productName != null && productName.contains("id"))
+		{
+			productNameID = productName.get("id");
+		}
+	}
+}
+allDealCurrentDealProduct = list();
+for each  product in recordInfo.get("Product_Selection")
+{
+	parentProductID = "";
+	productNameID = "";
+	if(product.contains("Parent_Product"))
+	{
+		parentProduct = product.get("Parent_Product");
+		if(parentProduct != null && parentProduct.contains("id"))
+		{
+			parentProductID = parentProduct.get("id");
+		}
+	}
+	if(product.contains("Child_Product"))
+	{
+		childProduct = product.get("Child_Product");
+		if(childProduct != null && childProduct.contains("id"))
+		{
+			productNameID = childProduct.get("id");
+		}
+	}
+	productKey = parentProductID + "_" + productNameID;
+	productDetails = zoho.crm.getRecordById("Products",productNameID);
+	productMap = Map();
+	productMap.put("Parent_Product",parentProductID);
+	productMap.put("Product_Name",productNameID);
+	if(!isNull(product.get("Sales_Order_Row_ID")))
+	{
+		productMap.put("id",product.get("Sales_Order_Row_ID"));
+	}
+	productMap.put("Quantity",product.get("Quantity"));
+	productMap.put("List_Price",productDetails.get("Unit_Price"));
+	productMap.put("Discount",ifnull(product.get("Discount"),0));
+	lineAmount = productMap.get("Quantity") * productMap.get("List_Price");
+	discountAmt = ifnull(productMap.get("Discount"),0);
+	taxList = productDetails.get("Tax");
+	if(taxList != null && taxList.size() > 0)
+	{
+		taxInfo = taxFieldMap.get(taxList.get(0));
+		if(taxInfo != null)
+		{
+			taxPct = taxInfo.get("percentage");
+			taxValue = ((lineAmount - discountAmt) * taxPct / 100).round(2);
+			taxEntry = Map();
+			taxEntry.put("id",taxInfo.get("id"));
+			taxEntry.put("name",taxInfo.get("name"));
+			taxEntry.put("percentage",taxPct);
+			taxEntry.put("value",taxValue);
+			productMap.put("Line_Tax",{taxEntry});
+			productMap.put("Tax",taxValue);
+		}
+		else
+		{
+			productMap.put("Line_Tax",list());
+			productMap.put("Tax",0);
+		}
+	}
+	else
+	{
+		productMap.put("Line_Tax",list());
+		productMap.put("Tax",0);
+	}
+	productMap.put("Deals_Subform_Row_ID",product.get("id"));
+	lineItemList.add(productMap);
+	allDealCurrentDealProduct.add(product.get("Sales_Order_Row_ID"));
+}
+if(salesOrderExists == true)
+{
+	for each  soItem in salesOrderInfo.get("Ordered_Items")
+	{
+		if(isNull(soItem.get("Deals_Subform_Row_ID")) || !allDealCurrentDealProduct.contains(soItem.get("id")))
+		{
+			productMap = Map();
+			productMap.put("_delete","null");
+			productMap.put("id",soItem.get("id"));
+			lineItemList.add(productMap);
+		}
+	}
+}
+if(lineItemList.size() > 0)
+{
+	soMap = Map();
+	soMap.put("Subject",recordInfo.get("Deal_Name"));
+	soMap.put("Sales_Order_Type","Pre-Need");
+	soMap.put("Owner",recordInfo.get("Owner").get("id"));
+	if(salesOrderList.get("data").size() == 0)
+	{
+		soMap.put("Deal_Name",crmid);
+	}
+	if(!isNull(recordInfo.get("Contact_Name")))
+	{
+		soMap.put("Contact_Name",recordInfo.get("Contact_Name").get("id"));
+		contactInfo = zoho.crm.getRecordById("Contacts",recordInfo.get("Contact_Name").get("id"));
+		soMap.put("Billing_City",ifnull(contactInfo.get("Mailing_City"),""));
+		soMap.put("Billing_Code",ifnull(contactInfo.get("Mailing_Zip"),""));
+		soMap.put("Billing_Country",ifnull(contactInfo.get("Mailing_Country"),""));
+		soMap.put("Billing_State",ifnull(contactInfo.get("Mailing_State"),""));
+		soMap.put("Billing_Street",ifnull(contactInfo.get("Mailing_Street"),""));
+	}
+	if(!isNull(recordInfo.get("Account_Name")))
+	{
+		soMap.put("Account_Name",recordInfo.get("Account_Name").get("id"));
+	}
+	dataMap = Map();
+	recordList = list();
+	soMap.put("Ordered_Items",lineItemList);
+	recordList.add(soMap);
+	dataMap.put("data",recordList);
+	info dataMap;
+	createSalesOrder = Map();
+	if(salesOrderList.get("data").size() > 0)
+	{
+		createSalesOrder = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v8/Sales_Orders/" + salesOrderList.get("data").get(0).get("id")
+			type :PUT
+			parameters:dataMap.toString()
+			connection:"zohooauth"
+		];
+		info createSalesOrder;
+	}
+	else
+	{
+		createSalesOrder = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v8/Sales_Orders"
+			type :POST
+			parameters:dataMap.toString()
+			connection:"zohooauth"
+		];
+	}
+	try
+	{
+		salesOrderResultDetails = createSalesOrder.get("data").get(0).get("details");
+		salesOrderID = salesOrderResultDetails.get("id");
+		salesOrderDetailsAgain = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v7/Sales_Orders/" + salesOrderID
+			type :GET
+			connection:"zohooauth"
+		];
+		salesOrderInfoAgain = salesOrderDetailsAgain.get("data").get(0);
+	}
+	catch (e)
+	{
+		salesOrderInfoAgain = null;
+	}
+	Product_Selection = list();
+	if(!isNull(salesOrderInfoAgain))
+	{
+		for each  soItemAgain in salesOrderInfoAgain.get("Ordered_Items")
+		{
+			if(!isNull(soItemAgain.get("Deals_Subform_Row_ID")))
+			{
+				dealProductMap = Map();
+				dealProductMap.put("id",soItemAgain.get("Deals_Subform_Row_ID"));
+				dealProductMap.put("Sales_Order_Row_ID",soItemAgain.get("id"));
+				Product_Selection.add(dealProductMap);
+			}
+		}
+		if(Product_Selection.size() > 0)
+		{
+			dealUpdateMap = Map();
+			dealUpdateMap.put("Product_Selection",Product_Selection);
+			info dealUpdateMap;
+			updateResult = zoho.crm.updateRecord("Deals",crmid,dealUpdateMap);
+			info updateResult;
+		}
+	}
+	standalone.save_api_responses("Create_Sales_Order","Deals",crmid,createSalesOrder);
+}
+standalone.updateDealAmount(crmid);
+}

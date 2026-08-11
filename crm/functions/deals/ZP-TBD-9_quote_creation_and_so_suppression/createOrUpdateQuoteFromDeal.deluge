@@ -1,0 +1,436 @@
+string standalone.createOrUpdateQuoteFromDeal(String dealId, String firstRowProductId, String firstRowQuantity, String firstRowUnitPrice, String firstRowDiscount, String forceEmpty, String editedRowIndex, String editedRowProductId, String editedRowQuantity, String editedRowUnitPrice, String editedRowDiscount, String deletedRowIndex)
+{
+result = Map();
+// Suppress the SO/Invoice pipeline FIRST -- before the Deal lookup, before
+// anything else. This call is invoked synchronously/blocking from the
+// Product_Selection onRowAdd client script, before that same script stamps
+// Trigger_Based_On_Subform (see client-scripts/product_selection_onRowAdd.js).
+// Setting the flag first here means it is guaranteed true before the
+// SO-creation workflow's trigger field is ever touched -- no race, no
+// dependency on how many seconds/minutes anything takes.
+try 
+{
+	standalone.setQuoteAwaitingAcceptance(dealId.toLong(),"true");
+}
+catch (e)
+{
+}
+dealInfo = Map();
+try 
+{
+	dealInfo = zoho.crm.getRecordById("Deals",dealId.toLong());
+}
+catch (e)
+{
+	result.put("message","Deal not found");
+	return "true";
+}
+if(!dealInfo.containKey("id"))
+{
+	result.put("message","Deal not found");
+	return "true";
+}
+contactId = "";
+try 
+{
+	contactId = ifnull(dealInfo.get("Contact_Name").get("id"),"");
+}
+catch (e)
+{
+	contactId = "";
+}
+contactEmail = "";
+if(contactId != "")
+{
+	try 
+	{
+		contactRec = zoho.crm.getRecordById("Contacts",contactId.toLong());
+		contactEmail = ifnull(contactRec.get("Email"),"");
+	}
+	catch (e)
+	{
+		contactEmail = "";
+	}
+}
+// Find existing Quote for this Deal, else create -- moved up here so both
+// the forceEmpty branch below and the normal path can reuse it.
+existingQuoteId = "";
+try 
+{
+	q = Map();
+	q.put("select_query","select id from Quotes where Deal_Name = '" + dealId + "' limit 1");
+	qResp = invokeurl
+	[
+		url :"https://www.zohoapis.com/crm/v2/coql"
+		type :POST
+		parameters:q.toString()
+		connection:"zohooauth"
+	];
+	if(qResp.containKey("data") && qResp.get("data").size() > 0)
+	{
+		existingQuoteId = qResp.get("data").get(0).get("id");
+	}
+}
+catch (e)
+{
+	existingQuoteId = "";
+}
+// Explicit signal from the beforeRowDelete client script that
+// Product_Selection will have ZERO rows once this deletion completes.
+// Don't try to read Product_Selection here to check -- beforeRowDelete is
+// a pre-commit hook, so the row being deleted is still present
+// server-side at this moment and a fresh read would wrongly come back
+// non-empty. The client script computes the post-deletion state itself
+// (current subform minus the row being removed) and tells us directly.
+if(forceEmpty == "true")
+{
+	if(existingQuoteId != "")
+	{
+		clearMap = Map();
+		clearMap.put("Product_Details",List());
+		try 
+		{
+			zoho.crm.updateRecord("Quotes",existingQuoteId.toLong(),clearMap);
+			result.put("id",existingQuoteId);
+			result.put("status","success");
+			result.put("message","Quote cleared -- no products remain on this Deal.");
+			return "true";
+		}
+		catch (e)
+		{
+			result.put("message","Failed to clear Quote: " + e);
+			return "true";
+		}
+	}
+	result.put("message","No existing Quote to clear.");
+	return "true";
+}
+// If the beforeRowUpdate client script passed the row it just saved,
+// build the product list from those scalars instead of re-reading
+// Product_Selection from the server. Confirmed live 2026-08-10 against
+// the actual row_data shape: Child_Product.id, Quantity, Unit_Price,
+// Discount. Passed as flat scalar params (not one JSON blob) because
+// ZDK.Apps.CRM.Functions.execute sends args as URL query parameters even
+// though the call is POST -- a raw JSON object with {, }, : , , caused a
+// 400 Bad Request. Flat short scalar values avoid that entirely.
+productRows = List();
+if(firstRowProductId != null && firstRowProductId != "")
+{
+	row = Map();
+	cp = Map();
+	cp.put("id",firstRowProductId);
+	row.put("Child_Product",cp);
+	qty = 1;
+	try 
+	{
+		qty = firstRowQuantity.toLong();
+	}
+	catch (e)
+	{
+		qty = 1;
+	}
+	price = 0;
+	try 
+	{
+		price = firstRowUnitPrice.toDecimal();
+	}
+	catch (e)
+	{
+		price = 0;
+	}
+	disc = 0;
+	try 
+	{
+		disc = firstRowDiscount.toDecimal();
+	}
+	catch (e)
+	{
+		disc = 0;
+	}
+	row.put("Quantity",qty);
+	row.put("Unit_Price",price);
+	row.put("Discount",disc);
+	productRows.add(row);
+}
+else
+{
+	productRows = ifnull(dealInfo.get("Product_Selection"),List());
+}
+// Patch in the row that's actually being saved right now, if the client
+// script told us which one (editedRowIndex). beforeRowUpdate is a
+// pre-commit hook, so the server read above (Product_Selection) still has
+// the OLD Quantity/Unit_Price/Discount for whichever row is mid-save --
+// this is what was causing edited quantity/discount to silently not show
+// up on the Quote. Rebuild the list with that one row's values replaced
+// by the fresh ones passed in, instead of trusting the stale server copy
+// of it.
+//
+// If editedRowIndex is a NEW row (a 2nd/3rd/etc. product just added,
+// index >= productRows.size() because the server read above hasn't seen
+// it yet either), the old version of this block silently did nothing --
+// idx < productRows.size() was false, so the fresh row was never added
+// anywhere, and the Quote ended up missing every newly-added product
+// while still showing whatever the server already had. Fixed: append
+// when out of bounds instead of only patching in-bounds entries.
+if(editedRowIndex != null && editedRowIndex != "")
+{
+	idx = -1;
+	try 
+	{
+		idx = editedRowIndex.toLong();
+	}
+	catch (e)
+	{
+		idx = -1;
+	}
+	if(idx >= 0)
+	{
+		freshRow = Map();
+		freshCp = Map();
+		freshCp.put("id",editedRowProductId);
+		freshRow.put("Child_Product",freshCp);
+		eqty = 1;
+		try 
+		{
+			eqty = editedRowQuantity.toLong();
+		}
+		catch (e)
+		{
+			eqty = 1;
+		}
+		eprice = 0;
+		try 
+		{
+			eprice = editedRowUnitPrice.toDecimal();
+		}
+		catch (e)
+		{
+			eprice = 0;
+		}
+		edisc = 0;
+		try 
+		{
+			edisc = editedRowDiscount.toDecimal();
+		}
+		catch (e)
+		{
+			edisc = 0;
+		}
+		freshRow.put("Quantity",eqty);
+		freshRow.put("Unit_Price",eprice);
+		freshRow.put("Discount",edisc);
+		if(idx < productRows.size())
+		{
+			// Existing row, mid-edit -- replace the stale server entry.
+			correctedRows = List();
+			i = 0;
+			for each  r in productRows
+			{
+				if(i == idx)
+				{
+					correctedRows.add(freshRow);
+				}
+				else
+				{
+					correctedRows.add(r);
+				}
+				i = i + 1;
+			}
+			productRows = correctedRows;
+		}
+		else
+		{
+			// New row -- the server read above doesn't have it yet.
+			// Append rather than drop it.
+			productRows.add(freshRow);
+		}
+	}
+}
+// Exclude the row being deleted right now, if the beforeRowDelete client
+// script told us its index. Same staleness reason as editedRowIndex
+// above -- beforeRowDelete is pre-commit, so the server read of
+// Product_Selection above still includes this row. Without this, deleting
+// one product out of several left the Quote showing the just-deleted
+// product until some later, unrelated subform touch happened to correct
+// it -- same silent-staleness bug as the add-row and edit-quantity
+// cases, just for delete.
+if(deletedRowIndex != null && deletedRowIndex != "")
+{
+	didx = -1;
+	try 
+	{
+		didx = deletedRowIndex.toLong();
+	}
+	catch (e)
+	{
+		didx = -1;
+	}
+	if(didx >= 0 && didx < productRows.size())
+	{
+		filteredRows = List();
+		j = 0;
+		for each  r in productRows
+		{
+			if(j != didx)
+			{
+				filteredRows.add(r);
+			}
+			j = j + 1;
+		}
+		productRows = filteredRows;
+	}
+}
+if(productRows.isEmpty())
+{
+	result.put("message","No products on the Deal's product table -- add products before creating a quote");
+	return "true";
+}
+// Keys below are the WRITE-time convention Zoho's inventory subform API
+// actually expects (lowercase product/quantity/list_price) -- different
+// from the READ-time field names (Product_Name/Quantity/List_Price)
+// used elsewhere, e.g. in generateQuotePdf.
+quotedItems = List();
+for each  row in productRows
+{
+	childProd = Map();
+	try 
+	{
+		childProd = row.get("Child_Product");
+	}
+	catch (e)
+	{
+		childProd = Map();
+	}
+	prodId = "";
+	try 
+	{
+		prodId = ifnull(childProd.get("id"),"");
+	}
+	catch (e)
+	{
+		prodId = "";
+	}
+	if(prodId == "")
+	{
+		continue;
+	}
+	qty = ifnull(row.get("Quantity"),1);
+	price = ifnull(row.get("Unit_Price"),ifnull(row.get("Price"),0));
+	disc = ifnull(row.get("Discount"),0);
+	qi = Map();
+	pn = Map();
+	pn.put("id",prodId);
+	qi.put("product",pn);
+	qi.put("quantity",qty);
+	qi.put("list_price",price);
+	if(disc != 0)
+	{
+		qi.put("Discount",disc);
+	}
+	quotedItems.add(qi);
+}
+if(quotedItems.isEmpty())
+{
+	result.put("message","Product rows found but none resolved to a valid Product -- cannot build the quote");
+	return "true";
+}
+// existingQuoteId already resolved above (moved up for the forceEmpty
+// branch) -- reused here, not re-queried.
+quoteMap = Map();
+dealLk = Map();
+dealLk.put("id",dealId);
+quoteMap.put("Deal_Name",dealLk);
+if(contactId != "")
+{
+	cLk = Map();
+	cLk.put("id",contactId);
+	quoteMap.put("Contact_Name",cLk);
+}
+quoteMap.put("Subject",ifnull(dealInfo.get("Deal_Name"),"Quote"));
+quoteMap.put("Product_Details",quotedItems);
+quoteMap.put("Quote_Stage","Negotiation");
+quoteId = "";
+if(existingQuoteId != "")
+{
+	try 
+	{
+		zoho.crm.updateRecord("Quotes",existingQuoteId.toLong(),quoteMap);
+		quoteId = existingQuoteId;
+	}
+	catch (e)
+	{
+		result.put("message","Failed to update Quote: " + e);
+		return "true";
+	}
+}
+else
+{
+	try 
+	{
+		cr = zoho.crm.createRecord("Quotes",quoteMap);
+		quoteId = ifnull(cr.get("id"),"");
+	}
+	catch (e)
+	{
+		result.put("message","Failed to create Quote: " + e);
+		return "true";
+	}
+}
+if(quoteId == "")
+{
+	result.put("message","Quote save did not return an id");
+	return "true";
+}
+// NOTE: Awaiting_Quote_Acceptance is already set true -- see the very top
+// of this function. Do not add another setQuoteAwaitingAcceptance call
+// here; the whole point of this fix is that it happens before everything
+// else, not after the Quote/PDF/email work below.
+// Generate the PDF, upload it, get the public link (all inside
+// generateQuotePdf).
+publicUrl = "";
+try 
+{
+	publicUrl = standalone.generateQuotePdf(quoteId,dealId);
+}
+catch (e)
+{
+	publicUrl = "";
+}
+// Email the quote link to the Deal's contact.
+if(contactEmail != "")
+{
+	// 	try 
+	// 	{
+	// 		mailBody = "Your quote from Delapenha Funeral Home is ready.";
+	// 		if(publicUrl != "")
+	// 		{
+	// 			mailBody = mailBody + "<br><br>View, download, and print it here: <a href='" + publicUrl + "'>" + publicUrl + "</a>";
+	// 		}
+	// 		sendmail
+	// 		[
+	// 			from :zoho.loginuserid
+	// 			to :contactEmail
+	// 			subject :"Your Quote from Delapenha Funeral Home"
+	// 			message :mailBody
+	// 		]
+	// 	}
+	// 	catch (e)
+	// 	{
+	// 	}
+	standalone.sendEmail(contactEmail,6503357000077425285,"Quotes",quoteId);
+}
+successMsg = "Quote created/updated successfully.";
+if(publicUrl != "")
+{
+	successMsg = successMsg + " View it here: " + publicUrl;
+}
+else
+{
+	successMsg = successMsg + " (PDF/public link generation did not complete -- check generateQuotePdf.)";
+}
+result.put("id",quoteId);
+result.put("quote_public_url",publicUrl);
+result.put("status","success");
+result.put("message",successMsg);
+return "true";
+}
