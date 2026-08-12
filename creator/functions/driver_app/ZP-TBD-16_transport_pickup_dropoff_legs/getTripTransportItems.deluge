@@ -1,0 +1,52 @@
+list getTripTransportItems(String tripId)
+{
+	// CHANGED from the live version: was hardcoded to Transport_Status =
+	// 'Scheduled' only -- once a driver marked an item Completed it would
+	// silently disappear from the list, meaning DA could never show it as
+	// already-checked-off after that. This is central to the persistence fix:
+	// a Completed item must still be returned (with status="Completed") so
+	// the DA screen can pre-check its box every time the trip is reopened,
+	// with the CRM record itself as the single source of truth -- not a
+	// value cached in Checklist_State.
+	//
+	// Also now returns "leg" (Pickup/Dropoff) so the DA screen can split
+	// items into the two sections instead of one flat list, matching the
+	// trip's own Pickup_Street_Address / Destination_Street_Address split.
+	result = List();
+	tId = ifnull(tripId,"").trim();
+	if(tId == "")
+	{
+		return result;
+	}
+	try
+	{
+		qPayload = Map();
+		qPayload.put("select_query","select id, Name, Category, Additional_Information, Current_Location, Transport_Status, Leg from Transport where Related_Trip = '" + tId + "' limit 200");
+		resp = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v7/coql"
+			type :POST
+			parameters:qPayload.toString()
+			headers:{"Content-Type":"application/json"}
+			connection:"zoho_oauth_connection"
+		];
+		if(resp.containKey("data"))
+		{
+			for each  rec in resp.get("data")
+			{
+				item = Map();
+				item.put("id",ifnull(rec.get("id"),""));
+				item.put("name",ifnull(rec.get("Name"),""));
+				item.put("category",ifnull(rec.get("Category"),""));
+				item.put("description",ifnull(rec.get("Additional_Information"),""));
+				item.put("location",ifnull(rec.get("Current_Location"),""));
+				item.put("leg",ifnull(rec.get("Leg"),""));
+				item.put("status",ifnull(rec.get("Transport_Status"),""));
+				result.add(item);
+			}
+		}
+	}	catch (e)
+	{
+	}
+	return result;
+}

@@ -1,0 +1,40 @@
+list getTransportItems()
+{
+	// UNCHANGED from the live version -- this stays the "candidates available
+	// to assign" list (Requested-status only), used by the per-trip leg
+	// picker. The full cross-trip dashboard is a SEPARATE new function,
+	// getAllTransportItems, not this one -- kept them separate rather than
+	// overload this one with a status filter parameter, since the two screens
+	// have different jobs (pick one to assign vs see everything).
+	result = List();
+	try
+	{
+		qPayload = Map();
+		qPayload.put("select_query","select id, Name, Category, Additional_Information, Current_Location, Transport_Status, Created_Time from Transport where Transport_Status = 'Requested' order by Created_Time asc limit 200");
+		resp = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v7/coql"
+			type :POST
+			parameters:qPayload.toString()
+			headers:{"Content-Type":"application/json"}
+			connection:"zoho_oauth_connection"
+		];
+		if(resp.containKey("data"))
+		{
+			for each  rec in resp.get("data")
+			{
+				item = Map();
+				item.put("id",ifnull(rec.get("id"),""));
+				item.put("name",ifnull(rec.get("Name"),""));
+				item.put("category",ifnull(rec.get("Category"),""));
+				item.put("description",ifnull(rec.get("Additional_Information"),""));
+				item.put("location",ifnull(rec.get("Current_Location"),""));
+				item.put("created",ifnull(rec.get("Created_Time"),""));
+				result.add(item);
+			}
+		}
+	}	catch (e)
+	{
+	}
+	return result;
+}

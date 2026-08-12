@@ -5,23 +5,13 @@ string standalone.convertQuoteToSalesOrder(String dealId)
 	{
 		return "Missing dealId";
 	}
-	try
-	{
-		standalone.setQuoteAwaitingAcceptance(dId.toLong(),false);
-	}
-	catch (e)
-	{
-	}
-	try
-	{
-		releaseMap = Map();
-		releaseMap.put("Trigger_Based_On_Subform",zoho.currenttime);
-		zoho.crm.updateRecord("Deals",dId.toLong(),releaseMap,{"trigger":{"workflow"}});
-	}
-	catch (e)
-	{
-		return "Failed to release Deal: " + e.toString();
-	}
+	// Find the Quote for this Deal FIRST, and check it actually has line items, BEFORE
+	// releasing the suppression flag or re-triggering the SO/Invoice pipeline -- converting
+	// an empty Quote would otherwise flow straight into an empty/broken Sales Order. If no
+	// Quote is found at all, quoteId stays "" and behavior is unchanged from before (still
+	// releases/re-triggers -- covers the edge case where a Quote was deleted after being sent
+	// but the Deal is still marked Awaiting_Quote_Acceptance and needs releasing).
+	quoteId = "";
 	try
 	{
 		q = Map();
@@ -36,13 +26,86 @@ string standalone.convertQuoteToSalesOrder(String dealId)
 		if(qResp.containKey("data") && qResp.get("data").size() > 0)
 		{
 			quoteId = qResp.get("data").get(0).get("id");
-			stageMap = Map();
-			stageMap.put("Quote_Stage","Closed Won");
-			zoho.crm.updateRecord("Quotes",quoteId.toLong(),stageMap);
 		}
 	}
 	catch (e)
 	{
+		quoteId = "";
+	}
+	if(quoteId != "")
+	{
+		// REST v8 GET, not getRecordById -- getRecordById is known to silently drop subform
+		// data in this org (same gotcha already fixed in generateQuotePdf.deluge).
+		hasItems = false;
+		currentStage = "";
+		try
+		{
+			quoteResp = invokeurl
+			[
+				url :"https://www.zohoapis.com/crm/v8/Quotes/" + quoteId
+				type :GET
+				connection:"zohooauth"
+			];
+			if(quoteResp.containKey("data"))
+			{
+				quoteList = quoteResp.get("data");
+				if(!quoteList.isEmpty())
+				{
+					quoteInfo = quoteList.get(0);
+					currentStage = ifnull(quoteInfo.get("Quote_Stage"),"");
+					items = ifnull(quoteInfo.get("Quoted_Items"),List());
+					if(!items.isEmpty())
+					{
+						hasItems = true;
+					}
+				}
+			}
+		}
+		catch (e)
+		{
+			hasItems = false;
+		}
+		// Already-converted check FIRST, before the empty-items check -- a Quote that's
+		// already Closed Won shouldn't get an "empty quote" message even if it happens to
+		// have no items for some other reason; "already converted" is the more useful thing
+		// to tell the user, and this also prevents re-touching Trigger_Based_On_Subform for a
+		// Deal that already has its Sales Order/Invoice, which could otherwise re-fire that
+		// pipeline a second time.
+		if(currentStage == "Closed Won")
+		{
+			return "This Quote has already been converted to a Sales Order.";
+		}
+		if(!hasItems)
+		{
+			return "No items in quote -- please check the Quote before converting.";
+		}
+	}
+	try
+	{
+		standalone.setQuoteAwaitingAcceptance(dId.toLong(),"false");
+	}
+	catch (e)
+	{
+	}
+	try
+	{
+		standalone.getCurrentDateTime("Trigger_Based_On_Subform",dealId,"Deals",2);
+	}
+	catch (e)
+	{
+		return "Failed to release Deal: " + e.toString();
+	}
+	if(quoteId != "")
+	{
+		try
+		{
+			stageMap = Map();
+			stageMap.put("Quote_Stage","Closed Won");
+			zoho.crm.updateRecord("Quotes",quoteId.toLong(),stageMap);
+		}
+		catch (e)
+		{
+		}
 	}
 	return "Quote converted -- Sales Order/Invoice process released.";
 }

@@ -1,0 +1,57 @@
+map unassignTransportItem(String transportId)
+{
+	// NEW function -- there was no "remove" path at all before this. Clears
+	// Related_Trip and Leg, and resets Transport_Status back to "Requested"
+	// so the item reappears as an assignable candidate (getTransportItems)
+	// and shows correctly as "pending, needs assignment" again on the
+	// dashboard and in CRM.
+	//
+	// Deliberately refuses to unassign an item that's already Completed --
+	// that's a real, finished piece of work; if it needs correcting, that
+	// should be a deliberate status edit in CRM, not a silent side effect of
+	// clicking "remove" in the trip picker.
+	result = Map();
+	result.put("status","error");
+	result.put("message","");
+	tId = ifnull(transportId,"").trim();
+	if(tId == "")
+	{
+		result.put("message","Missing transportId");
+		return result;
+	}
+	existingTransport = Map();
+	try
+	{
+		existingTransport = zoho.crm.getRecordById("Transport",tId.toLong(),{"connection":"zohocrm_connection"});
+	}
+	catch (e)
+	{
+		result.put("message","Transport item not found");
+		return result;
+	}
+	if(!existingTransport.containKey("id"))
+	{
+		result.put("message","Transport item not found");
+		return result;
+	}
+	currentStatus = ifnull(existingTransport.get("Transport_Status"),"");
+	if(currentStatus == "Completed")
+	{
+		result.put("message","This item is already marked Completed -- edit it directly in CRM if it needs correcting.");
+		return result;
+	}
+	updateMap = Map();
+	updateMap.put("Transport_Status","Requested");
+	updateMap.put("Leg","");
+	updateMap.put("Related_Trip","");
+	try
+	{
+		zoho.crm.updateRecord("Transport",tId.toLong(),updateMap,{"connection":"zohocrm_connection"});
+	}	catch (e)
+	{
+		result.put("message","Exception: " + e.toString());
+		return result;
+	}
+	result.put("status","success");
+	return result;
+}

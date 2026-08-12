@@ -46,6 +46,19 @@ string standalone.syncQuoteLineItemsOnly(Int crmid)
 	{
 		return "No existing Quote to sync -- nothing to do.";
 	}
+	// Run the same casket-package / media-selection business logic the normal SO-creation
+	// pipeline already runs before building its own line items -- see the matching comment in
+	// createOrUpdateQuoteFromDeal.deluge for the full reasoning. This function IS the
+	// guaranteed backstop for every Quote-flow Deal (runs ~1 minute after any product change,
+	// from any page, no pre-commit staleness concern here at all), so this is actually the
+	// most important place to have this fix, not just a nice-to-have.
+	try
+	{
+		standalone.manageCasketPackageProduct(crmid);
+	}
+	catch (e)
+	{
+	}
 	dealInfo = Map();
 	try
 	{
@@ -54,6 +67,14 @@ string standalone.syncQuoteLineItemsOnly(Int crmid)
 	catch (e)
 	{
 		return "Deal not found.";
+	}
+	try
+	{
+		standalone.manageMediaSelectoinsRecord(dealInfo,crmid);
+		dealInfo = zoho.crm.getRecordById("Deals",crmid);
+	}
+	catch (e)
+	{
 	}
 	productRows = ifnull(dealInfo.get("Product_Selection"),List());
 	quotedItems = List();

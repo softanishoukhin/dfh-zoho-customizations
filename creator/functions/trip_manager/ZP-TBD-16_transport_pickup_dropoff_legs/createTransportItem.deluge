@@ -1,0 +1,54 @@
+map createTransportItem(String name, String category, String additionalInfo, String currentLocation)
+{
+	// NEW function -- lets TM create a Transport record directly (not just
+	// assign ones that were created via CRM). Always created as
+	// Transport_Status = "Requested", unassigned (no Related_Trip/Leg) --
+	// same starting state as a CRM-created one, so it shows up identically
+	// on the dashboard and in the assignment picker either way. TM can then
+	// assign it to a trip's leg immediately, or leave it pending like any
+	// other requested item.
+	result = Map();
+	result.put("status","error");
+	result.put("message","");
+	nm = ifnull(name,"").trim();
+	if(nm == "")
+	{
+		result.put("message","Missing name (Item to Be Transported)");
+		return result;
+	}
+	cat = ifnull(category,"").trim();
+	info = ifnull(additionalInfo,"").trim();
+	loc = ifnull(currentLocation,"").trim();
+	newMap = Map();
+	newMap.put("Name",nm);
+	if(cat != "")
+	{
+		newMap.put("Category",cat);
+	}
+	if(info != "")
+	{
+		newMap.put("Additional_Information",info);
+	}
+	if(loc != "")
+	{
+		newMap.put("Current_Location",loc);
+	}
+	newMap.put("Transport_Status","Requested");
+	try
+	{
+		created = zoho.crm.createRecord("Transport",newMap,{"connection":"zohocrm_connection"});
+		newId = ifnull(created.get("id"),"");
+		if(newId == "")
+		{
+			result.put("message","Create did not return an id");
+			return result;
+		}
+		result.put("id",newId);
+	}	catch (e)
+	{
+		result.put("message","Exception: " + e.toString());
+		return result;
+	}
+	result.put("status","success");
+	return result;
+}

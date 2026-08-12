@@ -1,0 +1,80 @@
+// Rollback -- Trip Manager side.
+// Restores the pre-2026-08-12 behavior. Paste each function body back exactly as shown.
+
+// 1. Revert assignTransportItem to its original 2-param form:
+map assignTransportItem(String transportId, String tripId)
+{
+	result = Map();
+	result.put("status","error");
+	result.put("message","");
+	tId = ifnull(transportId,"").trim();
+	trId = ifnull(tripId,"").trim();
+	if(tId == "" || trId == "")
+	{
+		result.put("message","Missing transportId or tripId");
+		return result;
+	}
+	updateMap = Map();
+	updateMap.put("Transport_Status","Scheduled");
+	tripLk = Map();
+	tripLk.put("id",trId);
+	updateMap.put("Related_Trip",tripLk);
+	try
+	{
+		zoho.crm.updateRecord("Transport",tId.toLong(),updateMap,{"connection":"zohocrm_connection"});
+	}	catch (e)
+	{
+		result.put("message","Exception: " + e.toString());
+		return result;
+	}
+	result.put("status","success");
+	return result;
+}
+
+// 2. Revert getTripTransportItems to its original Scheduled-only, leg-blind form:
+list getTripTransportItems(String tripId)
+{
+	result = List();
+	tId = ifnull(tripId,"").trim();
+	if(tId == "")
+	{
+		return result;
+	}
+	try
+	{
+		qPayload = Map();
+		qPayload.put("select_query","select id, Name, Category, Additional_Information, Current_Location, Transport_Status from Transport where Related_Trip = '" + tId + "' and Transport_Status = 'Scheduled' limit 200");
+		resp = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v7/coql"
+			type :POST
+			parameters:qPayload.toString()
+			headers:{"Content-Type":"application/json"}
+			connection:"zoho_oauth_connection"
+		];
+		if(resp.containKey("data"))
+		{
+			for each  rec in resp.get("data")
+			{
+				item = Map();
+				item.put("id",ifnull(rec.get("id"),""));
+				item.put("name",ifnull(rec.get("Name"),""));
+				item.put("category",ifnull(rec.get("Category"),""));
+				item.put("description",ifnull(rec.get("Additional_Information"),""));
+				item.put("location",ifnull(rec.get("Current_Location"),""));
+				result.add(item);
+			}
+		}
+	}	catch (e)
+	{
+	}
+	return result;
+}
+
+// 3. Delete unassignTransportItem, getAllTransportItems, createTransportItem entirely (they
+//    didn't exist before this task).
+
+// 4. Revert widget.html to its pre-task version (git revert on that file covers this).
+
+// 5. The Leg field on the Transport module can be left in place even on rollback -- it's
+//    additive and inert if nothing writes/reads it; no data-loss risk in leaving it.

@@ -1,0 +1,89 @@
+map setTransportItemStatus(String transportId, String completed)
+{
+	// NEW function -- this is the actual persistence fix. Modeled directly on
+	// the Deceased_Pickups pattern already proven in this file (saveDeceasedPickup,
+	// per-record state on the CRM child record itself) rather than extending
+	// the old approach (one aggregate boolean folded into the trip's
+	// Checklist_State JSON blob). Each transport item's checked/unchecked
+	// state now lives on ITS OWN CRM record (Transport_Status +
+	// Completed_Date_and_Time), read fresh every time getTripTransportItems
+	// runs -- so it is genuinely persistent: reopening the trip, or any
+	// other trip and back, always reflects the real current state, because
+	// there's nothing cached client-side or trip-side to go stale.
+	//
+	// completed="true" -> Transport_Status="Completed", stamps
+	// Completed_Date_and_Time to now. completed="false" -> reverts to
+	// "Scheduled" (unchecking a box the driver checked by mistake) and clears
+	// the completed timestamp. Refuses to touch an item that isn't currently
+	// linked to a trip (Related_Trip empty) -- that would mean the item was
+	// unassigned/reassigned out from under the driver mid-trip, which should
+	// surface as an error, not silently mark a now-unrelated item complete.
+	result = Map();
+	result.put("status","error");
+	result.put("message","");
+	tId = ifnull(transportId,"").trim();
+	if(tId == "")
+	{
+		result.put("message","Missing transportId");
+		return result;
+	}
+	isCompleted = (ifnull(completed,"").trim() == "true");
+	existingTransport = Map();
+	try
+	{
+		existingTransport = zoho.crm.getRecordById("Transport",tId.toLong(),{"connection":"zohocrm_connection"});
+	}
+	catch (e)
+	{
+		result.put("message","Transport item not found");
+		return result;
+	}
+	if(!existingTransport.containKey("id"))
+	{
+		result.put("message","Transport item not found");
+		return result;
+	}
+	relatedTripLk = existingTransport.get("Related_Trip");
+	relatedTripId = "";
+	try
+	{
+		relatedTripId = ifnull(relatedTripLk.get("id"),"");
+	}
+	catch (e)
+	{
+		relatedTripId = "";
+	}
+	if(relatedTripId == "")
+	{
+		result.put("message","This item is not currently assigned to a trip");
+		return result;
+	}
+	updateMap = Map();
+	if(isCompleted)
+	{
+		updateMap.put("Transport_Status","Completed");
+		// zoho.currenttime passed raw (as a native Deluge datetime object) was not writing
+		// correctly through this update call -- confirmed live 2026-08-12. Round-tripping it
+		// through toString/toTime/toString in this exact format
+		// (yyyy-MM-dd'T'HH:mm:ss) is the pattern that actually works for stamping a
+		// "right now" datetime field via zoho.crm.updateRecord in this org. Use this same
+		// round-trip anywhere else a current-time datetime needs writing this way, not a bare
+		// zoho.currenttime.
+		updateMap.put("Completed_Date_and_Time",zoho.currenttime.toString("yyyy-MM-dd'T'HH:mm:ss").toTime("yyyy-MM-dd'T'HH:mm:ss").toString("yyyy-MM-dd'T'HH:mm:ss"));
+	}
+	else
+	{
+		updateMap.put("Transport_Status","Scheduled");
+		updateMap.put("Completed_Date_and_Time","");
+	}
+	try
+	{
+		zoho.crm.updateRecord("Transport",tId.toLong(),updateMap,{"connection":"zohocrm_connection"});
+	}	catch (e)
+	{
+		result.put("message","Exception: " + e.toString());
+		return result;
+	}
+	result.put("status","success");
+	return result;
+}

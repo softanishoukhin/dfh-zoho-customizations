@@ -1,0 +1,68 @@
+list getAllTransportItems()
+{
+	// NEW function -- backs the new "Transports" dashboard view. Nothing like
+	// this existed before; getTransportItems only ever returned
+	// Requested-status items (the assignment-picker candidate list), so there
+	// was no way to see everything at once with its assignment status and
+	// which trip (if any) it's linked to.
+	//
+	// Returns every Transport record regardless of status. "assigned" in the
+	// response is a simple derived boolean (true once Related_Trip is set)
+	// so the widget can sort/highlight unassigned items without the UI
+	// having to know the underlying status picklist values itself.
+	result = List();
+	try
+	{
+		qPayload = Map();
+		// COQL requires a WHERE clause even when nothing should be filtered out -- confirmed
+		// live 2026-08-12 (bare "select ... from Transport order by ..." throws a syntax
+		// error). "id is not null" is always true for a real record, so this returns
+		// everything, same intent as before, just syntactically valid.
+		qPayload.put("select_query","select id, Name, Category, Additional_Information, Current_Location, Transport_Status, Leg, Related_Trip, Completed_Date_and_Time, Created_Time from Transport where id is not null order by Created_Time desc limit 200");
+		resp = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v7/coql"
+			type :POST
+			parameters:qPayload.toString()
+			headers:{"Content-Type":"application/json"}
+			connection:"zoho_oauth_connection"
+		];
+		if(resp.containKey("data"))
+		{
+			for each  rec in resp.get("data")
+			{
+				item = Map();
+				item.put("id",ifnull(rec.get("id"),""));
+				item.put("name",ifnull(rec.get("Name"),""));
+				item.put("category",ifnull(rec.get("Category"),""));
+				item.put("description",ifnull(rec.get("Additional_Information"),""));
+				item.put("location",ifnull(rec.get("Current_Location"),""));
+				item.put("leg",ifnull(rec.get("Leg"),""));
+				item.put("status",ifnull(rec.get("Transport_Status"),""));
+				item.put("completedTime",ifnull(rec.get("Completed_Date_and_Time"),""));
+				item.put("created",ifnull(rec.get("Created_Time"),""));
+				tripLk = rec.get("Related_Trip");
+				tripId = "";
+				tripName = "";
+				if(tripLk != null)
+				{
+					try
+					{
+						tripId = ifnull(tripLk.get("id"),"");
+						tripName = ifnull(tripLk.get("name"),"");
+					}
+					catch (e)
+					{
+					}
+				}
+				item.put("tripId",tripId);
+				item.put("tripName",tripName);
+				item.put("assigned",tripId != "");
+				result.add(item);
+			}
+		}
+	}	catch (e)
+	{
+	}
+	return result;
+}

@@ -1,0 +1,72 @@
+map assignTransportItem(String transportId, String tripId, String leg)
+{
+	// CHANGED from the live version: added the "leg" parameter (must be
+	// "Pickup" or "Dropoff" -- matches the new Transport.Leg picklist field,
+	// see crm-field-changes.md in this folder). Without this, a transport
+	// item assigned to a trip had no way to say which of the trip's two
+	// addresses (Pickup_Street_Address vs Destination_Street_Address) it
+	// belongs at -- both apps need this to render/split correctly.
+	// Also added: existence checks for both the Transport record and the
+	// Trip before writing (the live version had neither -- it would happily
+	// "succeed" against a transportId/tripId that didn't exist).
+	result = Map();
+	result.put("status","error");
+	result.put("message","");
+	tId = ifnull(transportId,"").trim();
+	trId = ifnull(tripId,"").trim();
+	legVal = ifnull(leg,"").trim();
+	if(tId == "" || trId == "")
+	{
+		result.put("message","Missing transportId or tripId");
+		return result;
+	}
+	if(legVal != "Pickup" && legVal != "Dropoff")
+	{
+		result.put("message","leg must be 'Pickup' or 'Dropoff'");
+		return result;
+	}
+	try
+	{
+		existingTransport = zoho.crm.getRecordById("Transport",tId.toLong(),{"connection":"zohocrm_connection"});
+		if(!existingTransport.containKey("id"))
+		{
+			result.put("message","Transport item not found");
+			return result;
+		}
+	}
+	catch (e)
+	{
+		result.put("message","Transport item not found");
+		return result;
+	}
+	try
+	{
+		existingTrip = zoho.crm.getRecordById("Trips",trId.toLong(),{"connection":"zohocrm_connection"});
+		if(!existingTrip.containKey("id"))
+		{
+			result.put("message","Trip not found");
+			return result;
+		}
+	}
+	catch (e)
+	{
+		result.put("message","Trip not found");
+		return result;
+	}
+	updateMap = Map();
+	updateMap.put("Transport_Status","Scheduled");
+	updateMap.put("Leg",legVal);
+	tripLk = Map();
+	tripLk.put("id",trId);
+	updateMap.put("Related_Trip",tripLk);
+	try
+	{
+		zoho.crm.updateRecord("Transport",tId.toLong(),updateMap,{"connection":"zohocrm_connection"});
+	}	catch (e)
+	{
+		result.put("message","Exception: " + e.toString());
+		return result;
+	}
+	result.put("status","success");
+	return result;
+}

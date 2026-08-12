@@ -1,0 +1,45 @@
+// Rollback -- Driver App side. Restores pre-2026-08-12 behavior.
+
+// 1. Revert getTripTransportItems to its original Scheduled-only, leg-blind form:
+list getTripTransportItems(String tripId)
+{
+    result = List();
+    tId = ifnull(tripId,"").trim();
+    if(tId == "")
+    {
+        return result;
+    }
+    try
+    {
+        qPayload = Map();
+        qPayload.put("select_query","select id, Name, Category, Additional_Information, Current_Location, Transport_Status from Transport where Related_Trip = '" + tId + "' and Transport_Status = 'Scheduled' limit 200");
+        resp = invokeurl
+        [
+            url :"https://www.zohoapis.com/crm/v7/coql"
+            type :POST
+            parameters:qPayload.toString()
+            headers:{"Content-Type":"application/json"}
+            connection:"zoho_oauth_connection"
+        ];
+        if(resp.containKey("data"))
+        {
+            for each  rec in resp.get("data")
+            {
+                item = Map();
+                item.put("id",ifnull(rec.get("id"),""));
+                item.put("name",ifnull(rec.get("Name"),""));
+                item.put("category",ifnull(rec.get("Category"),""));
+                item.put("description",ifnull(rec.get("Additional_Information"),""));
+                item.put("location",ifnull(rec.get("Current_Location"),""));
+                result.add(item);
+            }
+        }
+    }	catch (e)
+    {
+    }
+    return result;
+}
+
+// 2. Delete setTransportItemStatus entirely (it didn't exist before this task).
+
+// 3. Revert app.js to its pre-task version (git revert on that file covers this).

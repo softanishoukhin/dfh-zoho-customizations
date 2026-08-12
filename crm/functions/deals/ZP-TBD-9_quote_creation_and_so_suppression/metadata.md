@@ -163,6 +163,75 @@ original quote was sent and possibly already accepted. Whether staff want a re-s
 post-send product tweak (e.g. a quantity correction) or only on the original send is a real
 product decision, not fixed here -- flag to Andrea/the user if unwanted.
 
+Live-applied change synced to repo (2026-08-12): both the Quote create and update calls
+(zoho.crm.createRecord/updateRecord("Quotes", ...)) now pass {"trigger":{"workflow"}} --
+Deluge's zoho.crm.createRecord/updateRecord do NOT fire CRM workflow rules by default, so any
+workflow configured on the Quotes module (e.g. notifications, field updates) would otherwise
+silently never run when a Quote is created/updated through this function. Applied directly live
+by the user; pulled via MCP and synced here, not authored by Claude.
+
+Bug fix -- Quote missing the Casket Non-Taxable/Media product and Media_Selections record
+(2026-08-12): user reported that when creating a Quote (the "Yes" path), the Casket product
+itself was added correctly, but the auto-added zero-rated "Non-Taxable" Media product (when a
+Casket row has Casket_Package_For = Montego Bay or Kingston) was missing, and no matching
+Media_Selections CRM record was being created either. Root cause: the normal SO-creation
+pipeline (createSalesOrderForDifferentPipelines) calls two existing, already-proven functions
+before building its line items -- standalone.manageCasketPackageProduct(crmid) (adds the
+zero-rated Media product to Product_Selection for qualifying Casket rows) and
+standalone.manageMediaSelectoinsRecord(recordInfo,crmid) (creates/updates the Media_Selections
+record for each Media-parent row and writes its id back onto Product_Selection). That entire
+pipeline is suppressed for the whole time a Deal is in the Quote flow, so these two functions
+were simply never being called at all for Quote-flow Deals.
+
+Fixed by calling both from two places, in the same order the SO pipeline already uses
+(manageCasketPackageProduct first, since manageMediaSelectoinsRecord depends on the Media row
+it adds):
+  - createOrUpdateQuoteFromDeal.deluge's sync branch (else branch, firstRowProductId blank) --
+    re-fetches dealInfo afterward since both helpers mutate Product_Selection.
+  - syncQuoteLineItemsOnly.deluge (the automation-guard-triggered backstop) -- arguably the
+    more important of the two, since it's the guaranteed ~1-minute catch-up for every
+    Quote-flow Deal from any page, with no pre-commit staleness concern at all.
+
+Known, accepted gap: the very first product added to a brand-new Deal (createOrUpdateQuoteFromDeal's
+firstRowProductId branch, used only for that one first-ever row) does NOT get this treatment --
+these two helpers read Product_Selection fresh from the server, which would race the
+still-uncommitted first row the same way everything else in this file already had to work
+around. If that first product is itself a qualifying Casket, the companion product/Media
+Selection record appear after the next product change or the ~1 minute automation-guard
+backstop, not instantly -- same "eventually correct" pattern already accepted elsewhere in this
+feature (e.g. the multi-row-on-first-save limitation).
+
+Not yet applied live -- both repo files updated, need pasting into
+standalone.createOrUpdateQuoteFromDeal and standalone.syncQuoteLineItemsOnly respectively.
+
+Bug fix -- convertQuoteToSalesOrder allowed converting an empty Quote (2026-08-12): user
+flagged that converting a Quote with zero line items into a Sales Order would silently proceed
+-- releasing Awaiting_Quote_Acceptance and re-triggering the SO/Invoice pipeline off an empty
+Quote. Pulled the live function via MCP first (repo copy had drifted -- live uses
+standalone.getCurrentDateTime + string "false" for setQuoteAwaitingAcceptance, not a direct
+zoho.crm.updateRecord + boolean false like the stale repo copy had; synced to match).
+
+Fixed: moved the Quote lookup to the very top of the function, before any release/re-trigger
+side effects. If a Quote is found, fetches it via REST v8 GET (not getRecordById -- same known
+subform-dropping gotcha already fixed in generateQuotePdf.deluge) and checks Quoted_Items is
+non-empty. If empty, returns "No items in quote -- please check the Quote before converting."
+and does NOT touch Awaiting_Quote_Acceptance, Trigger_Based_On_Subform, or Quote_Stage. If no
+Quote is found at all (quoteId stays ""), behavior is unchanged from before -- still
+releases/re-triggers, since that covers a Quote having been deleted after being sent while the
+Deal is still marked Awaiting_Quote_Acceptance.
+
+Second guardrail added same day: if the Quote's Quote_Stage is already "Closed Won" (this
+function's own marker for "already converted"), return "This Quote has already been converted
+to a Sales Order." instead of proceeding -- checked before the empty-items check, using the
+same REST v8 GET already being made (no extra API call). This isn't just a messaging
+improvement: without it, clicking Convert a second time would re-touch
+Trigger_Based_On_Subform for a Deal that already has its Sales Order/Invoice, risking
+re-firing that pipeline a second time.
+
+Not yet applied live -- repo file updated, needs pasting into
+standalone.convertQuoteToSalesOrder (id 6503357000077155050) same as any other function in this
+folder.
+
 RESOLVED (2026-08-11, pulled live via MCP, all 40 test cases confirmed passed): the
 generateQuotePdf investigation above is closed. Live code now calls the v2 REST endpoint
 directly via invokeurl (POST .../writer/api/v2/documents/{id}/merge/store, merge_data wrapped

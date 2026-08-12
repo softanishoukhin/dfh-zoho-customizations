@@ -1,0 +1,48 @@
+list getTripTransportItems(String tripId)
+{
+	// CHANGED from the live version: was hardcoded to Transport_Status =
+	// 'Scheduled' only, so a Completed item silently vanished from "Assigned
+	// to this trip" -- TM should still see it (just visually distinct from
+	// still-pending ones). Now returns everything currently linked to this
+	// trip regardless of status, and adds "leg" + "status" to the response
+	// so the UI can split into Pickup/Dropoff sections and show each item's
+	// real state instead of a hardcoded "Scheduled" badge.
+	result = List();
+	tId = ifnull(tripId,"").trim();
+	if(tId == "")
+	{
+		return result;
+	}
+	try
+	{
+		qPayload = Map();
+		qPayload.put("select_query","select id, Name, Category, Additional_Information, Current_Location, Transport_Status, Leg, Completed_Date_and_Time from Transport where Related_Trip = '" + tId + "' limit 200");
+		resp = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v7/coql"
+			type :POST
+			parameters:qPayload.toString()
+			headers:{"Content-Type":"application/json"}
+			connection:"zoho_oauth_connection"
+		];
+		if(resp.containKey("data"))
+		{
+			for each  rec in resp.get("data")
+			{
+				item = Map();
+				item.put("id",ifnull(rec.get("id"),""));
+				item.put("name",ifnull(rec.get("Name"),""));
+				item.put("category",ifnull(rec.get("Category"),""));
+				item.put("description",ifnull(rec.get("Additional_Information"),""));
+				item.put("location",ifnull(rec.get("Current_Location"),""));
+				item.put("leg",ifnull(rec.get("Leg"),""));
+				item.put("status",ifnull(rec.get("Transport_Status"),""));
+				item.put("completedTime",ifnull(rec.get("Completed_Date_and_Time"),""));
+				result.add(item);
+			}
+		}
+	}	catch (e)
+	{
+	}
+	return result;
+}

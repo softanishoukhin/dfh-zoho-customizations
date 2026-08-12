@@ -154,6 +154,46 @@ if(firstRowProductId != null && firstRowProductId != "")
 }
 else
 {
+	// Run the same casket-package / media-selection business logic the normal
+	// SO-creation pipeline already runs before building its line items
+	// (createSalesOrderForDifferentPipelines calls these same two functions). Without
+	// this, a Quote built from Product_Selection would be missing the auto-added
+	// zero-rated Non-Taxable/Media companion product for Casket sales (Casket_Package_For
+	// = Montego Bay/Kingston), and its Media_Selections CRM record would never get
+	// created -- because the whole SO pipeline (where these normally run) is suppressed
+	// for the entire time a Deal is in the Quote flow. Only safe to do here in the sync
+	// branch (not the firstRowProductId branch above) -- both of these read
+	// Product_Selection fresh from the server, which would race the still-uncommitted
+	// first row the same way everything else in this file already had to work around.
+	// Known gap this doesn't close: the very first product added to a brand-new Deal
+	// (the firstRowProductId branch) won't get the companion product until the next sync
+	// -- self-corrects on the next product change or the ~1 minute automation-guard
+	// backstop (see syncQuoteLineItemsOnly.deluge), same "eventually correct" pattern
+	// already accepted elsewhere in this feature.
+	try 
+	{
+		standalone.manageCasketPackageProduct(dealId.toLong());
+	}
+	catch (e)
+	{
+	}
+	try 
+	{
+		standalone.manageMediaSelectoinsRecord(dealInfo,dealId.toLong());
+	}
+	catch (e)
+	{
+	}
+	// manageCasketPackageProduct/manageMediaSelectoinsRecord both just mutated
+	// Product_Selection -- re-fetch so we build the Quote from the current state, not
+	// the copy read at the top of this function.
+	try 
+	{
+		dealInfo = zoho.crm.getRecordById("Deals",dealId.toLong());
+	}
+	catch (e)
+	{
+	}
 	productRows = ifnull(dealInfo.get("Product_Selection"),List());
 }
 // Patch in the row that's actually being saved right now, if the client
@@ -354,7 +394,7 @@ if(existingQuoteId != "")
 {
 	try 
 	{
-		zoho.crm.updateRecord("Quotes",existingQuoteId.toLong(),quoteMap);
+		zoho.crm.updateRecord("Quotes",existingQuoteId.toLong(),quoteMap,{"trigger":{"workflow"}});
 		quoteId = existingQuoteId;
 	}
 	catch (e)
@@ -367,7 +407,7 @@ else
 {
 	try 
 	{
-		cr = zoho.crm.createRecord("Quotes",quoteMap);
+		cr = zoho.crm.createRecord("Quotes",quoteMap,{"trigger":{"workflow"}});
 		quoteId = ifnull(cr.get("id"),"");
 	}
 	catch (e)
