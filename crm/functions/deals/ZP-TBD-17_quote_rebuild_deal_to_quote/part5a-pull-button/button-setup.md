@@ -24,6 +24,15 @@ string button.pullProductsFromDeal(String quoteId)
 not `standalone.pullProductsFromDeal`. The repo file already reflects this;
 paste it as-is.
 
+**Live-corrected 2026-08-14** (see the deluge file's own "LIVE CORRECTIONS"
+comment for full detail): the function now writes to `Quoted_Items` via a
+raw REST PUT (not `Product_Details` via `zoho.crm.updateRecord`, which
+was the wrong field), and calls `standalone.generateQuotePdf` right after
+a successful write, so the PDF regenerates automatically on every pull.
+The repo file reflects this current, live-corrected version -- paste it
+as-is, don't reintroduce the older Product_Details-writing version from
+an earlier read of this file.
+
 ## 3. Confirm Quote knows its source Deal
 
 `Quotes.Deal_Name` already exists as a native lookup to Deals (confirmed
@@ -43,4 +52,7 @@ path (Part 3).
 - Click on a Quote with no Deal_Name -> clear error message, no crash.
 - Click on a Quote whose Deal has an empty Product Selection -> clear error
   message, no crash, Quote's existing line items (if any) are left alone
-  (the function returns before touching Product_Details).
+  (the function returns before touching Quoted_Items).
+- Confirm the Quote's PDF (Quote_Public_URL) regenerates after a successful
+  pull -- this now happens automatically as part of the button, not a
+  separate manual step.

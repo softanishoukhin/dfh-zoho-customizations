@@ -7,11 +7,10 @@
 
    WHAT IT DOES
      Reads the linked Deal's current Product_Selection subtable and writes
-     it to this Quote's line items (Product_Details), replacing whatever
-     was there before. Re-clicking after further Deal edits re-syncs.
-     Nothing else -- no PDF generation, no email, no suppression flag, no
-     billing side effect of any kind. Per Andrea's spec (Part 5a): "trimmed
-     to: read deal -> write quote."
+     it to this Quote's line items (Quoted_Items), replacing whatever was
+     there before, then regenerates the Quote PDF. Re-clicking after
+     further Deal edits re-syncs both. No suppression flag, no billing side
+     effect of any kind.
 
    WHERE THIS CAME FROM
      Trimmed down from the old standalone.createOrUpdateQuoteFromDeal
@@ -26,12 +25,11 @@
      just read Product_Selection fresh and build the Quote from it.
      Also removed: Awaiting_Quote_Acceptance (the whole suppression
      mechanism is gone in this rebuild -- billing runs unconditionally,
-     see Part 2 of the spec); the PDF-generation and email-send calls (not
-     part of "read deal -> write quote" -- staff email the Quote to the
-     family using Zoho's own native Send Email action on the Quote record,
-     same as any other Quote); and every silent catch(e){} that swallowed
-     an error and still returned "true" -- this function now returns a
-     real message on every failure path instead.
+     see Part 2 of the spec); the email-send call (staff still email the
+     Quote to the family using Zoho's own native Send Email action on the
+     Quote record, same as any other Quote); and every silent catch(e){}
+     that swallowed an error and still returned "true" -- this function
+     returns a real message on every failure path instead.
 
    WHY IT DOESN'T NEED TO RUN manageCasketPackageProduct /
    manageMediaSelectoinsRecord ITSELF
@@ -50,8 +48,7 @@
 
    ERRORS
      Every failure path returns a specific, readable message instead of a
-     generic success string -- Andrea's spec explicitly calls out removing
-     "the silent error handling" from the old function.
+     generic success string.
 
    FUNCTION CATEGORY -- live-applied, synced 2026-08-13
      Built live as button.pullProductsFromDeal, not standalone.pullProductsFromDeal
@@ -59,6 +56,31 @@
      creates the function directly under the button category rather than
      standalone. Same function body either way; category doesn't change any
      of the logic below.
+
+   LIVE CORRECTIONS -- synced 2026-08-14, not authored by Claude, pulled via
+   MCP (id 6503357000078282047) after the user reported "I have updated
+   this function live." Two real fixes found, both kept:
+     1. The Quote-write field was wrong. This file originally wrote to
+        Product_Details via zoho.crm.updateRecord -- but generateQuotePdf
+        (and every other read of a Quote's line items in this feature) reads
+        Quoted_Items, not Product_Details. Writing to the wrong field would
+        have meant the button silently updated nothing generateQuotePdf (or
+        the Writer template) ever actually reads. Fixed: writes to
+        Quoted_Items now, via a raw REST v2.1 PUT (invokeurl) instead of
+        zoho.crm.updateRecord.
+     2. Because the write now targets Quoted_Items (not Product_Details),
+        the line-item keys changed from the old lowercase inventory-write
+        convention (product/quantity/list_price) to the field's real,
+        capitalized api_names (Product_Name/Quantity/List_Price) --
+        Discount and Parent_Product were already using their real api_names
+        and needed no change.
+     Also added: a standalone.generateQuotePdf(qId, dealId) call right after
+     the write succeeds, so the PDF regenerates automatically on every pull
+     instead of needing a separate manual trigger. This is a deliberate,
+     live-made functional addition beyond the original "read deal -> write
+     quote" framing -- kept as-is per the user's report that this is the
+     current, working, intended behavior, not flagged as scope creep since
+     it was already built and confirmed working, not a proposal.
    =====================================================================*/
 string button.pullProductsFromDeal(String quoteId)
 {
@@ -125,10 +147,11 @@ string button.pullProductsFromDeal(String quoteId)
 	{
 		return "No products on the Deal's product table -- add products to the Deal, then pull again.";
 	}
-	// Keys below are the WRITE-time convention Zoho's inventory subform API
-	// actually expects (lowercase product/quantity/list_price) -- different
-	// from the READ-time field names (Product_Name/Quantity/List_Price).
-	// Same conversion the old function already proved live.
+	// Keys below are Quoted_Items' real field api_names (Product_Name/
+	// Quantity/List_Price) -- NOT the lowercase product/quantity/list_price
+	// convention used elsewhere in this org for writing Product_Details.
+	// Confirmed live 2026-08-14: writing to Quoted_Items needs the real
+	// field names, same style already used for Discount/Parent_Product below.
 	quotedItems = List();
 	skippedRows = 0;
 	for each row in productRows
@@ -162,9 +185,9 @@ string button.pullProductsFromDeal(String quoteId)
 		qi = Map();
 		pn = Map();
 		pn.put("id",prodId);
-		qi.put("product",pn);
-		qi.put("quantity",qty);
-		qi.put("list_price",price);
+		qi.put("Product_Name",pn);
+		qi.put("Quantity",qty);
+		qi.put("List_Price",price);
 		if(disc != 0)
 		{
 			qi.put("Discount",disc);
@@ -173,10 +196,8 @@ string button.pullProductsFromDeal(String quoteId)
 		// on Quoted_Items, mirroring the one Sales_Orders.Ordered_Items /
 		// Invoices.Invoiced_Items already have. Carries the category through
 		// onto the Quote's own line items so generateQuotePdf (and the Writer
-		// template, once built) can group by it -- the Quote never had this
-		// information on its own line items before. Written the same way
-		// Discount is above (custom fields use their real api_name, not the
-		// lowercase system-field write keys product/quantity/list_price).
+		// template) can group by it -- the Quote never had this information on
+		// its own line items before.
 		parentProd = Map();
 		try
 		{
@@ -207,11 +228,26 @@ string button.pullProductsFromDeal(String quoteId)
 	{
 		return "Product rows found but none resolved to a valid Product -- cannot pull. Check the Deal's Product Selection table.";
 	}
+	// Writes Quoted_Items directly (not Product_Details) via a raw REST v2.1
+	// PUT -- zoho.crm.updateRecord was writing to the wrong field entirely
+	// (see LIVE CORRECTIONS above). Then regenerates the PDF so the Quote
+	// document reflects the freshly-pulled line items without a separate step.
 	updateMap = Map();
-	updateMap.put("Product_Details",quotedItems);
+	updateMap.put("Quoted_Items",quotedItems);
+	recordList = list();
+	recordList.add(updateMap);
+	dataMap = Map();
+	dataMap.put("data",recordList);
 	try
 	{
-		zoho.crm.updateRecord("Quotes",qId.toLong(),updateMap,{"trigger":{"workflow"}});
+		updateQuote = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v2.1/Quotes/" + qId
+			type :PUT
+			parameters:dataMap.toString()
+			connection:"zohooauth"
+		];
+		standalone.generateQuotePdf(qId,dealId);
 	}
 	catch (e)
 	{

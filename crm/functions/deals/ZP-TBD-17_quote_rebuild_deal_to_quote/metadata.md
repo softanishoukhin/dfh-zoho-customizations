@@ -123,8 +123,17 @@ approved (the exact line is given in that file's own comment).
   inside the button's action setup, which is why it's `button.` category
   rather than `standalone.` -- confirmed 2026-08-13), trimmed from the old
   12-argument `createOrUpdateQuoteFromDeal` down to "read deal -> write
-  quote" exactly as specified -- no suppression flag, no PDF generation, no
-  email, no silent error swallowing. See `part5a-pull-button/`.
+  quote" -- no suppression flag, no email, no silent error swallowing.
+  **Live-corrected 2026-08-14** (user-reported, pulled via MCP): the
+  original version wrote to the wrong field (`Product_Details`, via
+  `zoho.crm.updateRecord`) -- `generateQuotePdf` and every other reader of a
+  Quote's line items actually reads `Quoted_Items`. Fixed to write
+  `Quoted_Items` via a raw REST v2.1 PUT, with the line-item keys changed to
+  match (`Product_Name`/`Quantity`/`List_Price`, not the lowercase
+  `product`/`quantity`/`list_price` convention). Also now calls
+  `standalone.generateQuotePdf` right after the write, so the PDF
+  regenerates automatically on every pull -- a deliberate live addition
+  beyond the original scope, kept as-is. See `part5a-pull-button/`.
 - **5b -- Closed-Lost cleanup**: Andrea's function, copied verbatim, with
   the two flagged config values filled in and confirmed live
   (`booksOrgId = "872327358"` = Delapenha Funeral Home Ltd, confirmed active;
