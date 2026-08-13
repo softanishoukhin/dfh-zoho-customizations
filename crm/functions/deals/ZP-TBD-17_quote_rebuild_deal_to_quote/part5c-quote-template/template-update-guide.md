@@ -1,14 +1,16 @@
 # Quote PDF template -- group by parent category (Part 5c)
 
-## STATUS (2026-08-13): field approach approved, plumbing built. Template layout itself still open.
+## STATUS (2026-08-13): field + data plumbing done. Actual grouping NOT done yet -- confirmed still a plain column, not sections.
 
 Andrea's spec for this part is one sentence: "Update the quote print/PDF
 template so products are grouped by the same parent categories and use the
-same child-product filtering as the deal subtable." Investigating what that
-actually requires turned up a real prerequisite the spec doesn't mention.
-**Decision (a) below is now confirmed: add the new field.** Decision (b) --
-the exact grouping/filtering behavior for the template itself -- is still
-open.
+same child-product filtering as the deal subtable." Progress so far: the new
+`Quoted_Items.Parent_Product` field exists, `pullProductsFromDeal` writes it,
+`generateQuotePdf` passes it to the merge, and the template shows it --
+but only as an extra column on the existing flat table. The actual
+"grouped by parent category" ask is still unmet. Zoho Writer has a native
+feature built for exactly this (**Group By** merge fields) -- see step 4
+below for how to use it.
 
 ## What's confirmed live (2026-08-13)
 
@@ -80,26 +82,50 @@ against the live template after the field was added, which returned exactly
 that key (not `Quoted_Items.Parent_Product_Name`, an earlier guess that was
 corrected once the real key was confirmed). Applied live by the user.
 
-### 4. Restructure the Writer template itself -- confirm scope with whoever updated it
+### 4. Restructure the Writer template itself -- NOT done, confirmed 2026-08-13
 
-The user has since updated the Writer template and confirmed
-`Quoted_Items.Parent_Product` is available as a merge field. **Not yet
-confirmed**: whether the table itself was restructured into grouped
-sections (matching how the Deal subtable groups by category), or whether
-Parent Product was added as a plain column to the existing flat table.
-Confirm which before treating Part 5c as fully closed -- if it's just a
-column, the "grouped" part of Andrea's ask (and "same child-product
-filtering as the deal subtable") is still open and still needs the concrete
-example described below.
+The user added `Parent Product` as a **plain column** to the existing flat
+table -- confirmed directly. The core of Andrea's ask ("products are grouped
+by the same parent categories") is still unmet: the PDF still shows one
+flat list of every line item in whatever order they were pulled, just with
+an extra column now showing which category each one belongs to. That's real
+progress (the data is finally on the page) but it is not grouping.
 
-Grouping/sectioning the repeating table by `Parent_Product`, and
-applying whatever "same child-product filtering as the deal subtable" means
-concretely, is manual work in Writer's own document editor (Insert > Merge
-Fields, table/section grouping) -- not achievable purely through the API
-tools available this session.
+Grouping/sectioning the repeating table by `Parent_Product` is manual work
+in Writer's own document editor -- not achievable through the API tools
+available this session (no tool here can edit a Writer document's layout).
+But it's not a guess at a generic capability -- Zoho Writer has a **native
+"Group By" merge-field feature built for exactly this** (confirmed via
+Zoho's own documentation, 2026-08-13):
 
-**Still needed before this step can start**: a concrete example of what
-"same child-product filtering as the deal subtable" should look like --
-a screenshot or specific description of the Deal subtable's grouped/filtered
-view today, so the template mirrors it exactly rather than guessing at
-Andrea's intent from the phrase alone.
+### How to actually do it (per Zoho's documentation)
+
+1. Open the template in Writer's own editor (not the CRM's function editor)
+   -- `Automate > Setup Data Source and Fields` if the repeat block isn't
+   already configured.
+2. The `Quoted_Items` repeating table is presumably already inserted as a
+   repeat block (it merges today, just flat) -- if not already, insert the
+   product line items as a repeat block first.
+3. With the repeat block selected, find the **Group By** icon next to the
+   data fields panel (Zoho's docs describe it as "adjacent to your data
+   fields" -- exact click target should be confirmed live in the editor,
+   the fetched documentation summary wasn't pixel-precise about location).
+4. In the Group By popup: give the GroupSet a name, and select
+   `Quoted_Items.Parent_Product` as the field to group by. This organizes
+   the merged rows into sections by each unique category value automatically
+   -- Zoho's docs describe this as "especially useful when dealing with
+   tabular data like invoices, reports, or summaries," which is exactly this
+   case.
+5. Zoho Writer also supports aggregate functions (SUM/AVG/MAX/MIN) per
+   group once grouped, if a per-category subtotal is wanted (not asked for
+   in the spec, but available if useful -- confirm with Andrea before adding
+   scope not requested).
+
+Sources: [How to customize output with groupby and aggregate fields in merge](https://help.zoho.com/portal/en/kb/writer/automation-guide/merge-configuration/articles/writer-mail-merge-groupby-aggregate-data), [Group, aggregate, and present data in Zoho Writer's merge templates](https://www.zoho.com/writer/groupby-and-aggregate-data.html)
+
+**Still open, separate from the grouping mechanic above**: exactly what
+"same child-product filtering as the deal subtable" should mean -- a
+screenshot or specific description of the Deal subtable's grouped/filtered
+view today would remove any ambiguity here. This is a smaller, secondary
+question from the main grouping ask (which the Group By feature above
+answers directly) -- doesn't need to block starting the Group By setup.
