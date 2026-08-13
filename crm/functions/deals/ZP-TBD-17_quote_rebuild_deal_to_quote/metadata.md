@@ -132,11 +132,16 @@ approved (the exact line is given in that file's own comment).
   invoice-delete scope, already used everywhere else in this feature). No
   existing Closed-Lost workflow rule found on Deals -- clean add. See
   `part5b-closed-lost-cleanup/`.
-- **5c -- Quote template grouping**: investigated, NOT built. Requires a new
-  custom field on the Quotes line-item subform that doesn't exist today (the
-  Quote's own line items carry no category/parent reference at all, unlike
-  Sales_Orders/Invoices, which already do). Flagged for sign-off rather than
-  built on an assumption -- see `part5c-quote-template/template-update-guide.md`.
+- **5c -- Quote template grouping**: field approach approved 2026-08-13.
+  Plumbing built: `pullProductsFromDeal` now also writes `Parent_Product`
+  per row (once the new field exists), and
+  `generateQuotePdf_ADD_PARENT_PRODUCT.deluge` reads it back into the merge
+  data. New CRM field (`Quoted_Items.Parent_Product`, lookup to Products,
+  mirroring the existing Sales_Orders/Invoices field exactly) still needs
+  creating live -- not something doable through the API tools available
+  this session. The Writer template's actual grouped layout is still open,
+  pending a concrete example of "same child-product filtering as the deal
+  subtable." See `part5c-quote-template/template-update-guide.md`.
 
 ## Live sync note (2026-08-13, after Phase 5 deployment)
 

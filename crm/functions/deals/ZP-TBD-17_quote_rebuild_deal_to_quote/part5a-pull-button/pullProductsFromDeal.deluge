@@ -169,6 +169,38 @@ string button.pullProductsFromDeal(String quoteId)
 		{
 			qi.put("Discount",disc);
 		}
+		// Parent_Product (Part 5c, added 2026-08-13) -- new custom lookup field
+		// on Quoted_Items, mirroring the one Sales_Orders.Ordered_Items /
+		// Invoices.Invoiced_Items already have. Carries the category through
+		// onto the Quote's own line items so generateQuotePdf (and the Writer
+		// template, once built) can group by it -- the Quote never had this
+		// information on its own line items before. Written the same way
+		// Discount is above (custom fields use their real api_name, not the
+		// lowercase system-field write keys product/quantity/list_price).
+		parentProd = Map();
+		try
+		{
+			parentProd = row.get("Parent_Product");
+		}
+		catch (e)
+		{
+			parentProd = Map();
+		}
+		parentProdId = "";
+		try
+		{
+			parentProdId = ifnull(parentProd.get("id"),"");
+		}
+		catch (e)
+		{
+			parentProdId = "";
+		}
+		if(parentProdId != "")
+		{
+			ppLk = Map();
+			ppLk.put("id",parentProdId);
+			qi.put("Parent_Product",ppLk);
+		}
 		quotedItems.add(qi);
 	}
 	if(quotedItems.isEmpty())
