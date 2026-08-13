@@ -70,25 +70,29 @@ into the live function after creating the field in step 1** -- if you
 already deployed the version without this, the field won't populate on
 Quotes pulled before the re-paste; pull again on any Quote that needs it.
 
-### 3. `generateQuotePdf` -- built, NOT yet applied live
+### 3. `generateQuotePdf` -- DONE, confirmed against live template (2026-08-13)
 
 `generateQuotePdf_ADD_PARENT_PRODUCT.deluge` (this folder) is the full live
 function with exactly one addition: each row now also reads
 `Parent_Product.name` and passes it to the merge data as
-`Quoted_Items.Parent_Product_Name`. Paste this into the live
-`generateQuotePdf` function once step 1 exists -- it's a pure addition, all
-existing PDF generation/upload/link logic is untouched.
+`Quoted_Items.Parent_Product` -- confirmed via `ZohoWriter Get_All_Fields`
+against the live template after the field was added, which returned exactly
+that key (not `Quoted_Items.Parent_Product_Name`, an earlier guess that was
+corrected once the real key was confirmed). Applied live by the user.
 
-**Before trusting the merge field name**: once the CRM field exists, re-run
-the Writer field inspector against the template (or just open the template
-in Writer and use Insert > Merge Field) to confirm it actually offers
-`Quoted_Items.Parent_Product_Name` as a mergeable field -- Writer's field
-picker derives these names from the CRM field automatically, but confirm
-rather than assume the string matches exactly.
+### 4. Restructure the Writer template itself -- confirm scope with whoever updated it
 
-### 4. Restructure the Writer template itself -- STILL OPEN, needs decision (b)
+The user has since updated the Writer template and confirmed
+`Quoted_Items.Parent_Product` is available as a merge field. **Not yet
+confirmed**: whether the table itself was restructured into grouped
+sections (matching how the Deal subtable groups by category), or whether
+Parent Product was added as a plain column to the existing flat table.
+Confirm which before treating Part 5c as fully closed -- if it's just a
+column, the "grouped" part of Andrea's ask (and "same child-product
+filtering as the deal subtable") is still open and still needs the concrete
+example described below.
 
-Grouping/sectioning the repeating table by `Parent_Product_Name`, and
+Grouping/sectioning the repeating table by `Parent_Product`, and
 applying whatever "same child-product filtering as the deal subtable" means
 concretely, is manual work in Writer's own document editor (Insert > Merge
 Fields, table/section grouping) -- not achievable purely through the API

@@ -1,39 +1,35 @@
 /* =====================================================================
    generateQuotePdf -- ADD Parent_Product to the merge data (Part 5c)
    ---------------------------------------------------------------------
-   STATUS: plumbing only, NOT the template redesign itself.
+   STATUS (2026-08-13): field created live, template updated by the user,
+   this function's merge-data addition confirmed against the live template.
 
    This is the live standalone.generateQuotePdf function (pulled and
    confirmed live 2026-08-13, unchanged by Parts 4/5a/5b) with exactly ONE
    addition: each Quoted_Items row now also reads its Parent_Product lookup
-   and passes the category NAME through to the merge data as
-   Quoted_Items.Parent_Product_Name. Nothing else in this function changes.
+   and passes the category name through to the merge data as
+   Quoted_Items.Parent_Product -- confirmed via ZohoWriter Get_All_Fields
+   against the live template AFTER the user added the field, which returned
+   exactly {"module":"Quoted_Items","id":"Quoted_Items.Parent_Product",
+   "type":"text","display_name":"Parent Product", ...}. (An earlier version
+   of this file guessed Quoted_Items.Parent_Product_Name -- wrong, corrected
+   to match what Writer's own field picker actually generated, not assumed.)
 
-   PREREQUISITES before this is usable
-     1. The new Parent_Product custom lookup field must exist on Quoted_Items
-        (Setup > Customization > Modules and Fields > Quotes > line item
-        fields > New Field > Lookup > Products module, api_name
-        Parent_Product -- mirrors Sales_Orders.Ordered_Items.Parent_Product /
-        Invoices.Invoiced_Items.Parent_Product exactly, confirmed live
-        2026-08-13). See ../part5c-quote-template/template-update-guide.md.
-     2. pullProductsFromDeal must be writing that field per row -- already
-        done, see ../part5a-pull-button/pullProductsFromDeal.deluge.
-     3. Only THEN will Parent_Product actually have data on newly-pulled
-        Quotes for this to read. Quotes pulled BEFORE the field existed
-        won't have it populated until pulled again.
+   PREREQUISITES -- all confirmed done as of 2026-08-13
+     1. Parent_Product custom lookup field exists on Quoted_Items (lookup to
+        Products, mirrors Sales_Orders.Ordered_Items.Parent_Product /
+        Invoices.Invoiced_Items.Parent_Product) -- created live by the user.
+     2. pullProductsFromDeal writes that field per row -- see
+        ../part5a-pull-button/pullProductsFromDeal.deluge.
+     3. Quotes pulled BEFORE the field existed won't have it populated until
+        pulled again.
 
-   NOT done here: the Writer template itself still has no grouping/section
-   structure using this new field -- that's the remaining, still-undecided
-   part of 5c (what "same child-product filtering as the deal subtable"
-   means concretely). This change only makes the DATA available to the
-   template; building the template's grouped layout is a separate, manual
-   Writer-editor task once that's confirmed.
-
-   Once the template is updated to actually use it, add a matching merge
-   field entry there named Quoted_Items.Parent_Product_Name (confirm the
-   exact name Writer's own field picker generates once the CRM field
-   exists -- don't assume it matches this string exactly without checking
-   Get_All_Fields again after the field is created).
+   STILL OPEN: whether the template's actual table layout has been
+   restructured into grouped sections (matching the Deal subtable's
+   grouping), or whether Parent Product has just been added as a column to
+   the existing flat table -- confirm which with whoever updated the
+   template before considering Part 5c fully closed. See
+   ../part5c-quote-template/template-update-guide.md.
    =====================================================================*/
 string standalone.generateQuotePdf(String quoteId, String dealId)
 {
@@ -136,7 +132,13 @@ for each  row in items
 	itemRow.put("Quoted_Items.Discount",ifnull(row.get("Discount"),0).round(2));
 	itemRow.put("Quoted_Items.Tax",ifnull(row.get("Tax"),0).round(2));
 	itemRow.put("Quoted_Items.Net_Total",ifnull(row.get("Net_Total"),0).round(2));
-	itemRow.put("Quoted_Items.Parent_Product_Name",parentProdName);
+	// Live-corrected (2026-08-13, by the user): the merge tag Writer's own
+	// field picker generated from the new CRM field is Quoted_Items.Parent_Product
+	// -- NOT Quoted_Items.Parent_Product_Name as originally guessed here.
+	// Confirmed live via Get_All_Fields against the actual template after the
+	// user added the field: {"module":"Quoted_Items","id":"Quoted_Items.Parent_Product",
+	// "type":"text","display_name":"Parent Product", ...}. Key corrected to match.
+	itemRow.put("Quoted_Items.Parent_Product",parentProdName);
 	quotedItemsForMerge.add(itemRow);
 }
 // ---- upload to the Deal's WorkDrive folder (create it first if needed) ----
