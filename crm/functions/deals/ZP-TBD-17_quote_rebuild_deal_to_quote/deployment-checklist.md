@@ -65,10 +65,14 @@ workflow rule for real:
 
 ## Phase 6 -- Quote template grouping (Part 5c)
 
-**Not started.** Needs a decision first -- see
-`part5c-quote-template/template-update-guide.md`. Do this phase last
-regardless, since it depends on nothing else in this task and nothing else
-depends on it.
+**Done, confirmed live 2026-08-13.** New `Quoted_Items.Parent_Product`
+field, `pullProductsFromDeal` and `generateQuotePdf` updated, and the
+template regrouped using Zoho Writer's native Group By merge-field feature.
+See `part5c-quote-template/template-update-guide.md` for the full history.
+Before calling this fully closed: generate a real Quote PDF and eyeball it
+against the Deal's own product subtable, to catch the secondary open
+question ("same child-product filtering as the deal subtable") if it turns
+out to matter.
 
 ## Rollback
 

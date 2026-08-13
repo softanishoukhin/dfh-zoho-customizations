@@ -132,18 +132,15 @@ approved (the exact line is given in that file's own comment).
   invoice-delete scope, already used everywhere else in this feature). No
   existing Closed-Lost workflow rule found on Deals -- clean add. See
   `part5b-closed-lost-cleanup/`.
-- **5c -- Quote template grouping**: field + data plumbing DONE and applied
-  live 2026-08-13 (`Quoted_Items.Parent_Product` field created, mirroring
-  Sales_Orders/Invoices' existing field exactly; `pullProductsFromDeal`
-  writes it per row; `generateQuotePdf` passes it to the merge; confirmed
-  via Get_All_Fields against the live template). **Actual grouping NOT
-  done** -- confirmed directly by the user that Parent Product was added as
-  a plain column to the existing flat table, not sections. Zoho Writer has
-  a native "Group By" merge-field feature built for exactly this (confirmed
-  via Zoho's own documentation) -- see
-  `part5c-quote-template/template-update-guide.md` for the how-to and
-  sources. Separately, "same child-product filtering as the deal subtable"
-  is still an open, secondary question.
+- **5c -- Quote template grouping**: DONE, confirmed live 2026-08-13.
+  `Quoted_Items.Parent_Product` field created (mirroring Sales_Orders/
+  Invoices' existing field exactly); `pullProductsFromDeal` writes it per
+  row; `generateQuotePdf` passes it to the merge; the user applied Zoho
+  Writer's native "Group By" merge-field feature to the template and
+  confirmed "template is grouped." Secondary, non-blocking open item: "same
+  child-product filtering as the deal subtable" hasn't been independently
+  re-verified against a generated PDF -- see
+  `part5c-quote-template/template-update-guide.md`.
 
 ## Live sync note (2026-08-13, after Phase 5 deployment)
 

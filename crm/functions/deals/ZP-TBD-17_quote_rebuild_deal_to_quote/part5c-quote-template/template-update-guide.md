@@ -1,16 +1,23 @@
 # Quote PDF template -- group by parent category (Part 5c)
 
-## STATUS (2026-08-13): field + data plumbing done. Actual grouping NOT done yet -- confirmed still a plain column, not sections.
+## STATUS (2026-08-13): DONE -- field, data plumbing, and grouping all confirmed live.
 
-Andrea's spec for this part is one sentence: "Update the quote print/PDF
-template so products are grouped by the same parent categories and use the
-same child-product filtering as the deal subtable." Progress so far: the new
-`Quoted_Items.Parent_Product` field exists, `pullProductsFromDeal` writes it,
-`generateQuotePdf` passes it to the merge, and the template shows it --
-but only as an extra column on the existing flat table. The actual
-"grouped by parent category" ask is still unmet. Zoho Writer has a native
-feature built for exactly this (**Group By** merge fields) -- see step 4
-below for how to use it.
+Andrea's spec for this part: "Update the quote print/PDF template so
+products are grouped by the same parent categories and use the same
+child-product filtering as the deal subtable." The `Quoted_Items.Parent_Product`
+field exists, `pullProductsFromDeal` writes it, `generateQuotePdf` passes it
+to the merge, and the user has since applied Zoho Writer's native **Group
+By** merge-field feature (see step 4 below) to actually group the template's
+line items into sections by category -- confirmed by the user 2026-08-13:
+"template is grouped." The core ask is met.
+
+**Still open, secondary, not blocking**: whether "same child-product
+filtering as the deal subtable" needs anything beyond what grouping already
+provides -- worth a quick look at a generated Quote PDF against the Deal's
+own subtable view side by side, and flag to Andrea only if something looks
+genuinely missing (e.g. a category or product she'd expect visible isn't,
+or one that should be hidden appears). Not assumed to be a gap -- just not
+independently re-verified this session.
 
 ## What's confirmed live (2026-08-13)
 
