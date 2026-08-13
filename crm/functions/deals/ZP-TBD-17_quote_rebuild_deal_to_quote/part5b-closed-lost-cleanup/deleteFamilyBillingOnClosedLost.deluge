@@ -172,7 +172,19 @@ void automation.deleteFamilyBillingOnClosedLost(String dealId)
 
             if(booksOk == true)
             {
-                zoho.crm.deleteRecord(cfg.get("module"),recId.toLong());
+                // Live-applied change (2026-08-13, by the user): zoho.crm.deleteRecord
+                // was replaced with the invokeConnector("crm.delete", ...) form below --
+                // same intent (delete the CRM record), different call mechanism. Not
+                // authored by Claude; synced here from the user's report of the live
+                // function after deployment, since no function ID was available this
+                // session to pull it back via MCP (the Closed-Lost workflow rule wasn't
+                // found under this name when searching Deals workflow rules -- see
+                // metadata.md "Live sync note" for detail). If this was changed for a
+                // specific reason (e.g. deleteRecord failing/behaving differently in
+                // this org), note it here for future reference.
+                deleteRecordMap = Map();
+                deleteRecordMap = {"module":cfg.get("module"),"id":recId};
+                deleteResp = zoho.crm.invokeConnector("crm.delete",deleteRecordMap);
                 logLines.add("DELETED " + cfg.get("module") + " " + recId + "  (books id: " + booksId + ")");
             }
             else

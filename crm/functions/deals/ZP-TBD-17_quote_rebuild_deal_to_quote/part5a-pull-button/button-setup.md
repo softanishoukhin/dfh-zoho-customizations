@@ -1,15 +1,6 @@
 # "Pull Products from Deal" button -- setup steps
 
-## 1. Create the function
-
-Setup > Developer Space > Functions > New Function. Paste
-`pullProductsFromDeal.deluge`. Confirm the signature is:
-
-```
-string standalone.pullProductsFromDeal(String quoteId)
-```
-
-## 2. Create the button
+## 1. Create the button, then write the function from inside it
 
 Setup > Customization > Modules and Fields > **Quotes** > Buttons > New
 Custom Button.
@@ -17,8 +8,21 @@ Custom Button.
 - Button label: **Pull Products from Deal**
 - Placement: Quote record detail page, top button bar (per spec 5a: "Native
   custom button on the Quote record's top button bar")
-- Action: **Writing Function** -> select `pullProductsFromDeal`
+- Action: **Writing Function** -> **Write your own** -> paste
+  `pullProductsFromDeal.deluge`
 - Argument mapping: `quoteId` <- `{$Quotes.id}`
+
+Confirmed live 2026-08-13: building the function this way (from inside the
+button's own action setup, rather than a separate standalone function later
+attached to the button) makes Zoho create it under the **button** category
+automatically -- signature comes out as:
+
+```
+string button.pullProductsFromDeal(String quoteId)
+```
+
+not `standalone.pullProductsFromDeal`. The repo file already reflects this;
+paste it as-is.
 
 ## 3. Confirm Quote knows its source Deal
 

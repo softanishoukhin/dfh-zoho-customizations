@@ -52,8 +52,15 @@
      Every failure path returns a specific, readable message instead of a
      generic success string -- Andrea's spec explicitly calls out removing
      "the silent error handling" from the old function.
+
+   FUNCTION CATEGORY -- live-applied, synced 2026-08-13
+     Built live as button.pullProductsFromDeal, not standalone.pullProductsFromDeal
+     -- Zoho's "New Function" flow from inside a custom-button's action setup
+     creates the function directly under the button category rather than
+     standalone. Same function body either way; category doesn't change any
+     of the logic below.
    =====================================================================*/
-string standalone.pullProductsFromDeal(String quoteId)
+string button.pullProductsFromDeal(String quoteId)
 {
 	qId = ifnull(quoteId,"").trim();
 	if(qId == "")

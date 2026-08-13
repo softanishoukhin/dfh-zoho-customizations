@@ -119,7 +119,9 @@ approved (the exact line is given in that file's own comment).
 ## What's built (Part 5) -- see part5a/ part5b/ part5c/
 
 - **5a -- "Pull Products from Deal" button**: new
-  `standalone.pullProductsFromDeal(String quoteId)`, trimmed from the old
+  `button.pullProductsFromDeal(String quoteId)` (built live directly from
+  inside the button's action setup, which is why it's `button.` category
+  rather than `standalone.` -- confirmed 2026-08-13), trimmed from the old
   12-argument `createOrUpdateQuoteFromDeal` down to "read deal -> write
   quote" exactly as specified -- no suppression flag, no PDF generation, no
   email, no silent error swallowing. See `part5a-pull-button/`.
@@ -135,6 +137,30 @@ approved (the exact line is given in that file's own comment).
   Quote's own line items carry no category/parent reference at all, unlike
   Sales_Orders/Invoices, which already do). Flagged for sign-off rather than
   built on an assumption -- see `part5c-quote-template/template-update-guide.md`.
+
+## Live sync note (2026-08-13, after Phase 5 deployment)
+
+The user deployed through Phase 5 and reported two differences between what
+they applied live and what this repo had, both now synced into the repo
+files above:
+
+1. **`deleteFamilyBillingOnClosedLost`'s delete call** changed from
+   `zoho.crm.deleteRecord(cfg.get("module"),recId.toLong());` to
+   `zoho.crm.invokeConnector("crm.delete",{"module":cfg.get("module"),"id":recId});`.
+   Reported via the user pasting the current live block directly, not
+   pulled fresh via MCP -- the workflow rule wrapping this function wasn't
+   found when searching all ~101 Deals workflow rules by name (checked both
+   pages, no rule name containing "Lost"/"Closed"/"Billing"/"Delete"/"Family"
+   matched), so no function ID was available to pull it back and confirm
+   the WHOLE function matches, only the delta the user showed. If anything
+   about this function looks off after more testing, the safest next step
+   is pulling it by ID directly (visible in the URL when editing it in
+   Zoho) rather than assuming the rest of this file still matches live
+   exactly.
+2. **`pullProductsFromDeal`'s function category** is `button.` not
+   `standalone.` -- expected, given it was built from inside the button's
+   own "write your own function" flow rather than as a separately-authored
+   standalone function. Repo file and setup doc both updated to match.
 
 ## What's reused, unchanged (Part 6)
 
