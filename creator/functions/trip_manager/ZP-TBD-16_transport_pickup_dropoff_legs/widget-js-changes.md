@@ -61,3 +61,46 @@ changes) -- not a Transports-feature change, just cleanup of code already being 
 ```
 (`getTransportItems`, `assignTransportItem`, `getTripTransportItems` already existed in the map
 -- only `assignTransportItem`'s call-site payload changed, to add `leg`.)
+
+## Transports Calendar -- added live 2026-08-14, NOT authored by Claude
+
+Reported by the user 2026-08-14: "I did additional testing and also updated widget file and
+some functions with a few small ads" (Andrea). Confirmed by reading the live-matching local
+`widget.html`/`Trip_Manager.ds` directly (per the user: "In our directory all widgets and ds
+files are latest according to live") -- this section documents what's there now, for
+traceability. Not reviewed/tested by Claude, per the user's explicit instruction that no
+additional testing time should be spent on this task.
+
+A second, calendar-based way to view and assign transport items, alongside the list-based
+Transports dashboard this task originally built (that dashboard is unchanged). New
+`tp-cal-panel` section next to the Transports list:
+
+- **Month calendar grid** (`renderTpCalendar`) -- one cell per day, showing a pill per trip
+  scheduled that day (time + pickup→destination city abbreviation, or "Loc?" if neither city is
+  set). Prev/next month navigation. Backed by a new function, `getTransportCalendarTrips`
+  (`Get_Transport_Calendar_Trips`, GET) -- see `getTransportCalendarTrips.deluge` in this folder.
+- **City filter pills** (`renderTpCityFilters`/`tpMatchesCity`) -- derived dynamically from
+  whatever pickup/destination cities actually appear in the loaded trip window, not a hardcoded
+  list.
+- **Click a day's trip pill** (`tpSelectTrip`) -> right-hand trip panel (`renderTpTripPanel`)
+  shows that trip's schedule, route, facility (if Autopsy/Hospital), and its transport items
+  already split by Pickup Leg / Dropoff Leg (reads the same `state.transportsData` the list
+  dashboard already loads via `getAllTransportItems` -- no separate fetch for this).
+- **Assign from the calendar** (`window.tpAssign`) -- a dropdown of currently-unassigned
+  (Requested-status) items, with "+ Pickup Leg"/"+ Dropoff Leg" buttons, calling the SAME
+  `assignTransportItem` API the list dashboard's per-trip picker already used. Remove uses the
+  same `unassignTransportFromDash` already built for the list dashboard -- no new
+  assign/unassign backend needed for this, just a new front-end entry point onto the existing
+  one.
+- **Persistence across nav-away/iframe reload** (`tpPersist`/`tpRestore`) -- remembers the
+  selected filter, city filter, selected trip, and calendar month/year, following the same
+  pattern already used elsewhere in this widget for surviving reloads.
+
+### Notable: closes a previously-flagged gap
+
+This folder's `metadata.md` flagged, as a known unsolved limitation: `getAllTransportItems()`
+doesn't fetch the related Trip's `Scheduled_Date`, because "COQL dot-notation joins into a
+custom module's lookup weren't verified working reliably enough to depend on... a per-row
+secondary fetch would be slow for a 200-row dashboard." `getTransportCalendarTrips` sidesteps
+this entirely by querying **Trips directly** (not Transport), so `Scheduled_Date` -- along with
+every other trip field the calendar needs -- comes back in the same query, no join required.

@@ -5,7 +5,14 @@ change (Transport.Leg) this side also depends on.
 
 Zoho App: Creator (Driver App)
 Created By: Claude Code, 2026-08-12
-Production Deployed: No -- guideline only, per the hard rule on Creator .ds files.
+Production Deployed: **Yes -- confirmed 2026-08-14.** Andrea: "great job on this. I did
+additional testing... mark dev complete please. No additional time should be spent for
+testing." Confirmed by diffing the local `Driver_App.ds`/`app/app.js`
+(`d:\Office\Andrea_Projects\DFH\widgets\driverApp\driverApp\`, confirmed current/live-matching
+by the user) against this folder's guideline files -- content matches exactly, nothing
+additional found on the Driver App side (unlike Trip Manager, which had a new Transports
+Calendar feature added -- see that folder's metadata.md). **DEV COMPLETE, per explicit
+instruction no further testing is planned on this task.**
 
 ## What this side of the task does
 

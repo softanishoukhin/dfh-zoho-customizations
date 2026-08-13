@@ -5,9 +5,13 @@ creator/functions/driver_app/ZP-TBD-16_transport_pickup_dropoff_legs/ -- same ta
 per repo convention)
 Created By: Claude Code, 2026-08-12 (design + build)
 Sandbox Tested: No
-Production Deployed: No -- not yet applied live. This folder is the guideline; the .ds function
-bodies below need to be pasted into Trip_Manager.ds in Creator by the user (per repo's hard rule:
-Creator .ds files are never edited directly, only guided).
+Production Deployed: **Yes -- confirmed 2026-08-14.** Andrea: "great job on this. I did
+additional testing and also updated widget file and some functions with a few small ads...
+mark dev complete please. No additional time should be spent for testing." Confirmed by the
+user that the local `Trip_Manager.ds` / `app/widget.html` in
+`d:\Office\Andrea_Projects\DFH\widgets\tripManagerApp\` are current and match live. This repo
+folder has been synced against that local state (see "Live sync, 2026-08-14" below) --
+**DEV COMPLETE, per explicit instruction no further testing is planned on this task.**
 
 ## What this task is
 
@@ -82,11 +86,25 @@ dashboard. If DFH wants the trip's date on the dashboard without an extra click,
 follow-up (either confirm the dot-notation join works, or the TM widget cross-references
 already-loaded trip data client-side by tripId where available).
 
+## Live sync, 2026-08-14
+
+Compared the local `Trip_Manager.ds`/`app/widget.html` (confirmed current by the user) against
+this folder's prior documentation. Found one addition beyond this task's original scope: a
+**Transports Calendar** view (`getTransportCalendarTrips` + a set of `tp*`-prefixed functions in
+`widget.html`) -- NOT authored by Claude, added live by the user's team. Documented in
+`widget-js-changes.md`'s "Transports Calendar" section and added as
+`getTransportCalendarTrips.deluge` in this folder for traceability. It reuses the existing
+`assignTransportItem`/`unassignTransportItem`/`getAllTransportItems` backend unchanged -- no
+other function in this folder needed any change to support it. No other differences found
+between local files and this folder's documentation.
+
 ## Related files in this folder
 
 getTransportItems.deluge, assignTransportItem.deluge, unassignTransportItem.deluge,
 getTripTransportItems.deluge, getAllTransportItems.deluge, createTransportItem.deluge,
-crm-field-changes.md, deployment-checklist.md, test-cases.md, rollback.deluge.
+getTransportCalendarTrips.deluge (live-applied by the user, not authored by Claude -- see
+"Live sync" above), crm-field-changes.md, deployment-checklist.md, test-cases.md,
+rollback.deluge.
 
 See creator/functions/driver_app/ZP-TBD-16_transport_pickup_dropoff_legs/ for the Driver App
 side (per-item completion persistence) and the widget-js-changes.md files in both folders for

@@ -1,0 +1,181 @@
+// NOT authored by Claude -- added live directly by the user's team during additional testing
+// (reported 2026-08-14, confirmed live via local Trip_Manager.ds, which the user confirmed is
+// current/matches live). Documented here for completeness/traceability, not built or reviewed
+// by Claude. Backs the new Transports Calendar view (see widget-js-changes.md's "Transports
+// Calendar" section) -- a monthly, city-filterable calendar of all Scheduled trips, letting a
+// TM user click a trip and assign/unassign transport items to its Pickup/Dropoff legs directly,
+// as an alternative to the list-based Transports dashboard this task originally built.
+//
+// Notably, this also closes the "Known limitation, flagged not solved" gap noted in this
+// folder's metadata.md for getAllTransportItems() (that function doesn't fetch the related
+// Trip's Scheduled_Date) -- this function queries Trips directly instead of Transport, so the
+// date comes along for free.
+list getTransportCalendarTrips()
+{
+	// Feeds the Transports calendar. Returns every SCHEDULED trip in a rolling window
+	// (today-7 .. today+120) with date-time, pickup/destination city + address, and facility.
+	// ALL trip types are returned, including Funeral. Facility = Autopsy_Location (Accounts)
+	// if set, else Hospital (Products).
+	result = List();
+	try
+	{
+		startStr = zoho.currentdate.subDay(7).toString("yyyy-MM-dd") + "T00:00:00-05:00";
+		endStr = zoho.currentdate.addDay(120).toString("yyyy-MM-dd") + "T23:59:59-05:00";
+		qPayload = Map();
+		qPayload.put("select_query","select id, Trip_Type, Scheduled_Date, Pickup_City, Destination_City, Pickup_Street_Address, Destination_Street_Address, Autopsy_Location, Hospital from Trips where Trip_Status = 'Scheduled' and Scheduled_Date between '" + startStr + "' and '" + endStr + "' order by Scheduled_Date asc limit 200");
+		resp = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v7/coql"
+			type :POST
+			parameters:qPayload.toString()
+			headers:{"Content-Type":"application/json"}
+			connection:"zoho_oauth_connection"
+		];
+		autopsyIds = List();
+		hospitalIds = List();
+		rawList = List();
+		if(resp.containKey("data"))
+		{
+			for each  tr in resp.get("data")
+			{
+				m = Map();
+				m.put("id",ifnull(tr.get("id"),""));
+				m.put("type",ifnull(tr.get("Trip_Type"),""));
+				m.put("scheduledDate",ifnull(tr.get("Scheduled_Date"),""));
+				m.put("pickupCity",ifnull(tr.get("Pickup_City"),""));
+				m.put("destCity",ifnull(tr.get("Destination_City"),""));
+				m.put("pickupAddr",ifnull(tr.get("Pickup_Street_Address"),""));
+				m.put("destAddr",ifnull(tr.get("Destination_Street_Address"),""));
+				alId = "";
+				alLk = tr.get("Autopsy_Location");
+				if(alLk != null)
+				{
+					try
+					{
+						alId = ifnull(alLk.get("id"),"");
+					}
+					catch (e)
+					{
+					}
+				}
+				hoId = "";
+				hoLk = tr.get("Hospital");
+				if(hoLk != null)
+				{
+					try
+					{
+						hoId = ifnull(hoLk.get("id"),"");
+					}
+					catch (e)
+					{
+					}
+				}
+				m.put("autopsyId",alId);
+				m.put("hospitalId",hoId);
+				if(alId != "" && !autopsyIds.contains(alId))
+				{
+					autopsyIds.add(alId);
+				}
+				if(hoId != "" && !hospitalIds.contains(hoId))
+				{
+					hospitalIds.add(hoId);
+				}
+				rawList.add(m);
+			}
+		}
+		acctNames = Map();
+		if(!autopsyIds.isEmpty())
+		{
+			try
+			{
+				aList = "";
+				for each  aid in autopsyIds
+				{
+					if(aList != "")
+					{
+						aList = aList + ",";
+					}
+					aList = aList + "'" + aid + "'";
+				}
+				aq = Map();
+				aq.put("select_query","select id, Account_Name from Accounts where id in (" + aList + ") limit 100");
+				aResp = invokeurl
+				[
+					url :"https://www.zohoapis.com/crm/v7/coql"
+					type :POST
+					parameters:aq.toString()
+					headers:{"Content-Type":"application/json"}
+					connection:"zoho_oauth_connection"
+				];
+				if(aResp.containKey("data"))
+				{
+					for each  ar in aResp.get("data")
+					{
+						acctNames.put(ifnull(ar.get("id"),""),ifnull(ar.get("Account_Name"),""));
+					}
+				}
+			}
+			catch (e)
+			{
+			}
+		}
+		prodNames = Map();
+		if(!hospitalIds.isEmpty())
+		{
+			try
+			{
+				pList = "";
+				for each  pid in hospitalIds
+				{
+					if(pList != "")
+					{
+						pList = pList + ",";
+					}
+					pList = pList + "'" + pid + "'";
+				}
+				pq = Map();
+				pq.put("select_query","select id, Product_Name from Products where id in (" + pList + ") limit 100");
+				pResp = invokeurl
+				[
+					url :"https://www.zohoapis.com/crm/v7/coql"
+					type :POST
+					parameters:pq.toString()
+					headers:{"Content-Type":"application/json"}
+					connection:"zoho_oauth_connection"
+				];
+				if(pResp.containKey("data"))
+				{
+					for each  pr in pResp.get("data")
+					{
+						prodNames.put(ifnull(pr.get("id"),""),ifnull(pr.get("Product_Name"),""));
+					}
+				}
+			}
+			catch (e)
+			{
+			}
+		}
+		for each  m in rawList
+		{
+			fac = "";
+			alId2 = m.get("autopsyId");
+			hoId2 = m.get("hospitalId");
+			if(alId2 != "" && acctNames.containKey(alId2))
+			{
+				fac = acctNames.get(alId2);
+			}
+			else if(hoId2 != "" && prodNames.containKey(hoId2))
+			{
+				fac = prodNames.get(hoId2);
+			}
+			m.put("facility",fac);
+			m.remove("autopsyId");
+			m.remove("hospitalId");
+			result.add(m);
+		}
+	}
+	catch (e)
+	{
+	}
+	return result;
+}
