@@ -1,0 +1,186 @@
+/* =====================================================================
+   deleteFamilyBillingOnClosedLost(dealId)
+   ---------------------------------------------------------------------
+   WHERE IT RUNS
+     Instant action of a CRM Workflow Rule on the Deals module,
+     criteria: Stage = "Closed Lost".  Build this function INSIDE the
+     workflow (Instant Actions -> Functions -> write your own).
+     Argument: dealId  (map: Deals > Record Id).
+
+   WHAT IT DOES
+     Deletes the FAMILY / arrangement Sales Order + Invoice for a lost
+     deal, in BOTH Zoho CRM and Zoho Books.  It NEVER deletes police /
+     hospital / storage charges - the family still owes those.
+
+   THE DELETE CONDITIONS  (read carefully - this is the safety logic)
+     A Sales Order or Invoice is DELETED only if, for EVERY line item,
+       (A) the line's Parent_Product (category) has
+           Delete_on_Closed_Lost = true, AND
+       (B) the line's product does NOT carry an institutional
+           Product_Category (Storage, Storage - Family, Hospital,
+           Pickup, PME Fee, PME Transport Fee, Decompose,
+           Decompose Storage, Autopsy Trip, Amber Vehicle, Trip).
+     If ANY line fails either check, the WHOLE record is KEPT.
+     A record with no line items is KEPT.
+     => Two independent guards.  A storage charge is protected even if
+        its product is mis-filed under a family parent category.
+
+   ORDER OF DELETION
+     Zoho Books FIRST (invoices are always draft on a lost deal, so the
+     delete is always allowed), THEN the CRM record.  If the Books
+     delete fails, the CRM record is KEPT so it can be retried - the
+     Books record is never orphaned.
+
+   IDEMPOTENT
+     If nothing qualifies, it does nothing.  Safe to re-run.
+
+   PROVENANCE -- this function is copied verbatim from Andrea's spec
+   (DFH_Quote_Rebuild_Complete_Spec_2026-08-12.docx / deleteFamilyBillingOnClosedLost.deluge),
+   with ONLY the two explicitly-flagged config values filled in below --
+   no other line changed. See "Config values -- confirmed live 2026-08-13"
+   at the bottom of this comment block.
+   =====================================================================*/
+void automation.deleteFamilyBillingOnClosedLost(String dealId)
+{
+    // ---------- CONFIG : confirmed live 2026-08-13, see note below ----------
+    booksOrgId = "872327358";   // DFH Zoho Books org id -- confirmed via ZohoBooks_get_organization: "Delapenha Funeral Home Ltd", active, mode "live"
+    booksConn  = "zohooauth";   // existing CRM->Books connection -- confirmed: has ZohoBooks.fullaccess.ALL + explicit ZohoBooks.invoices.Delete scope, already used by every other Books/Writer/WorkDrive call in this feature
+
+    // Product_Category values that must NEVER be deleted (family still owes):
+    protectedCats = {"Storage","Storage - Family","Hospital","Pickup","PME Fee","PME Transport Fee","Decompose","Decompose Storage","Autopsy Trip","Amber Vehicle","Trip"};
+
+    // caches so we look up each parent / product only once
+    parentFlagCache = Map();   // parentProductId -> Delete_on_Closed_Lost (true/false)
+    prodCatCache    = Map();   // productId       -> Product_Category
+    logLines        = List();
+
+    // the two record types to clean up, with their confirmed field names
+    targets = List();
+    targets.add({"module":"Sales_Orders","subform":"Ordered_Items","dealField":"Deal_Name","booksField":"SO_Books_ID","booksPath":"salesorders"});
+    targets.add({"module":"Invoices","subform":"Invoiced_Items","dealField":"Deal_Name__s","booksField":"Books_Invoice_ID","booksPath":"invoices"});
+
+    for each cfg in targets
+    {
+        recs = List();
+        try
+        {
+            recs = zoho.crm.searchRecords(cfg.get("module"),"(" + cfg.get("dealField") + ":equals:" + dealId + ")");
+        }
+        catch (e)
+        {
+            recs = List();   // no records on this deal -> nothing to do
+        }
+        if(recs == null)
+        {
+            recs = List();
+        }
+
+        for each r in recs
+        {
+            recId = r.get("id");
+
+            // reload the record so the line-item subform is guaranteed present
+            full  = zoho.crm.getRecordById(cfg.get("module"),recId.toLong());
+            lines = ifnull(full.get(cfg.get("subform")),List());
+
+            canDelete = true;
+            reason    = "";
+
+            if(lines.size() == 0)
+            {
+                canDelete = false;
+                reason    = "no line items";
+            }
+
+            for each line in lines
+            {
+                // ---- Guard (B): protected product category ----
+                prodLk = line.get("Product_Name");   // the product on this line
+                if(prodLk != null && prodLk.get("id") != null)
+                {
+                    pid  = prodLk.get("id").toString();
+                    pcat = prodCatCache.get(pid);
+                    if(pcat == null)
+                    {
+                        prod = zoho.crm.getRecordById("Products",pid.toLong());
+                        pcat = ifnull(prod.get("Product_Category"),"").toString();
+                        prodCatCache.put(pid,pcat);
+                    }
+                    if(protectedCats.contains(pcat))
+                    {
+                        canDelete = false;
+                        reason    = "protected product category: " + pcat;
+                        break;
+                    }
+                }
+
+                // ---- Guard (A): parent category must be flagged deletable ----
+                parLk = line.get("Parent_Product");  // the category on this line
+                allow = false;
+                if(parLk != null && parLk.get("id") != null)
+                {
+                    parId  = parLk.get("id").toString();
+                    cached = parentFlagCache.get(parId);
+                    if(cached == null)
+                    {
+                        par    = zoho.crm.getRecordById("Products",parId.toLong());
+                        cached = ifnull(par.get("Delete_on_Closed_Lost"),false);
+                        parentFlagCache.put(parId,cached);
+                    }
+                    allow = cached;
+                }
+                if(allow != true)
+                {
+                    canDelete = false;
+                    reason    = "parent category not flagged deletable (or missing)";
+                    break;
+                }
+            }
+
+            if(canDelete == false)
+            {
+                logLines.add("KEPT  " + cfg.get("module") + " " + recId + "  -> " + reason);
+                continue;
+            }
+
+            // ---------- DELETE: Books first, then CRM ----------
+            booksId = ifnull(full.get(cfg.get("booksField")),"").toString();
+            booksOk = true;
+
+            if(booksId != "")
+            {
+                try
+                {
+                    bResp = invokeurl
+                    [
+                        url        : "https://www.zohoapis.com/books/v3/" + cfg.get("booksPath") + "/" + booksId + "?organization_id=" + booksOrgId
+                        type       : DELETE
+                        connection : booksConn
+                    ];
+                    if(bResp.get("code") != 0)
+                    {
+                        booksOk = false;
+                        logLines.add("BOOKS-FAIL " + cfg.get("module") + " " + recId + " -> " + bResp);
+                    }
+                }
+                catch (e)
+                {
+                    booksOk = false;
+                    logLines.add("BOOKS-ERR  " + cfg.get("module") + " " + recId + " -> " + e.toString());
+                }
+            }
+
+            if(booksOk == true)
+            {
+                zoho.crm.deleteRecord(cfg.get("module"),recId.toLong());
+                logLines.add("DELETED " + cfg.get("module") + " " + recId + "  (books id: " + booksId + ")");
+            }
+            else
+            {
+                logLines.add("KEPT (books delete failed - will retry) " + cfg.get("module") + " " + recId);
+            }
+        }
+    }
+
+    info logLines;   // appears in the function execution log
+}

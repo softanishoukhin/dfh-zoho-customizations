@@ -1,3 +1,14 @@
+*** SUPERSEDED 2026-08-13 -- see ../ZP-TBD-17_quote_rebuild_deal_to_quote/ ***
+Andrea's post-mortem (attached to her 2026-08-13 comment,
+DFH_Quote_Rebuild_Complete_Spec_2026-08-12.docx) determined this entire
+feature -- the popup, the suppression flag, the race-condition fixes, the
+12-client-script sync logic, convertQuoteToSalesOrder -- does not meet the
+actual requirement and must be removed. createOrUpdateQuoteFromDeal and
+generateQuotePdf are the only pieces reused (trimmed/unchanged respectively)
+in the rebuild. Left in place here for history; do not build on top of
+anything in this folder going forward -- see ZP-TBD-17 instead.
+*** END SUPERSEDED NOTICE ***
+
 Task ID: ZP-TBD-9 (placeholder)
 Zoho App: CRM (+ Zoho Writer, Zoho WorkDrive)
 Module: Deals (buttons + suppression guard), Quotes (new Quote_Public_URL field), System_Data

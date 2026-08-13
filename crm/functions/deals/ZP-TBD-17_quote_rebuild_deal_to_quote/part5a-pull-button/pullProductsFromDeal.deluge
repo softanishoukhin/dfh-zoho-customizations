@@ -1,0 +1,187 @@
+/* =====================================================================
+   pullProductsFromDeal(quoteId)
+   ---------------------------------------------------------------------
+   WHERE IT RUNS
+     A new native custom button on the Quote record's top button bar
+     ("Pull Products from Deal"). Argument: quoteId <- {$Quotes.id}.
+
+   WHAT IT DOES
+     Reads the linked Deal's current Product_Selection subtable and writes
+     it to this Quote's line items (Product_Details), replacing whatever
+     was there before. Re-clicking after further Deal edits re-syncs.
+     Nothing else -- no PDF generation, no email, no suppression flag, no
+     billing side effect of any kind. Per Andrea's spec (Part 5a): "trimmed
+     to: read deal -> write quote."
+
+   WHERE THIS CAME FROM
+     Trimmed down from the old standalone.createOrUpdateQuoteFromDeal
+     (12 args: dealId, firstRowProductId/Quantity/UnitPrice/Discount,
+     forceEmpty, editedRowIndex/ProductId/Quantity/UnitPrice/Discount,
+     deletedRowIndex). All of that plumbing existed ONLY to work around one
+     problem: that old function ran automatically inside a race against a
+     1-minute billing timer, so it had to patch in not-yet-committed row
+     data instead of trusting a fresh server read. This button has no such
+     race -- it is a manual click, any time, and always reads the Deal's
+     CURRENT, fully-committed state. So none of that plumbing is needed:
+     just read Product_Selection fresh and build the Quote from it.
+     Also removed: Awaiting_Quote_Acceptance (the whole suppression
+     mechanism is gone in this rebuild -- billing runs unconditionally,
+     see Part 2 of the spec); the PDF-generation and email-send calls (not
+     part of "read deal -> write quote" -- staff email the Quote to the
+     family using Zoho's own native Send Email action on the Quote record,
+     same as any other Quote); and every silent catch(e){} that swallowed
+     an error and still returned "true" -- this function now returns a
+     real message on every failure path instead.
+
+   WHY IT DOESN'T NEED TO RUN manageCasketPackageProduct /
+   manageMediaSelectoinsRecord ITSELF
+     The old function had to run those two helpers inline (commented out in
+     the last live version) because the whole normal Sales-Order pipeline --
+     where those helpers normally run -- was suppressed for the entire time
+     a Deal was in the Quote flow. In this rebuild, the SO/Invoice pipeline
+     is NEVER suppressed (Part 2: "lets the Sales Order and Invoice
+     auto-create from the deal exactly as they do today"), so
+     createSalesOrderForDifferentPipelines runs those helpers on its own
+     normal ~1-minute schedule regardless of whether anyone ever clicks this
+     button. By the time this button is clicked, Product_Selection will
+     already reflect any casket-package companion product from that pipeline
+     having run -- reading it fresh, as this function does, picks that up
+     for free. No duplicate logic needed here.
+
+   ERRORS
+     Every failure path returns a specific, readable message instead of a
+     generic success string -- Andrea's spec explicitly calls out removing
+     "the silent error handling" from the old function.
+   =====================================================================*/
+string standalone.pullProductsFromDeal(String quoteId)
+{
+	qId = ifnull(quoteId,"").trim();
+	if(qId == "")
+	{
+		return "Missing quoteId";
+	}
+	// REST v8 GET, not getRecordById -- getRecordById is known to silently
+	// drop subform data in this org (same gotcha already fixed elsewhere in
+	// this feature, e.g. generateQuotePdf.deluge / convertQuoteToSalesOrder).
+	// Deal_Name is a plain lookup field here (not a subform), but using the
+	// same REST v8 GET consistently for every Quote read in this feature
+	// avoids re-litigating this per call site.
+	quoteInfo = Map();
+	try
+	{
+		quoteResp = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v8/Quotes/" + qId
+			type :GET
+			connection:"zohooauth"
+		];
+		quoteList = ifnull(quoteResp.get("data"),List());
+		if(quoteList.isEmpty())
+		{
+			return "Quote not found";
+		}
+		quoteInfo = quoteList.get(0);
+	}
+	catch (e)
+	{
+		return "Quote not found: " + e.toString();
+	}
+	dealLk = quoteInfo.get("Deal_Name");
+	dealId = "";
+	try
+	{
+		dealId = ifnull(dealLk.get("id"),"");
+	}
+	catch (e)
+	{
+		dealId = "";
+	}
+	if(dealId == "")
+	{
+		return "This Quote has no linked Deal to pull products from -- set Deal_Name on the Quote first.";
+	}
+	dealInfo = Map();
+	try
+	{
+		dealInfo = zoho.crm.getRecordById("Deals",dealId.toLong());
+	}
+	catch (e)
+	{
+		return "Deal not found: " + e.toString();
+	}
+	if(!dealInfo.containKey("id"))
+	{
+		return "Deal not found";
+	}
+	productRows = ifnull(dealInfo.get("Product_Selection"),List());
+	if(productRows.isEmpty())
+	{
+		return "No products on the Deal's product table -- add products to the Deal, then pull again.";
+	}
+	// Keys below are the WRITE-time convention Zoho's inventory subform API
+	// actually expects (lowercase product/quantity/list_price) -- different
+	// from the READ-time field names (Product_Name/Quantity/List_Price).
+	// Same conversion the old function already proved live.
+	quotedItems = List();
+	skippedRows = 0;
+	for each row in productRows
+	{
+		childProd = Map();
+		try
+		{
+			childProd = row.get("Child_Product");
+		}
+		catch (e)
+		{
+			childProd = Map();
+		}
+		prodId = "";
+		try
+		{
+			prodId = ifnull(childProd.get("id"),"");
+		}
+		catch (e)
+		{
+			prodId = "";
+		}
+		if(prodId == "")
+		{
+			skippedRows = skippedRows + 1;
+			continue;
+		}
+		qty = ifnull(row.get("Quantity"),1);
+		price = ifnull(row.get("Unit_Price"),ifnull(row.get("Price"),0));
+		disc = ifnull(row.get("Discount"),0);
+		qi = Map();
+		pn = Map();
+		pn.put("id",prodId);
+		qi.put("product",pn);
+		qi.put("quantity",qty);
+		qi.put("list_price",price);
+		if(disc != 0)
+		{
+			qi.put("Discount",disc);
+		}
+		quotedItems.add(qi);
+	}
+	if(quotedItems.isEmpty())
+	{
+		return "Product rows found but none resolved to a valid Product -- cannot pull. Check the Deal's Product Selection table.";
+	}
+	updateMap = Map();
+	updateMap.put("Product_Details",quotedItems);
+	try
+	{
+		zoho.crm.updateRecord("Quotes",qId.toLong(),updateMap,{"trigger":{"workflow"}});
+	}
+	catch (e)
+	{
+		return "Failed to update Quote: " + e.toString();
+	}
+	resultMsg = "Pulled " + quotedItems.size() + " product(s) from the Deal onto this Quote.";
+	if(skippedRows > 0)
+	{
+		resultMsg = resultMsg + " (" + skippedRows + " row(s) on the Deal had no product selected and were skipped.)";
+	}
+	return resultMsg;
+}
