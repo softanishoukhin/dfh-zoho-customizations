@@ -1,0 +1,141 @@
+/* =====================================================================
+   P-1 -- Police LNI 2-day storage cap
+   ---------------------------------------------------------------------
+   Requirement (PH_Billing_Requirements_FINAL.md, P-1): on a Letter of No
+   Interest (no autopsy), police storage billing is capped at pickup + up
+   to 2 days.
+
+   SCOPE: this is the LNI-only path. Confirmed safe/clear to build -- rate,
+   trigger, and cap value are all explicitly confirmed in the requirements.
+   Does NOT touch the separate autopsy-path storage function
+   (updateSalesorderWithStorageFee) -- whether the same cap applies there
+   is open question O-A2/O-7, unanswered as of 2026-08-14. See
+   ../findings/verification-findings.md for that function's already-pulled
+   live source, ready to apply the same one-line change the moment that
+   question is answered -- don't apply it before then.
+
+   VERIFIED LIVE 2026-08-14 (not assumed from FUNCTION_SOURCES.md's
+   reconstruction): pulled the full function via MCP
+   (id 6503357000003302110). Matches the doc's summary exactly -- no
+   discrepancies found in this one. This file is that live pull with
+   exactly one addition (marked below).
+
+   Called by workflow: "Storage Fee based on Letter of No Interest
+   Workflow" (Deals, field_update, criteria: Initial_Trip_Completed_At not
+   empty AND Letter_of_No_Interest_Date not empty). Workflow itself is
+   UNCHANGED -- only the function body changes.
+   =====================================================================*/
+void automation.StorageFeebasedonLetterofNoInterestWorkflow(Int crmid)
+{
+getRecordInfo = invokeurl
+[
+	url :"https://www.zohoapis.com/crm/v2.1/Deals/" + crmid
+	type :GET
+	connection:"zohooauth"
+];
+recordInfo = getRecordInfo.get("data").get(0);
+salesOrders = standalone.COQLQuery("select Subject from Sales_Orders where Deal_Name = '" + crmid + "' and Sales_Order_Type = 'Police Cases' limit 1");
+info salesOrders;
+if(salesOrders.size() > 0)
+{
+	salesOrderDetails = invokeurl
+	[
+		url :"https://www.zohoapis.com/crm/v7/Sales_Orders/" + salesOrders.toList().get(0).get("id")
+		type :GET
+		connection:"zohooauth"
+	];
+	salesOrderInfo = salesOrderDetails.get("data").get(0);
+	try
+	{
+		extraStorageDaysForAutopsy = recordInfo.get("Initial_Trip_Completed_At").days360(recordInfo.get("Letter_of_No_Interest_Date"));
+		extraStorageDaysForAutopsy = extraStorageDaysForAutopsy + 1;
+		// ===== P-1 CHANGE (2026-08-14) -- the only line added in this file =====
+		// Cap at 2 days per the confirmed requirement: "pickup + up to 2 days."
+		// If the LNI is issued within 1 day, this naturally evaluates to 1 and
+		// is left alone -- the cap only clips values ABOVE 2.
+		if(extraStorageDaysForAutopsy > 2)
+		{
+			extraStorageDaysForAutopsy = 2;
+		}
+		// ===== END P-1 CHANGE =====
+	}
+	catch (e)
+	{
+		extraStorageDaysForAutopsy = 0;
+	}
+	// Fetch "Storage Fee" product details
+	productDetails = zoho.crm.getRecordById("Products","6503357000002869275");
+	// Storage Fee Product ID
+	storageProductID = productDetails.get("id");
+	lineItemList = list();
+	if(salesOrderInfo.get("Ordered_Items").size() > 0)
+	{
+		lineItemList = salesOrderInfo.get("Ordered_Items");
+	}
+	// Check if "Storage Fee" already exists
+	existingStorageFeeIndex = -1;
+	// Initialize index variable to -1
+	for each  item in lineItemList
+	{
+		if(item.contains("Product_Name"))
+		{
+			productName = item.get("Product_Name");
+			if(productName != null && productName.contains("id") && productName.get("id") == storageProductID)
+			{
+				existingStorageFeeIndex = lineItemList.indexOf(item);
+				// Get the index of the matching item
+				break;
+			}
+		}
+	}
+	if(extraStorageDaysForAutopsy > 0)
+	{
+		// If the product exists, update it; otherwise, add a new one
+		if(existingStorageFeeIndex >= 0)
+		{
+			existingItem = lineItemList.get(existingStorageFeeIndex);
+			existingItem.put("Quantity",extraStorageDaysForAutopsy);
+			// Remove the old item and add the updated item
+			lineItemList.remove(existingStorageFeeIndex);
+			lineItemList.add(existingItem);
+		}
+		else
+		{
+			// If not found, add a new row for "Storage Fee"
+			productMap = Map();
+			productMap.put("Product_Name",storageProductID);
+			productMap.put("Quantity",extraStorageDaysForAutopsy);
+			productMap.put("List_Price",productDetails.get("Unit_Price"));
+			lineItemList.add(productMap);
+		}
+	}
+	else
+	{
+		if(existingStorageFeeIndex >= 0)
+		{
+			lineItemList.remove(existingStorageFeeIndex);
+		}
+	}
+	// Prepare and update the Sales Order
+	salesOrderMap = Map();
+	salesOrderMap.put("Ordered_Items",lineItemList);
+	recordList = list();
+	recordList.add(salesOrderMap);
+	dataMap = Map();
+	dataMap.put("data",recordList);
+	info dataMap;
+	updateSalesOrder = invokeurl
+	[
+		url :"https://www.zohoapis.com/crm/v2.1/Sales_Orders/" + salesOrders.toList().get(0).get("id")
+		type :PUT
+		parameters:dataMap.toString()
+		connection:"zohooauth"
+	];
+	info "updateSalesOrder";
+	info updateSalesOrder;
+	if(!isNull(recordInfo.get("Account_Name")))
+	{
+		standalone.createInvoiceBasedOnSalesOrderForPolice(crmid);
+	}
+}
+}
