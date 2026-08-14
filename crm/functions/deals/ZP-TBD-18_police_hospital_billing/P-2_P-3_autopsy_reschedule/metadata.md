@@ -74,7 +74,7 @@ billing) because P-4 (the X-ray flow) has not been built yet -- this reason is i
 routed away from this function, but nothing yet exists to catch it on the other end. Flagged
 to Andrea as an active gap while P-4 is being built next, not a regression.
 
-## Deploy status: P-1/P-2/P-3 COMPLETE, P-4 ADDED NOT YET DEPLOYED
+## Deploy status: P-1, P-2, P-3, P-4 ALL DEPLOYED AND CONFIRMED PASSING (2026-08-15)
 1. Task_Type picklist value confirmed working (no issue reported in testing).
 2. Function `handleAutopsyReschedule` created and deployed.
 3. Workflow Rule on Operations created and confirmed firing correctly.
@@ -102,6 +102,14 @@ the trip creation will fail outright.
 X_Ray_Completed_Date) don't exist on Deals yet, so the X-ray trip's destination reuses the
 same Autopsy_Locations facility as a reschedule trip, as an interim default. Once those
 fields exist, update the destination logic to read Radiology_Location instead.
+
+## Round 3 retest -- CONFIRMED PASSING (2026-08-15)
+"X-ray required" tested live after adding "X-Ray Trip" to the Trip_Type picklist: X-ray
+trip created correctly, Reschedule Trip fee added to the Police SO, no Task created. Pass.
+
+**P-1, P-2, P-3, and P-4 are all now deployed and confirmed passing live.** Still open:
+the product-choice flag above (raise with Andrea), and the known limitation on destination
+routing until the radiology fields exist.
 
 **No Task for Shirley on X-ray** -- unlike a no-show, there's no officer/family ambiguity
 to resolve; billing applies automatically to the institution.
