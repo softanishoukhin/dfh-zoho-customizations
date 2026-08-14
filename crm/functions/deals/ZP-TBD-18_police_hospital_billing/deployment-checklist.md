@@ -5,6 +5,11 @@ yet -- see `findings/open-questions-consolidated.md` for what's blocking each.
 
 ## P-1 -- LNI 2-day storage cap
 
+**STATUS (2026-08-15): re-verified live -- the clamp had NOT actually been pasted into the
+live function despite earlier notes to the contrary. Re-confirmed live source matches this
+file exactly (only the clamp missing), reprovided the guideline, and the user is applying
+it now.**
+
 1. Open `automation.StorageFeebasedonLetterofNoInterestWorkflow` in the CRM
    function editor (id `6503357000003302110`).
 2. Replace its full contents with
