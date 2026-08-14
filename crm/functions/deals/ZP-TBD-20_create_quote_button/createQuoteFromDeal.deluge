@@ -1,0 +1,179 @@
+// Task: ZP-TBD-20 (placeholder)
+// Zoho App: CRM
+// Module: Deals -> Quotes
+// Function Name: button.createQuoteFromDeal
+// Trigger Source: Deal detail page custom button "Create Quote" (top-right, first button)
+//                  -- see button-setup.md for the Client Script that calls this.
+// Connection Name: zohooauth (REST reads/writes)
+// Related Fields: Deals.Product_Selection (subform), Quotes.Quoted_Items,
+//                 Quotes.Deal_Name, Quotes.Contact_Name, Quotes.Account_Name
+// Related Modules: Deals, Quotes
+// Created By: DFH_CreateQuoteButton_Fix_Spec_2026-08-14.docx (Andrea's spec), built + live
+//             corrections applied by the client's developer, confirmed working 2026-08-14.
+// Sandbox Tested: No -- tested live on one Deal, confirmed working
+// Production Deployed: Yes (2026-08-14)
+//
+// Pulled live and confirmed matching production on 2026-08-14 (getFunctionCode, id
+// resolved via api_name "createquotefromdeal").
+//
+// LIVE CORRECTIONS vs. the original spec doc, confirmed by the developer's live testing:
+//   1. Line-item keys: the spec's draft used the lowercase system keys
+//      ("product","quantity","list_price") that pullProductsFromDeal uses when PUTting
+//      an UPDATE to an existing Quote's Quoted_Items. This function POSTs to CREATE a new
+//      Quote instead, and the working live version uses the capitalized keys
+//      ("Product_Name","Quantity","List_Price") for that create call. Flagging this
+//      explicitly since it is the OPPOSITE casing from pullProductsFromDeal's own confirmed
+//      fix (see ZP-TBD-17/part5a) -- both are correct for their own call, just be careful
+//      not to copy one pattern into the other by habit.
+//   2. Added Account_Name carried from the Deal (wrapped in try/catch so a Deal with no
+//      Account_Name doesn't fail the whole create) -- the original spec only carried
+//      Contact_Name. Needed because the Quotes layout requires an Account.
+
+string button.createQuoteFromDeal(String dealId)
+{
+	dId = ifnull(dealId,"").trim();
+	if(dId == "")
+	{
+		return "Missing dealId";
+	}
+	dealInfo = Map();
+	try
+	{
+		dealResp = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v8/Deals/" + dId
+			type :GET
+			connection:"zohooauth"
+		];
+		dealList = ifnull(dealResp.get("data"),List());
+		if(dealList.isEmpty())
+		{
+			return "Deal not found";
+		}
+		dealInfo = dealList.get(0);
+	}
+	catch (e)
+	{
+		return "Deal not found: " + e.toString();
+	}
+	productRows = ifnull(dealInfo.get("Product_Selection"),List());
+	quotedItems = List();
+	skippedRows = 0;
+	for each  row in productRows
+	{
+		childProd = Map();
+		try
+		{
+			childProd = row.get("Child_Product");
+		}
+		catch (e)
+		{
+			childProd = Map();
+		}
+		prodId = "";
+		try
+		{
+			prodId = ifnull(childProd.get("id"),"");
+		}
+		catch (e)
+		{
+			prodId = "";
+		}
+		if(prodId == "")
+		{
+			skippedRows = skippedRows + 1;
+			continue;
+		}
+		qty = ifnull(row.get("Quantity"),1);
+		price = ifnull(row.get("Unit_Price"),0);
+		disc = ifnull(row.get("Discount"),0);
+		qi = Map();
+		prodMap = Map();
+		prodMap.put("id",prodId);
+		qi.put("Product_Name",prodMap);
+		qi.put("Quantity",qty);
+		qi.put("List_Price",price);
+		qi.put("Discount",disc);
+		parentProd = Map();
+		try
+		{
+			parentProd = row.get("Parent_Product");
+		}
+		catch (e)
+		{
+			parentProd = Map();
+		}
+		parentProdId = "";
+		try
+		{
+			parentProdId = ifnull(parentProd.get("id"),"");
+		}
+		catch (e)
+		{
+			parentProdId = "";
+		}
+		if(parentProdId != "")
+		{
+			ppLk = Map();
+			ppLk.put("id",parentProdId);
+			qi.put("Parent_Product",ppLk);
+		}
+		quotedItems.add(qi);
+	}
+	createMap = Map();
+	createMap.put("Subject",ifnull(dealInfo.get("Deal_Name"),"Quote"));
+	dealLkMap = Map();
+	dealLkMap.put("id",dId);
+	createMap.put("Deal_Name",dealLkMap);
+	dealContact = dealInfo.get("Contact_Name");
+	if(dealContact != null && dealContact.get("id") != null)
+	{
+		cLk = Map();
+		cLk.put("id",dealContact.get("id"));
+		createMap.put("Contact_Name",cLk);
+	}
+	try
+	{
+		createMap.put("Account_Name",dealInfo.get("Account_Name").get("id"));
+	}
+	catch (e)
+	{
+	}
+	if(!quotedItems.isEmpty())
+	{
+		createMap.put("Quoted_Items",quotedItems);
+	}
+	createMap.put("Quote_Stage","Draft");
+	newQuoteId = "";
+	try
+	{
+		recordList = List();
+		recordList.add(createMap);
+		dataMap = Map();
+		dataMap.put("data",recordList);
+		createResp = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v2.1/Quotes"
+			type :POST
+			parameters:dataMap.toString()
+			connection:"zohooauth"
+		];
+		newQuoteId = createResp.get("data").get(0).get("details").get("id");
+	}
+	catch (e)
+	{
+		return "Failed to create Quote: " + e.toString();
+	}
+	if(newQuoteId == "")
+	{
+		return "Quote create did not return an id";
+	}
+	try
+	{
+		standalone.generateQuotePdf(newQuoteId,dId);
+	}
+	catch (e)
+	{
+	}
+	return newQuoteId;
+}
