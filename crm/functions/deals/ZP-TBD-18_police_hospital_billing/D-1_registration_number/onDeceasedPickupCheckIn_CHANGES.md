@@ -1,8 +1,22 @@
 # D-1 -- Registration number capture
 
+**STATUS (2026-08-15): CRM side DEPLOYED AND CONFIRMED PASSING.**
+
 Requirement (PH_Billing_Requirements_FINAL.md, D-1): the pre-printed registration
 number from the driver's paper sheet must be captured digitally, flowing to the
 Operations record and the Deal, and onto all of Ms. Shirley's reports.
+
+## Deals field-limit detour (resolved)
+Deals was full when this was built -- couldn't create Registration_Number there directly.
+First plan was DFH's established [[project_system_data_field_bypass]] workaround (store the
+value in the `System_Data` module instead of a real Deals field). Before using it, the user
+asked for a live sweep of all 292 Deals custom fields (via `getRecordCount` per field) to
+find a genuinely unused one to delete instead -- 38 fields came back with exactly 0 records
+populated; the user deleted `Subject` (text, 0 records, no automation-sounding name) to free
+a real slot. See [[project_deals_field_limit_sparsity_analysis]] for the full method and
+findings -- reusable next time any module hits its field limit. Registration_Number was then
+created as a normal field on Deals, and the function edit below uses a plain field write, not
+the System_Data upsert pattern originally planned.
 
 ## What's safe/clear to build now vs. what's still pending
 
@@ -109,3 +123,11 @@ appears on the linked Operations record and the Deal. Re-checking-in with the
 same number a second time makes no additional write (dedup via the
 value-comparison guard, matching how every other field in this block already
 behaves).
+
+**CONFIRMED PASSING (2026-08-15).** All three fields created, both function
+additions deployed live, test scenario above verified working.
+
+## Still not done
+- Driver App check-in form field (widget-side, not started).
+- Locating and updating Ms. Shirley's reports with Registration_Number (not
+  started -- MS_SHIRLEY_FOLLOWUP.md question #7 on scope still unanswered).
