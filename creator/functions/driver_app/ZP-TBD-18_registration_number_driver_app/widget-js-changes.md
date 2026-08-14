@@ -1,5 +1,12 @@
 # D-1 -- Driver App client-side changes (app.js)
 
+**STATUS (2026-08-15): APPLIED DIRECTLY to the workspace copy of app.js and committed to
+the Driver App's own local repo (commit `5844ab9`), per the user's standing instruction that
+JS/HTML widget files (unlike `.ds` files) get edited directly when the workspace copy is
+already current -- see `feedback_widget_js_html_direct_edit` memory. NOT pushed to origin
+yet. The content below is kept as the documented record of exactly what changed, not a
+still-pending guideline.
+
 Two separate check-in screens need the Registration Number field added -- they're
 completely independent UIs backed by the two separate server functions documented in
 `metadata.md`.
