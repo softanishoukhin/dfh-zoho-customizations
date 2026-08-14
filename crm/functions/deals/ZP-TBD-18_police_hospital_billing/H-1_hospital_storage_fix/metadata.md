@@ -4,7 +4,7 @@ Module: Products (data fix), Deals (code fix)
 Function Names: standalone.linkHospitalStorageProducts_ONETIME (new, one-time),
 automation.UpdateStorageFeeonHospitalReleaseDate (existing, fixed)
 Created By: Claude Code, 2026-08-14/15, per Andrea's direct instruction
-Production Deployed: No -- both pieces ready, not yet run/pasted live
+Production Deployed: Yes -- both pieces run/pasted live and confirmed passing 2026-08-15
 
 ## Andrea's instruction (verbatim, 2026-08-14)
 "You told me you fixed this on a prior problem and now it's back. So, did you know was a
@@ -44,3 +44,18 @@ already falls back to the standard police storage product. This is why the gap w
 ## Not included
 "Storage for Princess Margaret Hospital" -- different Product_Category than the other 21,
 matching Account not found in the same id block. Needs manual lookup before linking.
+
+## Round 2 -- deployed and tested (2026-08-15)
+User ran `linkHospitalStorageProducts_ONETIME.deluge` live (21 linked) and pasted
+`UpdateStorageFeeonHospitalReleaseDate_FIX.deluge` over the live function. Confirmed passing.
+
+**Important context from the user, worth carrying forward:** in practice, DFH's actual
+hospital-storage caseload only touches four hospitals -- **National Chest, Cornwall
+Regional, University Hospital of the West Indies, and Hope Institute Hospital** -- and all
+four already had `Product_of_This_Hospital` correctly set *before* this fix ran. So the
+20-hospital data fix, while real and now correct, was not actually blocking any live
+billing case at the time it was found -- the silent-failure risk it closed was latent
+(would have mattered the moment a hospital outside these four was used), not actively
+broken for current casework. Both the code fallback fix and the full 21-hospital link are
+still valid and deployed; this is just the accurate story on real-world impact, to be
+communicated to Andrea via the completion note rather than overstating urgency.
