@@ -19,12 +19,23 @@
 // skipped -- no line item, no error, no invoice. This is the root of "hospital storage
 // billing may be failing silently."
 //
-// FIX: add the same fallback pattern already proven on the Police branch -- if the
-// hospital-specific lookup comes back empty, fall back to the police storage product
-// instead of silently doing nothing. This is a safety net ONLY; with today's data fix
-// applied, the fallback should not normally be hit for any of the 21 known hospitals.
-// It protects against a hospital whose Selected_Hospital gets set to a value with no
-// matching Storage product (a new hospital added later, a typo'd link, etc.).
+// FIX: add a fallback for the Hospital branch, on the same pattern already proven on the
+// Police branch, so an unlinked hospital never silently skips billing.
+//
+// LIVE CORRECTION (2026-08-15, applied directly by the user): the fallback product was
+// changed from the police storage product (6503357000002869275, my original suggestion)
+// to a NEW dedicated product created for this purpose -- "Storage for Hospital"
+// (id 6503357000078744158, Product_Category "Storage", Product_Code STORAGEFORHOSPITAL).
+// This is the right call -- billing an unlinked hospital case on the POLICE storage
+// product would have been semantically wrong (different rate, wrong reporting category)
+// even as an emergency fallback. Note: this new product's Unit_Price is currently 0 --
+// if this fallback path ever actually fires, the line item will bill at $0 until a real
+// price is set on that product. Worth confirming the intended rate for it.
+//
+// This is a safety net ONLY; with the 2026-08-14 data fix applied (all 21 known hospitals
+// linked), the fallback should not normally be hit. It protects against a hospital whose
+// Selected_Hospital gets set to a value with no matching Storage product (a new hospital
+// added later, a typo'd link, etc.).
 //
 // ONLY the marked block changed. Everything else is copied verbatim from the live
 // function so this can be pasted in as a full replacement.
@@ -83,11 +94,13 @@ void automation.UpdateStorageFeeonHospitalReleaseDate(Int crmid)
 				}
 				else
 				{
-					// ===== FIX (2026-08-14): fallback added, mirrors the Police branch above =====
-					// Previously: no else here, productDetails stayed unset, isNull(productDetails)
-					// was true below, and the whole billing block silently did nothing.
-					productDetails = zoho.crm.getRecordById("Products","6503357000002869275");
-					info "H-1 fallback used: no linked Storage product for hospital " + recordInfo.get("Selected_Hospital").get("id") + " -- billed on police storage product instead. This should be rare after the 2026-08-14 data fix; if this fires, the hospital's Product_of_This_Hospital link needs to be checked.";
+					// ===== FIX (2026-08-14, corrected 2026-08-15): fallback added, mirrors the
+					// Police branch above. Previously: no else here, productDetails stayed
+					// unset, isNull(productDetails) was true below, and the whole billing
+					// block silently did nothing. LIVE CORRECTION: uses the dedicated
+					// "Storage for Hospital" fallback product, not the police storage product.
+					productDetails = zoho.crm.getRecordById("Products","6503357000078744158");
+					info "H-1 fallback used: no linked Storage product for hospital " + recordInfo.get("Selected_Hospital").get("id") + " -- billed on the generic Storage for Hospital fallback product instead. This should be rare after the 2026-08-14 data fix; if this fires, the hospital's Product_of_This_Hospital link needs to be checked.";
 				}
 			}
 			else

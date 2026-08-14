@@ -59,3 +59,20 @@ billing case at the time it was found -- the silent-failure risk it closed was l
 broken for current casework. Both the code fallback fix and the full 21-hospital link are
 still valid and deployed; this is just the accurate story on real-world impact, to be
 communicated to Andrea via the completion note rather than overstating urgency.
+
+## Round 3 -- live correction to the fallback product (2026-08-15)
+User applied one further correction directly to the live function: the fallback product
+used when a hospital has no linked Storage product was changed from the police storage
+product (`6503357000002869275`, my original suggestion) to a NEW dedicated product the user
+created for this purpose -- **"Storage for Hospital"** (id `6503357000078744158`,
+Product_Category "Storage", Product_Code `STORAGEFORHOSPITAL`). This is the correct call --
+billing an unlinked hospital case on the police storage product would have been
+semantically wrong (different rate, wrong reporting bucket) even as an emergency fallback.
+
+**Flag:** this new fallback product's `Unit_Price` is currently `0`. If the fallback path
+ever actually fires, the line item bills at $0 until a real price is set. Worth confirming
+the intended rate with Andrea/Shirley, or at minimum setting a sane default so this doesn't
+silently under-bill if it's ever hit.
+
+Repo file (`UpdateStorageFeeonHospitalReleaseDate_FIX.deluge`) updated to match the live
+corrected version exactly.
