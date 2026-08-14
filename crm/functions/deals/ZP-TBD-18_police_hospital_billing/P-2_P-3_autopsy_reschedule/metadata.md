@@ -47,6 +47,19 @@ value has NOT been confirmed to exist on the Tasks module. Verify it exists (Set
 Customization > Modules and Fields > Tasks > Task_Type) or substitute an existing value
 before deploying.
 
+## Round 2 (2026-08-15) -- live test fixes
+User tested the first version live and reported three issues, all fixed:
+1. **Task owner was wrong.** Was set to the Deal's Owner; must be **Caeren Shirley**
+   specifically (user id `6503357000009256001`, cas@dfhja.com) -- now hardcoded.
+2. **Task creation was not idempotent.** A second reschedule on the same Deal created a
+   second task. Now searches for an existing task on the same Deal + exact Subject first;
+   if found, reuses it (logs a message) instead of creating a duplicate.
+3. **"Problem caused by DFH" was creating a trip -- confirmed wrong.** The original build
+   (and the DEVELOPER_BUILD_DOC.md source it was based on) assumed this reason should still
+   create a trip with no billing. Live testing confirmed this is wrong: this reason should
+   do nothing at all -- no trip, no billing, no task. Fixed: this branch now returns
+   immediately, before any trip-creation logic runs.
+
 ## Deploy
 1. Confirm/add the Task_Type picklist value (see above).
 2. Create the function `handleAutopsyReschedule` from `createAutopsyRescheduleTrip.deluge`

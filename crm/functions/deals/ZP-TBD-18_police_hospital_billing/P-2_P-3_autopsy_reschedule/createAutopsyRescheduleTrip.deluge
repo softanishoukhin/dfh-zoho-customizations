@@ -36,12 +36,21 @@
 // Save_Autopsy_Disposition, per ZP-TBD-1/FUNCTION_SOURCES.md FN-5 area):
 //   - "Autopsy not done" (no-show): create/update the reschedule Trip, add the Reschedule
 //     Trip fee to the Police SO, create the Task for Ms. Shirley.
-//   - "Problem caused by DFH" (e.g. frozen): create/update the reschedule Trip only. No
-//     billing line, no task -- DFH absorbs the cost (confirmed: Driver App already notes
-//     this "stops the police storage invoice").
+//   - "Problem caused by DFH" (e.g. frozen): does NOTHING -- no trip, no billing, no task.
+//     DFH absorbs the cost and nothing gets scheduled (confirmed by live test 2026-08-15;
+//     the original assumption that a trip should still be created here was WRONG).
 //   - "X-ray required": do nothing here -- routed to the separate P-4 X-ray flow (not yet
 //     built), which creates its own trip and billing, not an "Autopsy Reschedule" trip.
 // Forensics/IFSL is never billed here, in either branch (not touched).
+//
+// LIVE TEST FIXES (2026-08-15), all applied below:
+//   1. Task owner was the Deal's Owner -- wrong. Must be Caeren Shirley specifically
+//      (user id 6503357000009256001, cas@dfhja.com), hardcoded.
+//   2. Task creation was not idempotent -- a second reschedule on the same Deal would
+//      create a second task. Now searches for an existing task on the same Deal + Subject
+//      first and reuses it instead of duplicating.
+//   3. "Problem caused by DFH" was creating a trip -- confirmed wrong by live test. This
+//      reason now returns immediately with no trip, no billing, no task.
 //
 // NOT YET DEPLOYED. Needs: (1) the new Workflow Rule on Operations described above,
 // (2) a test reschedule via the Driver App with each of the three reasons.
@@ -70,7 +79,14 @@ void automation.handleAutopsyReschedule(Int crmid)
 		// Routed to P-4 (separate, not-yet-built flow) -- not this function's job.
 		return;
 	}
-	if(rescheduleReason != "Autopsy not done" && rescheduleReason != "Problem caused by DFH")
+	if(rescheduleReason == "Problem caused by DFH")
+	{
+		// FIX (live test, 2026-08-15): confirmed no trip should be created at all for this
+		// reason -- DFH absorbs the cost and nothing gets scheduled. Trip creation below is
+		// now reached ONLY for "Autopsy not done".
+		return;
+	}
+	if(rescheduleReason != "Autopsy not done")
 	{
 		// Anything else (empty, unrecognized value) -- do nothing.
 		return;
@@ -157,13 +173,8 @@ void automation.handleAutopsyReschedule(Int crmid)
 		zoho.crm.updateRecord("Trips",tripId,tripMap,{"trigger":{"workflow"}});
 	}
 
-	if(rescheduleReason == "Problem caused by DFH")
-	{
-		// DFH absorbs the cost -- trip only, no billing line, no task.
-		return;
-	}
-
-	// ===== "Autopsy not done" only, from here down: billing + Task for Shirley =====
+	// ===== From here down: rescheduleReason is always "Autopsy not done" =====
+	// (both other reasons already returned above) -- billing + Task for Shirley.
 
 	// Add the Reschedule Trip fee to the Police Cases Sales Order (add-or-update pattern,
 	// matches the existing patchAutopsyTripQuantityOnSalesOrder / patchPickupQuantityOnSalesOrder
@@ -233,15 +244,38 @@ void automation.handleAutopsyReschedule(Int crmid)
 
 	// Task for Ms. Shirley -- manual invoice, since the system can't reliably tell
 	// officer-no-show from family-no-show (Andrea's design decision, confirmed 2026-08-13).
-	taskMap = Map();
-	taskMap.put("Subject","Raise manual reschedule invoice -- decide police-officer vs family charge");
-	taskMap.put("$se_module","Deals");
-	taskMap.put("What_Id",crmid);
-	taskMap.put("Owner",recordInfo.get("Owner").get("id"));
-	taskMap.put("Due_Date",zoho.currentdate.addDay(2));
-	taskMap.put("Status","Not Started");
-	taskMap.put("Send_Notification_Email",true);
-	taskMap.put("Task_Type","Reschedule Manual Invoice");
-	createTask = zoho.crm.createRecord("Tasks",taskMap);
-	info createTask;
+	// FIX (live test, 2026-08-15): owner is Caeren Shirley specifically (id
+	// 6503357000009256001, cas@dfhja.com), not the Deal's owner. Also: idempotent -- if a
+	// task for this exact Deal + Subject already exists, do NOT create a second one; a
+	// re-fire of the same reschedule reason on the same Deal must reuse the existing task,
+	// not spawn a duplicate.
+	taskSubject = "Raise manual reschedule invoice -- decide police-officer vs family charge";
+	existingTaskCriteria = "(What_Id:equals:" + crmid + ")and(Subject:equals:" + taskSubject + ")";
+	existingTasks = List();
+	try
+	{
+		existingTasks = zoho.crm.searchRecords("Tasks",existingTaskCriteria,1,1);
+	}
+	catch (eTaskSearch)
+	{
+		existingTasks = List();
+	}
+	if(existingTasks.size() == 0)
+	{
+		taskMap = Map();
+		taskMap.put("Subject",taskSubject);
+		taskMap.put("$se_module","Deals");
+		taskMap.put("What_Id",crmid);
+		taskMap.put("Owner","6503357000009256001"); // Caeren Shirley
+		taskMap.put("Due_Date",zoho.currentdate.addDay(2));
+		taskMap.put("Status","Not Started");
+		taskMap.put("Send_Notification_Email",true);
+		taskMap.put("Task_Type","Reschedule Manual Invoice");
+		createTask = zoho.crm.createRecord("Tasks",taskMap);
+		info createTask;
+	}
+	else
+	{
+		info "Task already exists for this Deal (" + existingTasks.get(0).get("id") + ") -- not creating a duplicate.";
+	}
 }
