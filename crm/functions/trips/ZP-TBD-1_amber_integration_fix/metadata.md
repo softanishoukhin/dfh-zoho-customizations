@@ -71,8 +71,37 @@ real, in-progress Trip. Confirmed via a real test run (see test-cases.md). Not t
 a decision on the fix approach (likely: extend the exclusion pattern already used for the
 Funeral-pipeline sequence of that same rule, via `Created_From_Hospital_or_Police_Case_Deal_ID`).
 
-## Known open issue — needs a decision
-`Number_of_distance_in_km` does not come back from Amber on Police cases. Confirmed by
-inspecting the raw `Amber_Completion_Response` — the completion payload has no
-distance/mileage field at all. If real driven distance is expected, it would need a different
-Amber endpoint (job details/tracking), not this one.
+## Round 3 (2026-08-14) — the KM conclusion above was WRONG, root cause found
+Andrea, verbatim: "Amber integration is still not working. They are sending KM for police
+cases in the payload and we are not picking it up... This is now the 4th time this has been
+looked at." She provided Amber's own integration doc (`AmberConnect - Zoho_Amber Integration
+Document_v1.0-Latest.pdf`) confirming KM IS sent.
+
+**Why Round 1/2 never found it:** this repo's own "Known open issue" note above concluded
+Amber sends no distance field at all — but that conclusion was drawn from
+`createJobInAmber` / `sendCompleteStatusToAmber`, which are the ZOHO → AMBER direction
+(creating/starting/completing a job). Amber sends distance back through a completely
+different, separate callback that neither this ticket nor apparently any prior round ever
+looked at: **`standalone.amberConnectResponse`**, which Amber POSTs to directly
+(`crm/v7/functions/amberconnectresponse/actions/execute`) after every completed job — see
+Amber's doc, section 9, page 20-22. Every prior "fix" attempt very likely re-touched the
+wrong two functions again.
+
+**The actual bug, once the right function was found:** `amberConnectResponse` parses
+Amber's JSON payload by splitting the raw body and grabbing a fixed position from the end
+(`valueData.get(valueData.size() - 2)`, i.e. "second from last"). Amber's current payload has
+`TotalDistanceKM` as the LAST field, not second-to-last — so the function was reading
+`LastUpdatedDateTime` into the KM variable, not the KM value. Purely a positional-parsing
+bug: it would silently break again any time Amber reorders or adds a field.
+
+**Fix:** `amberConnectResponse_FIX.deluge` (same folder) — reads `TotalDistanceKM` by
+searching for its literal field name in the raw request body instead of counting positions.
+Everything else in the function (job-token lookup, Trip_Status update) is unchanged since
+only the KM line was confirmed broken. NOT deployed yet — needs to be pasted over the live
+function and tested with a real (or Amber-sandbox) police job completion.
+
+See also `crm/functions/deals/ZP-TBD-6_police_km_quantity_billing/` — even once
+`amberConnectResponse` correctly writes `Trips.Number_of_distance_in_km`, a SECOND,
+independent bug in `patchPickupQuantityOnSalesOrder` can still drop the KM before it reaches
+the invoice. Both fixes are needed together for police pickup/dropoff KM billing to work
+end-to-end.

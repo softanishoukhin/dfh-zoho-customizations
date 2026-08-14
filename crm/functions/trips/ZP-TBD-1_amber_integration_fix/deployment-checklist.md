@@ -36,3 +36,24 @@ touched, not a record of exactly what happened this time (no sandbox was used, n
   Completion When No Deal Present" and switch its action back to the completion wrapper
   function if the rule edit needs to be undone
 - Notify team/client
+
+## Round 3 Deployment (2026-08-14) — amberConnectResponse KM fix, NOT yet deployed
+- [ ] Open the live `standalone.amberConnectResponse` function (Deluge, no module — invoked
+      directly by Amber's webhook, not by a workflow)
+- [ ] Paste `amberConnectResponse_FIX.deluge` (this folder) over it in full
+- [ ] Test: trigger one real (or Amber-sandbox) Police job completion with a nonzero
+      `TotalDistanceKM` in the payload. Confirm the matching Trip's
+      `Number_of_distance_in_km` updates to that exact value, not 0 or a date string.
+- [ ] Confirm `Trip_Status` still updates to "Completed" as before (unchanged logic — should
+      not regress)
+- [ ] Also deploy `crm/functions/deals/ZP-TBD-6_police_km_quantity_billing/patchPickupQuantityOnSalesOrder.deluge`
+      in the same pass — without it, KM can still fail to reach the invoice even once this
+      function is fixed (see that folder's metadata.md, Round 2)
+- [ ] Confirm no live secrets were pasted in from this repo copy — the zapikey used by Amber
+      to call this function is Amber's own outbound key, not something this fix touches
+
+## Rollback Plan (Round 3)
+- Restore the function as documented in `function.deluge` / the version captured before this
+  edit (paste back the old positional-split logic) if the named-field parse ever fails to find
+  `TotalDistanceKM` in a real payload
+- Notify team/client

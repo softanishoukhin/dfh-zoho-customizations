@@ -53,3 +53,26 @@ was actually Completed by the time it ran. User fixed this directly in the workf
 criteria broadened to OR (Trip_Status=Completed OR KM changes), but the sequence's own ACTION criteria
 still requires Trip_Status=Completed — so the patch function only ever runs once the trip is genuinely
 done, regardless of which field change triggered the rule.
+
+## Round 2 (2026-08-14) — second, independent bug found in patchPickupQuantityOnSalesOrder
+Re-verified this whole chain against live source while investigating Andrea's "Amber KM still not
+working" report (see `crm/functions/trips/ZP-TBD-1_amber_integration_fix/metadata.md` Round 3 for the
+separate Amber-payload-parsing bug that sits upstream of this one).
+
+Live `patchPickupQuantityOnSalesOrder` matched this repo's copy exactly — no drift. But comparing it
+directly against its sibling `patchAutopsyTripQuantityOnSalesOrder` (same file, same folder) surfaced a
+real asymmetry: the autopsy version has a proper `else` branch that ADDS a new "Autopsy Trip" line item
+if one doesn't already exist on the Police Sales Order. `patchPickupQuantityOnSalesOrder` has NO
+equivalent — if the Police Sales Order exists but doesn't yet have a "Pickup" line item (for example, it
+was first created for a Storage or Decompose charge only), the function does nothing: no line item is
+added, the Sales Order PUT never runs, `createInvoiceBasedOnSalesOrderForPolice` never fires. It still
+returns `"done"`, so this never surfaced as an error anywhere — it just silently drops the KM quantity.
+
+This is a second, independent way police KM billing can fail, separate from (and in addition to) the
+Amber-payload-parsing bug. Both need to be fixed for the full chain (Amber → Trips.Number_of_distance_in_km
+→ Sales_Orders line item → Invoice) to work reliably.
+
+Fix: `patchPickupQuantityOnSalesOrder.deluge` in this folder now has the missing `else` branch, mirroring
+`patchAutopsyTripQuantityOnSalesOrder`'s existing pattern exactly (look up the Pickup product's own price,
+build a new line item with `Quantity = newKm`, add it to the line item list). NOT deployed yet — needs to
+be pasted over the live function and tested against a Police Sales Order that has no Pickup line item yet.

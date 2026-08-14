@@ -47,21 +47,40 @@ if(existingIndex >= 0)
 	existingItem.put("Quantity",newKm);
 	lineItemList.remove(existingIndex);
 	lineItemList.add(existingItem);
-	salesOrderMap = Map();
-	salesOrderMap.put("Ordered_Items",lineItemList);
-	recordList = list();
-	recordList.add(salesOrderMap);
-	dataMap = Map();
-	dataMap.put("data",recordList);
-	updateSalesOrder = invokeurl
-	[
-		url :"https://www.zohoapis.com/crm/v2.1/Sales_Orders/" + salesOrderList.toList().get(0).get("id")
-		type :PUT
-		parameters:dataMap.toString()
-		connection:"zohooauth"
-	];
-	info updateSalesOrder;
-	standalone.createInvoiceBasedOnSalesOrderForPolice(dealId);
 }
+else
+{
+	// FIX (2026-08-14): the old version had no branch here at all -- if the
+	// Police Sales Order existed but simply didn't have a Pickup line item
+	// yet (e.g. it was created for a different reason first, like a Storage
+	// or Decompose charge), this function silently did nothing: it never
+	// built a Pickup line item, never called the PUT below, and never
+	// regenerated the invoice. It still returned "done", so nothing ever
+	// surfaced the failure. This mirrors the existing else-branch in
+	// patchAutopsyTripQuantityOnSalesOrder, which already handled this
+	// correctly for the autopsy line item -- this function was simply
+	// missing the equivalent for Pickup.
+	productDetails = zoho.crm.getRecordById("Products",pickupProductID.toLong());
+	productMap = Map();
+	productMap.put("Product_Name",pickupProductID);
+	productMap.put("Quantity",newKm);
+	productMap.put("List_Price",productDetails.get("Unit_Price"));
+	lineItemList.add(productMap);
+}
+salesOrderMap = Map();
+salesOrderMap.put("Ordered_Items",lineItemList);
+recordList = list();
+recordList.add(salesOrderMap);
+dataMap = Map();
+dataMap.put("data",recordList);
+updateSalesOrder = invokeurl
+[
+	url :"https://www.zohoapis.com/crm/v2.1/Sales_Orders/" + salesOrderList.toList().get(0).get("id")
+	type :PUT
+	parameters:dataMap.toString()
+	connection:"zohooauth"
+];
+info updateSalesOrder;
+standalone.createInvoiceBasedOnSalesOrderForPolice(dealId);
 return "done";
 }

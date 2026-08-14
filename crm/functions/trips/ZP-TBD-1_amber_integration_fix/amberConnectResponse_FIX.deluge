@@ -1,0 +1,139 @@
+// Task: ZP-TBD-1 follow-up (Andrea, 2026-08-14: "Amber integration is still not
+// working... KM should be updated in the police invoice as quantity. This is now
+// the 4th time this has been looked at.")
+//
+// Zoho App: CRM
+// Module: none directly (standalone function, invoked by Amber's own callback)
+// Function Name: standalone.amberConnectResponse
+// Trigger Source: Amber Connect posts here directly after every completed job.
+//   POST https://www.zohoapis.com/crm/v7/functions/amberconnectresponse/actions/execute
+//        ?auth_type=apikey&zapikey=<inline key, masked>
+//   This is documented in "AmberConnect - Zoho_Amber Integration Document_v1.0",
+//   section 9 (page 20-22), provided by Andrea 2026-08-14.
+//
+// WHY THIS WAS MISSED THREE TIMES BEFORE:
+// ZP-TBD-1 (2026-07-03, this same repo folder) investigated createJobInAmber and
+// sendCompleteStatusToAmber -- both are the ZOHO -> AMBER direction (creating jobs,
+// telling Amber a trip started/finished). Its metadata.md even concludes:
+//   "Number_of_distance_in_km does not come back from Amber on Police cases...
+//    the completion payload has no distance/mileage field at all."
+// That conclusion was correct for the functions it looked at, but WRONG about Amber
+// overall -- Amber sends KM back through a DIFFERENT, separate callback
+// (amberConnectResponse) that nobody had traced until this pass. All three prior
+// "fixes" very likely re-touched sendCompleteStatusToAmber / createJobInAmber, which
+// were never where the KM problem lived.
+//
+// ================= THE ACTUAL BUG =================
+// Amber's payload (section 9 of their doc) is a JSON array of ~34 named fields, with
+// "TotalDistanceKM" as the LAST key. The live amberConnectResponse function does not
+// parse JSON by field name at all -- it splits the raw request body into segments on
+// multipart boundary markers and grabs distanceKm by COUNTING FROM THE END:
+//     distanceKm = valueData.get(valueData.size() - 2);   // "second from last"
+// Per Amber's current payload, "second from last" is LastUpdatedDateTime, not
+// TotalDistanceKM (which is now the very last field). So the function has been
+// writing a DATE STRING into the KM field's source variable, which likely produces
+// either an error swallowed by the outer try/catch (see empty catch block) or a
+// nonsense value -- either way, Trips.Number_of_distance_in_km never gets Amber's
+// real KM. This is a pure ordering bug: if Amber ever changes their field order
+// again, whatever field happens to be second-from-last breaks it again, silently.
+//
+// ================= THE FIX =================
+// Read TotalDistanceKM by searching for its literal field name in the raw request
+// body, not by counting positions. This is immune to Amber reordering fields, adding
+// new ones, or removing ones DFH doesn't use.
+//
+// Everything else in the function (the job-token extraction used to find the Trip,
+// the Trip_Status update, the workflow trigger) is UNCHANGED -- only the KM line is
+// touched, because that is the only piece confirmed broken.
+//
+// TO DEPLOY: paste this whole function over the live standalone.amberConnectResponse.
+// TO TEST: trigger a real (or Amber-sandbox) Police job completion with a nonzero
+// TotalDistanceKM, and confirm Trips.Number_of_distance_in_km updates to that value
+// (see test-cases.md in this folder).
+
+string standalone.amberConnectResponse(String crmAPIRequest)
+{
+	apiRequest = crmAPIRequest.toMap();
+	bodyText = apiRequest.get("body");
+
+	// ---- existing job-token extraction (Trip match) -- UNCHANGED, still working ----
+	parts = bodyText.toList("Content-Disposition: attachment; name=\"0\"");
+	valueData = List();
+	for each  part in parts
+	{
+		trimmed = part.trim();
+		if(trimmed.contains("--------------------------"))
+		{
+			trimmed = trimmed.toList("--------------------------").get(0).trim();
+		}
+		valueData.add(trimmed);
+	}
+	tempData = List();
+	foundFirst = false;
+	for each  value in valueData
+	{
+		if(value != "")
+		{
+			foundFirst = true;
+		}
+		if(foundFirst)
+		{
+			tempData.add(value);
+		}
+	}
+	valueData = tempData;
+
+	try
+	{
+		jobToken = valueData.get(0);
+		// Reference ID
+
+		// ---- FIX (2026-08-14): read TotalDistanceKM by its literal field name
+		// in the raw body instead of the old "second-from-last split segment"
+		// guess. See the header comment above for why the old logic broke.
+		distanceKm = 0;
+		if(bodyText.contains("TotalDistanceKM"))
+		{
+			afterKey = bodyText.toList("TotalDistanceKM").get(1);
+			// afterKey now starts right after the key, e.g. ' : 2.3\r\n\t}\r\n]'
+			afterKey = afterKey.toList(":").get(1);
+			numStr = "";
+			chars = afterKey.toList("");
+			for each  ch in chars
+			{
+				if((ch >= "0" && ch <= "9") || ch == ".")
+				{
+					numStr = numStr + ch;
+				}
+				else if(numStr != "")
+				{
+					break;
+				}
+			}
+			if(numStr != "")
+			{
+				distanceKm = numStr.toDecimal();
+			}
+		}
+
+		searchTrip = zoho.crm.searchRecords("Trips","(Amber_Connect_Job_ID:equals:" + jobToken + ")",1,1);
+		if(searchTrip.size() > 0)
+		{
+			tripMap = Map();
+			tripMap.put("Trip_Status","Completed");
+			tripMap.put("Number_of_distance_in_km",distanceKm);
+			info tripMap;
+			result = zoho.crm.updateRecord("Trips",searchTrip.get(0).get("id"),tripMap,{"trigger":{"workflow"}});
+			info result;
+		}
+		else
+		{
+			info "No trip found for Job Token: " + jobToken;
+		}
+	}
+	catch (e)
+	{
+		info e;
+	}
+	return "";
+}
