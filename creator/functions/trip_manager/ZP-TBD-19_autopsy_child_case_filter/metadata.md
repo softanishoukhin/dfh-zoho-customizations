@@ -55,6 +55,32 @@ before as a small piece of logic that got dropped while Andrea was reworking the
 the new dashboards, or it was never there and simply went unnoticed until enough
 multi-deceased police/hospital cases accumulated to make the duplicate children visible.
 
+## Round 2 (2026-08-15) -- Edit 2 was broken, root cause found
+User deployed both edits live. Test failed: child trips still showing (see test matrix,
+"D. Trip Manager -- Autopsy child-case filter" row -- fail, "child trip is showing in TM").
+
+**Root cause:** `Trips.Parent_Trip` is a **plain TEXT field**, not a lookup -- confirmed via
+`ZohoCRM_getFields` on Trips (`api_name: Parent_Trip, data_type: text`). The original Edit 2
+assumed it was a lookup and called `tr.get("Parent_Trip").containKey("id")`, which throws
+when `Parent_Trip` is actually a String -- and that exception was silently swallowed by the
+`try/catch` wrapped around it, so `keepIt` never flipped to `false` and nothing was ever
+excluded. This is exactly why the fix compiled/deployed fine but did nothing at runtime.
+
+**Fix:** check the text field directly instead of treating it as a Map. See the corrected
+Edit 2 below (replaces the version further down in this file).
+```
+	if(keepIt && category == "Autopsy")
+	{
+		ptVal = "" + ifnull(tr.get("Parent_Trip"),"");
+		if(ptVal.trim() != "")
+		{
+			keepIt = false;
+		}
+	}
+```
+No try/catch needed here since `tr.get("Parent_Trip")` on a text field never throws --
+`ifnull` + string-coercion handles a missing/null value safely on its own.
+
 ## Fix (two small edits to `fetchTrips` in Trip_Manager.ds)
 
 **Edit 1 — request the field.** `Parent_Trip` is not in the `fields` list the search API is
