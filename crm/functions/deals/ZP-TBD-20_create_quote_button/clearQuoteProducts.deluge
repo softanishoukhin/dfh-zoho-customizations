@@ -1,0 +1,67 @@
+// Task: ZP-TBD-20 (placeholder)
+// Zoho App: CRM
+// Module: Quotes
+// Function Name: button.clearQuoteProducts
+// Trigger Source: Quote detail page custom button "Clear Products" (Write Function)
+//
+// STATUS: Deployed with a diagnostic fix (below), but the underlying problem it surfaced is
+// NOT resolved. See "Known open issue" below -- this needs Andrea's decision, not a code fix.
+//
+// ORIGINAL BUG: the first version of this function (per the spec doc,
+// DFH_CreateQuoteButton_Fix_Spec_2026-08-14.docx) called invokeurl and only checked for a
+// thrown exception. Deluge's invokeurl does NOT throw on an API-level rejection (e.g. a
+// validation error) -- it returns a normal response Map with the error embedded inside it. So
+// the original function always fell through to `return "Products cleared..."` regardless of
+// whether Zoho actually accepted the change. The button silently reported success while doing
+// nothing -- this is why the user saw "Clear products not working, can't empty the table"
+// with no error shown anywhere.
+//
+// DIAGNOSTIC FIX (2026-08-14): now reads the actual PUT response and returns Zoho's real error
+// if the save didn't succeed, instead of assuming success.
+
+string button.clearQuoteProducts(String quoteId)
+{
+	qId = ifnull(quoteId,"").trim();
+	if(qId == "")
+	{
+		return "Missing quoteId";
+	}
+	updateMap = Map();
+	updateMap.put("Quoted_Items",List());
+	recordList = List();
+	recordList.add(updateMap);
+	dataMap = Map();
+	dataMap.put("data",recordList);
+	try
+	{
+		putResp = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v2.1/Quotes/" + qId
+			type :PUT
+			parameters:dataMap.toString()
+			connection:"zohooauth"
+		];
+		info putResp;
+		respStatus = "";
+		respMessage = "";
+		try
+		{
+			firstResult = putResp.get("data").get(0);
+			respStatus = ifnull(firstResult.get("status"),"");
+			respMessage = ifnull(firstResult.get("message"),"");
+		}
+		catch (eParse)
+		{
+			respStatus = "";
+		}
+		if(respStatus != "success")
+		{
+			return "Zoho rejected the clear: " + respStatus + " - " + respMessage + " | raw: " + putResp.toString();
+		}
+	}
+	catch (e)
+	{
+		return "Failed to clear products: " + e.toString();
+	}
+	return "Products cleared. Add products manually, or use 'Pull Products from Deal' to re-add them.";
+}

@@ -43,7 +43,33 @@ via live source pull (per this repo's live-source-first rule):
    weren't independently verified before testing — now corrected to the confirmed-working
    calls for future reference.
 
-## Not yet done
-`clearQuoteProducts` (the "Clear Products" button on the Quote, per the same spec doc) has not
-been reported as built. Still pending — code is in the original spec doc, or ask again when
-ready.
+## clearQuoteProducts — built, deployed, blocked on a platform constraint (2026-08-14)
+Built and deployed per spec. First live test: button reported "Products cleared" but the line
+items stayed on the Quote. Root cause traced by pulling the live function: the original code
+only checked for a THROWN exception from `invokeurl`, but Deluge's `invokeurl` does not throw
+on an API-level rejection -- it returns a normal response Map with the error embedded inside.
+The function always fell through to the success return regardless of what Zoho actually did.
+
+Deployed a diagnostic fix (`clearQuoteProducts.deluge`, this folder) that reads the real PUT
+response. Retested — actual Zoho response:
+```
+{"data":[{"code":"MANDATORY_NOT_FOUND","details":{"api_name":"Quoted_Items","json_path":"$.data[0].Quoted_Items"},"message":"required field not found","status":"error"}]}
+```
+
+**Root cause: the Quotes layout has `Quoted_Items` (Product Details) marked Mandatory.** Zoho
+rejects any save — including this PUT — that would leave a Quote with zero line items. This
+directly contradicts the "Clear Products" button's whole purpose (letting staff build an
+independent quote by hand starting from zero products) and is the same constraint the spec
+doc's own background section named as the ORIGINAL problem this whole feature was meant to
+get away from ("Zoho won't save a Quote without a line item").
+
+**This cannot be fixed in Deluge.** A mandatory-field validation is enforced by the layout
+itself before any custom code runs. The only fix is a layout change: Setup → Customization →
+Modules and Fields → Quotes → Layout → Product Details section → uncheck "Mark as Mandatory".
+
+**Status: NOT applied.** User's call — flagged as a layout-wide change (affects every way a
+Quote gets saved, not just this button) that needs Andrea's decision, not something to push
+through unilaterally. Documented here for the completion report. `clearQuoteProducts` stays
+deployed with the diagnostic fix in place (so any future failure is visible instead of silently
+reporting success), but the button will keep failing with this same MANDATORY_NOT_FOUND error
+until/unless the layout is changed.
