@@ -74,9 +74,43 @@ billing) because P-4 (the X-ray flow) has not been built yet -- this reason is i
 routed away from this function, but nothing yet exists to catch it on the other end. Flagged
 to Andrea as an active gap while P-4 is being built next, not a regression.
 
-## Deploy status: COMPLETE
+## Deploy status: P-1/P-2/P-3 COMPLETE, P-4 ADDED NOT YET DEPLOYED
 1. Task_Type picklist value confirmed working (no issue reported in testing).
 2. Function `handleAutopsyReschedule` created and deployed.
 3. Workflow Rule on Operations created and confirmed firing correctly.
 4. All three Reschedule_Reason values tested and passing (see above).
 5. Idempotency (re-firing same reason) confirmed working, no duplicates.
+
+## Round 3 (2026-08-15) -- P-4 (X-ray) added to the same function
+Andrea's comment simplified P-4 to "same storage and trip fees" -- no new billing pattern
+needed. Added an `isXray` branch that reuses the exact same trip-creation and Sales-Order
+line-item logic already built for P-2/P-3, just with a different Trip_Type and no Task.
+
+**Product decision (the user's call, needs Andrea's confirmation):** bills the X-ray trip
+fee on the SAME "Reschedule Trip" product (6503357000004300032) used for P-2/P-3, rather
+than any of the three CRH-specific radiology products in the catalog (CRH- Radiology West /
+CRH Pickup @ NC Imaging / Transport to PME). This was explicitly chosen to be raised with
+Andrea in the next comment note, not treated as settled -- if she wants one of the CRH
+products instead, this is a one-line product-id change.
+
+**Blocking setup step:** `Trips.Trip_Type` has no X-ray-related value today (full picklist
+pulled live 2026-08-15, confirmed empty of anything matching). This function creates trips
+with `Trip_Type = "X-Ray Trip"` -- **add this value to the picklist before deploying**, or
+the trip creation will fail outright.
+
+**Known limitation:** the three new radiology fields (X_Ray_Date, Radiology_Location,
+X_Ray_Completed_Date) don't exist on Deals yet, so the X-ray trip's destination reuses the
+same Autopsy_Locations facility as a reschedule trip, as an interim default. Once those
+fields exist, update the destination logic to read Radiology_Location instead.
+
+**No Task for Shirley on X-ray** -- unlike a no-show, there's no officer/family ambiguity
+to resolve; billing applies automatically to the institution.
+
+## Deploy (P-4 specifically)
+1. Add "X-Ray Trip" to the Trips.Trip_Type picklist.
+2. Paste the updated `createAutopsyRescheduleTrip.deluge` over the live
+   `handleAutopsyReschedule` function (P-1/P-2/P-3 logic unchanged, only the X-ray branch
+   is new).
+3. Test: a Driver App reschedule with reason "X-ray required" -- confirm an X-ray trip is
+   created, the Reschedule Trip fee is added to the Police SO, and NO task is created.
+4. Re-fire the same reason -- confirm the existing X-ray trip is updated, not duplicated.
