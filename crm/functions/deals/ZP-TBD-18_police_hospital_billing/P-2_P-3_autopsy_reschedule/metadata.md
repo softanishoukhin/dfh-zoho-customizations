@@ -5,7 +5,8 @@ Function Name: automation.handleAutopsyReschedule(Int crmid) -- NEW
 Trigger Source: NEW Workflow Rule needed -- Operations, field update on Reschedule_Reason,
 argument mapping crmid = Related_Deal.id
 Created By: Claude Code, 2026-08-14/15
-Production Deployed: No -- built, not yet deployed or tested
+Production Deployed: Yes -- deployed and tested live 2026-08-15, all three
+Reschedule_Reason scenarios confirmed passing (see Round 2 below)
 
 ## Andrea's clarification that unblocked this (verbatim, 2026-08-14)
 "You have the entire logic for an autopsy trip. The deceased gets picked up from morgue
@@ -60,14 +61,22 @@ User tested the first version live and reported three issues, all fixed:
    do nothing at all -- no trip, no billing, no task. Fixed: this branch now returns
    immediately, before any trip-creation logic runs.
 
-## Deploy
-1. Confirm/add the Task_Type picklist value (see above).
-2. Create the function `handleAutopsyReschedule` from `createAutopsyRescheduleTrip.deluge`
-   (file name kept for repo continuity with the original build-doc naming; the actual
-   function inside is `handleAutopsyReschedule`).
-3. Create the new Workflow Rule on Operations described above.
-4. Test all three Reschedule_Reason values via a real or test Driver App reschedule:
-   confirm the trip creates correctly, confirm "Autopsy not done" adds the fee + task,
-   confirm "Problem caused by DFH" does neither, confirm "X-ray required" does nothing here.
-5. Confirm re-firing the same reason on the same Deal updates the existing reschedule trip
-   rather than creating a duplicate.
+## Round 2 retest -- CONFIRMED PASSING (2026-08-15)
+All three Reschedule_Reason scenarios retested live after the Round 2 fixes and confirmed:
+- **"Autopsy not done"** -- trip created, Reschedule Trip fee added to the Police SO, task
+  created and assigned to Caeren Shirley. Pass.
+- **Re-firing "Autopsy not done" a second time on the same Deal** -- updates the existing
+  reschedule trip, does NOT create a duplicate task. Pass.
+- **"Problem caused by DFH"** -- confirmed no trip, no billing, no task. Pass.
+
+**Known current gap, not a bug:** "X-ray required" still does nothing at all (no trip, no
+billing) because P-4 (the X-ray flow) has not been built yet -- this reason is intentionally
+routed away from this function, but nothing yet exists to catch it on the other end. Flagged
+to Andrea as an active gap while P-4 is being built next, not a regression.
+
+## Deploy status: COMPLETE
+1. Task_Type picklist value confirmed working (no issue reported in testing).
+2. Function `handleAutopsyReschedule` created and deployed.
+3. Workflow Rule on Operations created and confirmed firing correctly.
+4. All three Reschedule_Reason values tested and passing (see above).
+5. Idempotency (re-firing same reason) confirmed working, no duplicates.
