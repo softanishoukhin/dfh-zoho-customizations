@@ -181,7 +181,18 @@ void automation.handleAutopsyReschedule(Int crmid)
 	{
 		tripMap.put("Name",tripNameValue);
 		tripMap.put("Trip_Type",tripTypeValue);
-		tripMap.put("Trip_Status","DO NOT SCHEDULE");
+		// FIX (2026-08-15): was "DO NOT SCHEDULE", copied from createTripOnTheDayOfAutopsyDateWithTask's
+		// template without also copying the mechanism that releases it from that status.
+		// "Autopsy Initial" trips get released via two workflow-triggered functions,
+		// groupAutopsyTrips and cascadeAutopsyParentStatus, which key specifically off
+		// Trip_Type == "Autopsy Initial" / "Multi Deceased Autopsy Trip" -- neither fires
+		// for "Autopsy Reschedule" or "X-Ray Trip", so a trip created with DO NOT SCHEDULE
+		// here would stay stuck in that status forever, permanently invisible in Trip
+		// Manager (which unconditionally excludes DO NOT SCHEDULE trips from every view).
+		// "Requested" is the correct starting status -- same as any other newly created
+		// trip needing a driver/vehicle assignment, and it already feeds the existing
+		// "Change Status to Scheduled when Driver and Vehicle Assigned" workflow.
+		tripMap.put("Trip_Status","Requested");
 		tripMap.put("Deal",crmid);
 		tripMap.put("Created_on_This_Field_Update",createdMarker);
 		tripMap.put("Owner",recordInfo.get("Owner").get("id"));

@@ -74,6 +74,29 @@ billing) because P-4 (the X-ray flow) has not been built yet -- this reason is i
 routed away from this function, but nothing yet exists to catch it on the other end. Flagged
 to Andrea as an active gap while P-4 is being built next, not a regression.
 
+## Round 4 (2026-08-15) -- trips created invisible, stuck permanently in DO NOT SCHEDULE
+Trip Manager test (ZP-TBD-19 test matrix, row 13): "Autopsy Reschedule trips still show
+correctly" -- FAIL, "Autopsy Reschedule trip is not available in TM". Initially looked like
+a TM bug, but root cause traced to THIS function instead.
+
+`handleAutopsyReschedule` created new trips with `Trip_Status = "DO NOT SCHEDULE"`, copied
+directly from `createTripOnTheDayOfAutopsyDateWithTask`'s template. But that template's
+trips get released from DO NOT SCHEDULE by two workflow-triggered functions --
+`groupAutopsyTrips` (Workflow "Group Autopsy Trip Under Parent", fires on Trip create when
+`Trip_Type == "Autopsy Initial"`) and `cascadeAutopsyParentStatus` (Workflow "Cascade
+Autopsy Parent Status", fires on Trip_Status field_update when
+`Trip_Type == "Multi Deceased Autopsy Trip"`). **Neither fires for `"Autopsy Reschedule"` or
+`"X-Ray Trip"`** -- so a trip created here with DO NOT SCHEDULE had no path out of that
+status, ever. Trip Manager's `fetchTrips` unconditionally excludes DO NOT SCHEDULE trips
+from every view (not just Autopsy), so the trip was permanently invisible -- correctly
+created in CRM, correctly billed, but nobody could ever see or dispatch it.
+
+**Fix:** changed the new-trip status to `"Requested"` -- the normal starting status for any
+newly created trip needing a driver/vehicle, which already feeds the existing "Change Status
+to Scheduled when Driver and Vehicle Assigned" workflow. No grouping/cascade machinery
+needed since reschedule/X-ray trips are single, standalone trips with no multi-deceased
+parent concept.
+
 ## Deploy status: P-1, P-2, P-3, P-4 ALL DEPLOYED AND CONFIRMED PASSING (2026-08-15)
 1. Task_Type picklist value confirmed working (no issue reported in testing).
 2. Function `handleAutopsyReschedule` created and deployed.
