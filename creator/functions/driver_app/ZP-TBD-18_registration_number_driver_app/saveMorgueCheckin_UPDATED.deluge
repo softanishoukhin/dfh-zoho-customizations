@@ -1,0 +1,235 @@
+// Task: ZP-TBD-18, D-1 (registration number) -- Driver App side, PATH 2 of 2
+// App: Zoho Creator (Driver App), Driver_App.ds
+// Function: map saveMorgueCheckin(...)
+// Called by: app.js saveAutopsyCheckinFields() -> callApi('Save_Morgue_Checkin', 'POST', {...})
+//            -- the regular/police SINGLE-DECEASED autopsy check-in path.
+//
+// IMPORTANT: this is a SEPARATE code path from the hospital multi-deceased flow
+// (saveDeceasedPickup -> Deceased_Pickups -> CRM's onDeceasedPickupCheckIn, already fixed
+// and tested -- see crm/functions/deals/ZP-TBD-18_police_hospital_billing/D-1_registration_number/).
+// This function writes DIRECTLY to Operations via REST, and previously had NO Deal write
+// at all. The earlier CRM-side fix does not reach this path -- it never touches
+// Deceased_Pickups or fires onDeceasedPickupCheckIn. Both paths need their own fix for D-1
+// to actually cover "at check-in" the way the requirement describes.
+//
+// CHANGES (marked below):
+//   1. New parameter `registrationNumber` (String).
+//   2. Written to Operations.Registration_Number, following the exact same "only write if
+//      present" pattern already used for `refrigerator` in this function.
+//   3. NEW: resolves the Trip's Deal and writes Registration_Number there too -- this
+//      function had no Deal write of any kind before this change, so this is new plumbing,
+//      not an extension of an existing block.
+// Everything else in the function is copied verbatim from live (pulled 2026-08-15) --
+// this is a full-function replacement, not a diff, per house convention.
+
+map saveMorgueCheckin(String tripId, String location, String row, String drawer, String refrigerator, String registrationNumber)
+{
+	// Step 1 - Pre-init result Map with default error state.
+	tId = ifnull(tripId,"");
+	loc = ifnull(location,"");
+	rw = ifnull(row,"");
+	dr = ifnull(drawer,"");
+	regNum = ifnull(registrationNumber,"").trim(); // ===== NEW =====
+	result = Map();
+	result.put("status","error");
+	result.put("message","");
+	result.put("tripId",tId);
+	result.put("operations_id","");
+	result.put("operations_fields_written",List());
+	result.put("deal_id",""); // ===== NEW =====
+	result.put("deal_fields_written",List()); // ===== NEW =====
+	// Step 2 - Validate tripId.
+	if(tId == "")
+	{
+		result.put("message","Missing tripId");
+		return result;
+	}
+	// Step 3 - Validate the 3 required input fields; collect any that are empty.
+	missingFields = List();
+	if(loc == "")
+	{
+		missingFields.add("location");
+	}
+	if(rw == "")
+	{
+		missingFields.add("row");
+	}
+	if(dr == "")
+	{
+		missingFields.add("drawer");
+	}
+	if(missingFields.size() > 0)
+	{
+		missingStr = "";
+		for each  mf in missingFields
+		{
+			if(missingStr == "")
+			{
+				missingStr = mf;
+			}
+			else
+			{
+				missingStr = missingStr + ", " + mf;
+			}
+		}
+		result.put("message","Missing required field(s): " + missingStr);
+		return result;
+	}
+	// Step 4 - Find the Operations record whose Related_Trip lookup = tripId.
+	opsId = "";
+	tripRec = Map(); // ===== NEW: hoisted so Step 4b (Deal write) can reuse it if already fetched =====
+	criteria = "(Related_Trip:equals:" + tId + ")";
+	try
+	{
+		opRecords = zoho.crm.searchRecords("Operations",criteria,1,1,{"connection":"zohocrm_driverapp"});
+		for each  op in opRecords
+		{
+			candidateId = ifnull(op.get("id"),"");
+			if(candidateId != "")
+			{
+				opsId = candidateId;
+				break;
+			}
+		}
+	}	catch (e)
+	{
+	}
+	// Search 2: Operations linked to the trip's Deal
+	dealId = ""; // ===== NEW: hoisted out of the if-block so it's available for Step 4b regardless of which search path found opsId =====
+	try
+	{
+		tripRec = zoho.crm.getRecordById("Trips",tId.toLong(),{"connection":"zohocrm_driverapp"});
+		dealLk = tripRec.get("Deal");
+		dealId = ifnull(dealLk.get("id"),"");
+	}		catch (eDeal)
+	{
+	}
+	if(opsId == "")
+	{
+		if(dealId != "")
+		{
+			try
+			{
+				criteria2 = "(Related_Deal:equals:" + dealId + ")";
+				opRecords2 = zoho.crm.searchRecords("Operations",criteria2,1,1,{"connection":"zohocrm_driverapp"});
+				for each  op2 in opRecords2
+				{
+					candidateId2 = ifnull(op2.get("id"),"");
+					if(candidateId2 != "")
+					{
+						opsId = candidateId2;
+						break;
+					}
+				}
+			}			catch (e2)
+			{
+			}
+		}
+	}
+	if(opsId == "")
+	{
+		result.put("message","No Operations record found for Trip " + tId);
+		return result;
+	}
+	// Step 5 - Build the Operations update payload. Location/Row/Drawer come from
+	// the driver; Room is hardcoded "Morgue" (scope 9.7.C - locked dropdown).
+	opsUpdateMap = Map();
+	opsUpdateMap.put("Location",loc);
+	opsUpdateMap.put("Row",rw);
+	opsUpdateMap.put("Drawer",dr);
+	opsUpdateMap.put("Room","Morgue");
+	operationsFieldsWritten = List();
+	operationsFieldsWritten.add("Location");
+	operationsFieldsWritten.add("Row");
+	operationsFieldsWritten.add("Drawer");
+	operationsFieldsWritten.add("Room");
+	// Refrigerator: only a valid CRM picklist selection (1/2/3) is written; any other or
+	// empty value is skipped, leaving the Refrigerator field untouched. Room is unchanged.
+	if(refrigerator == "1" || refrigerator == "2" || refrigerator == "3")
+	{
+		opsUpdateMap.put("Refrigerator",refrigerator);
+		operationsFieldsWritten.add("Refrigerator");
+	}
+	// ===== NEW: Registration_Number, same "only write if present" pattern as refrigerator =====
+	if(regNum != "")
+	{
+		opsUpdateMap.put("Registration_Number",regNum);
+		operationsFieldsWritten.add("Registration_Number");
+	}
+	// Step 6 - Update the Operations record.
+	updateResult = Map();
+	exceptionMessage = "";
+	try
+	{
+		updateResult = zoho.crm.updateRecord("Operations",opsId.toLong(),opsUpdateMap,{"connection":"zohocrm_driverapp"});
+	}	catch (eUpd)
+	{
+		exceptionMessage = eUpd.toString();
+	}
+	if(exceptionMessage != "")
+	{
+		result.put("operations_id",opsId);
+		result.put("message","Exception updating Operations " + opsId + ": " + exceptionMessage);
+		return result;
+	}
+	returnedId = ifnull(updateResult.get("id"),"");
+	if(returnedId == "")
+	{
+		errCode = ifnull(updateResult.get("code"),"UNKNOWN");
+		errMsg = ifnull(updateResult.get("message"),"Update failed without details");
+		result.put("operations_id",opsId);
+		result.put("message","Failed to update Operations " + opsId + ": " + errCode + " — " + errMsg);
+		return result;
+	}
+	// SUCCESS on Operations.
+	result.put("status","success");
+	result.put("message","");
+	result.put("operations_id",opsId);
+	result.put("operations_fields_written",operationsFieldsWritten);
+
+	// ===== NEW STEP 7: Deal write (Registration_Number only) -- this function had no Deal
+	// write at all before this change. Never breaks the overall success result if it fails --
+	// the Operations write (the function's original job) already succeeded above; the Deal
+	// write is best-effort, matching how side-effect propagation is handled elsewhere in this
+	// app (e.g. saveDeceasedPickup's NOK/Deal cascade is similarly non-fatal). =====
+	if(regNum != "" && dealId != "")
+	{
+		try
+		{
+			curDealRegNum = "";
+			try
+			{
+				dealRecForCompare = zoho.crm.getRecordById("Deals",dealId.toLong(),{"connection":"zohocrm_driverapp"});
+				curDealRegNum = ifnull(dealRecForCompare.get("Registration_Number"),"");
+			}
+			catch (eDealRead)
+			{
+				curDealRegNum = "";
+			}
+			if(regNum != curDealRegNum)
+			{
+				dealUpdMap = Map();
+				dealUpdMap.put("Registration_Number",regNum);
+				dealUpdResult = zoho.crm.updateRecord("Deals",dealId.toLong(),dealUpdMap,{"connection":"zohocrm_driverapp"});
+				dealReturnedId = ifnull(dealUpdResult.get("id"),"");
+				if(dealReturnedId != "")
+				{
+					result.put("deal_id",dealId);
+					dealFieldsWritten = List();
+					dealFieldsWritten.add("Registration_Number");
+					result.put("deal_fields_written",dealFieldsWritten);
+				}
+			}
+			else
+			{
+				result.put("deal_id",dealId);
+			}
+		}
+		catch (eDealWrite)
+		{
+			// Never break the overall success result over this side effect.
+		}
+	}
+
+	return result;
+}
