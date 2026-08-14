@@ -5,10 +5,10 @@ yet -- see `findings/open-questions-consolidated.md` for what's blocking each.
 
 ## P-1 -- LNI 2-day storage cap
 
-**STATUS (2026-08-15): re-verified live -- the clamp had NOT actually been pasted into the
-live function despite earlier notes to the contrary. Re-confirmed live source matches this
-file exactly (only the clamp missing), reprovided the guideline, and the user is applying
-it now.**
+**STATUS (2026-08-15): DEPLOYED AND CONFIRMED PASSING.** Earlier notes had incorrectly
+claimed this was already live -- re-verified live 2026-08-15, found the clamp still
+missing, reprovided the exact guideline, user pasted it in and tested. Confirmed: LNI 3+
+days after pickup caps storage at 2 days; same/next-day LNI still bills 1 day, unaffected.
 
 1. Open `automation.StorageFeebasedonLetterofNoInterestWorkflow` in the CRM
    function editor (id `6503357000003302110`).
