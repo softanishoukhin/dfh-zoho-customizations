@@ -1,0 +1,154 @@
+// Task: ZP-TBD-18, H-1 hospital storage billing fix
+// Zoho App: CRM
+// Module: Deals -> Sales_Orders (Hospital Cases)
+// Function Name: automation.UpdateStorageFeeonHospitalReleaseDate
+//
+// Andrea, 2026-08-14, verbatim: "This needs to be fixed... Each hospital account record
+// is easy to match its products with the account it goes with." She wants BOTH the data
+// (see linkHospitalStorageProducts_ONETIME.deluge, same folder) AND the underlying
+// reliability fixed so this can't silently fail again for a hospital whose product link
+// is missing or gets broken in the future.
+//
+// CONFIRMED LIVE (2026-08-14, pulled via getFunctionCode): the Police branch of this
+// function already has a fallback -- if no police-specific storage product is found via
+// COQL, it falls back to the fixed police storage product id (6503357000002869275). The
+// Hospital branch has NO equivalent: if Selected_Hospital is set but the COQL lookup for
+// its linked Storage product returns zero rows (exactly what happened for 20 of 21
+// hospitals before today's data fix), `productDetails` is never assigned in that inner
+// branch, `isNull(productDetails)` evaluates true, and the entire billing block is
+// skipped -- no line item, no error, no invoice. This is the root of "hospital storage
+// billing may be failing silently."
+//
+// FIX: add the same fallback pattern already proven on the Police branch -- if the
+// hospital-specific lookup comes back empty, fall back to the police storage product
+// instead of silently doing nothing. This is a safety net ONLY; with today's data fix
+// applied, the fallback should not normally be hit for any of the 21 known hospitals.
+// It protects against a hospital whose Selected_Hospital gets set to a value with no
+// matching Storage product (a new hospital added later, a typo'd link, etc.).
+//
+// ONLY the marked block changed. Everything else is copied verbatim from the live
+// function so this can be pasted in as a full replacement.
+
+void automation.UpdateStorageFeeonHospitalReleaseDate(Int crmid)
+{
+	getRecordInfo = invokeurl
+	[
+		url :"https://www.zohoapis.com/crm/v2.1/Deals/" + crmid
+		type :GET
+		connection:"zohooauth"
+	];
+	recordInfo = getRecordInfo.get("data").get(0);
+	salesOrders = standalone.COQLQuery("select Subject from Sales_Orders where Deal_Name = '" + crmid + "' and Sales_Order_Type = 'Hospital Cases' limit 1");
+	info salesOrders;
+	if(salesOrders.size() > 0)
+	{
+		salesOrderDetails = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v7/Sales_Orders/" + salesOrders.toList().get(0).get("id")
+			type :GET
+			connection:"zohooauth"
+		];
+		salesOrderInfo = salesOrderDetails.get("data").get(0);
+		storageDaysForAutopsy = recordInfo.get("Initial_Trip_Completed_At").days360(recordInfo.get("Hospital_Release_Date"));
+		storageDaysForAutopsy = storageDaysForAutopsy + 1;
+		if(storageDaysForAutopsy <= 0)
+		{
+			storageDaysForAutopsy = 1;
+		}
+		// Fetch "Storage Fee" product details
+		if(recordInfo.get("Pipeline") == "Police Cases")
+		{
+			storageProductOfPolice = "select Product_Name from Products where Parent_Product = '6503357000020022236' and Product_Category = 'Storage'";
+			storageProducts = standalone.COQLQuery(storageProductOfPolice);
+			if(storageProducts.size() > 0)
+			{
+				storageProducts = storageProducts.toList();
+				productDetails = zoho.crm.getRecordById("Products",storageProducts.get(0).get("id"));
+			}
+			else
+			{
+				productDetails = zoho.crm.getRecordById("Products","6503357000002869275");
+			}
+		}
+		else if(recordInfo.get("Pipeline") == "Hospital Cases")
+		{
+			if(!isNull(recordInfo.get("Selected_Hospital")))
+			{
+				storageProductOfHospital = "select Product_Name from Products where Product_of_This_Hospital = '" + recordInfo.get("Selected_Hospital").get("id") + "' and Product_Category = 'Storage'";
+				storageProducts = standalone.COQLQuery(storageProductOfHospital);
+				if(storageProducts.size() > 0)
+				{
+					storageProducts = storageProducts.toList();
+					productDetails = zoho.crm.getRecordById("Products",storageProducts.get(0).get("id"));
+				}
+				else
+				{
+					// ===== FIX (2026-08-14): fallback added, mirrors the Police branch above =====
+					// Previously: no else here, productDetails stayed unset, isNull(productDetails)
+					// was true below, and the whole billing block silently did nothing.
+					productDetails = zoho.crm.getRecordById("Products","6503357000002869275");
+					info "H-1 fallback used: no linked Storage product for hospital " + recordInfo.get("Selected_Hospital").get("id") + " -- billed on police storage product instead. This should be rare after the 2026-08-14 data fix; if this fires, the hospital's Product_of_This_Hospital link needs to be checked.";
+				}
+			}
+			else
+			{
+				productDetails = null;
+			}
+		}
+		if(!isNull(productDetails))
+		{
+			// Storage Fee Product ID
+			storageProductID = productDetails.get("id");
+			lineItemList = list();
+			if(salesOrderInfo.get("Ordered_Items").size() > 0)
+			{
+				lineItemList = salesOrderInfo.get("Ordered_Items");
+			}
+			// Check if "Storage Fee" already exists
+			existingStorageFeeIndex = -1;
+			for each  item in lineItemList
+			{
+				if(item.contains("Product_Name"))
+				{
+					productName = item.get("Product_Name");
+					if(productName != null && productName.contains("id") && productName.get("id") == storageProductID)
+					{
+						existingStorageFeeIndex = lineItemList.indexOf(item);
+						break;
+					}
+				}
+			}
+			if(existingStorageFeeIndex >= 0)
+			{
+				existingItem = lineItemList.get(existingStorageFeeIndex);
+				existingItem.put("Quantity",storageDaysForAutopsy);
+				lineItemList.remove(existingStorageFeeIndex);
+				lineItemList.add(existingItem);
+			}
+			else
+			{
+				productMap = Map();
+				productMap.put("Product_Name",storageProductID);
+				productMap.put("Quantity",storageDaysForAutopsy);
+				productMap.put("List_Price",productDetails.get("Unit_Price"));
+				lineItemList.add(productMap);
+			}
+			salesOrderMap = Map();
+			salesOrderMap.put("Ordered_Items",lineItemList);
+			recordList = list();
+			recordList.add(salesOrderMap);
+			dataMap = Map();
+			dataMap.put("data",recordList);
+			info dataMap;
+			updateSalesOrder = invokeurl
+			[
+				url :"https://www.zohoapis.com/crm/v2.1/Sales_Orders/" + salesOrders.toList().get(0).get("id")
+				type :PUT
+				parameters:dataMap.toString()
+				connection:"zohooauth"
+			];
+			info updateSalesOrder;
+			standalone.createInvoiceBasedOnSalesOrderForHospital(crmid);
+		}
+	}
+}

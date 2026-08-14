@@ -1,0 +1,247 @@
+// Task: ZP-TBD-18, P-2 (reschedule trip) + P-3 (reschedule billing + Task for Shirley)
+// Zoho App: CRM
+// Module: Operations -> Trips, Sales_Orders, Tasks
+// Function Name: automation.handleAutopsyReschedule (NEW)
+// Trigger Source: NEW Workflow Rule on Operations, field update on Reschedule_Reason,
+//                  criteria: Reschedule_Reason is not empty. Argument mapping: crmid =
+//                  Related_Deal.id (the Operations record's linked Deal).
+//
+// Andrea, 2026-08-14, verbatim (resolving the only real open question on P-2): "You have
+// the entire logic for an autopsy trip. The deceased gets picked up from morgue location
+// they are at and is transported to an autopsy location. a reschedule brings them back to
+// the morgue and back to the autopsy location on a reschedule."
+//
+// WHAT THIS CONFIRMS: the live template function createTripOnTheDayOfAutopsyDateWithTask
+// (pulled 2026-08-14) already branches on Is_Deceased_In_Our_Care -- Scenario A (pickup =
+// DFH's own Kingston/Mobay location, destination = autopsy facility) vs Scenario B (the
+// reverse). A reschedule can only happen AFTER the deceased has already been picked up once
+// (that's the entire premise of a no-show/frozen-body reschedule -- the body is already
+// back in DFH's storage), so Is_Deceased_In_Our_Care is always "Yes" by the time a
+// reschedule fires. This is exactly Andrea's description: pickup from DFH storage ("the
+// morgue"), destination = autopsy facility -- Scenario A, unconditionally, for this flow.
+// No decision was actually needed here -- the existing template already has the answer.
+//
+// SCOPE NOTE (deliberately narrow, per Andrea: "you can only build what is absolutely
+// clear"): this function creates the reschedule Trip and adds the Reschedule Trip fee line
+// item + the Task for Ms. Shirley -- the three pieces the requirement docs state
+// unambiguously. It does NOT independently recompute or touch the Police Cases Sales
+// Order's STORAGE line item -- that is already maintained by the existing LNI (P-1) and
+// autopsy-completed storage functions, which continue to run off their own date fields
+// regardless of a reschedule. Duplicating that logic here risked fighting with those
+// functions over the same line item. If Andrea/Shirley confirm a reschedule needs its own
+// distinct storage adjustment beyond what those functions already do, that's a follow-up,
+// not assumed here.
+//
+// Branches on Operations.Reschedule_Reason (set by the Driver App via
+// Save_Autopsy_Disposition, per ZP-TBD-1/FUNCTION_SOURCES.md FN-5 area):
+//   - "Autopsy not done" (no-show): create/update the reschedule Trip, add the Reschedule
+//     Trip fee to the Police SO, create the Task for Ms. Shirley.
+//   - "Problem caused by DFH" (e.g. frozen): create/update the reschedule Trip only. No
+//     billing line, no task -- DFH absorbs the cost (confirmed: Driver App already notes
+//     this "stops the police storage invoice").
+//   - "X-ray required": do nothing here -- routed to the separate P-4 X-ray flow (not yet
+//     built), which creates its own trip and billing, not an "Autopsy Reschedule" trip.
+// Forensics/IFSL is never billed here, in either branch (not touched).
+//
+// NOT YET DEPLOYED. Needs: (1) the new Workflow Rule on Operations described above,
+// (2) a test reschedule via the Driver App with each of the three reasons.
+
+void automation.handleAutopsyReschedule(Int crmid)
+{
+	dealDetails = invokeurl
+	[
+		url :"https://www.zohoapis.com/crm/v7/Deals/" + crmid
+		type :GET
+		connection:"zohooauth"
+	];
+	recordInfo = dealDetails.get("data").get(0);
+
+	opsCriteria = "(Related_Deal:equals:" + crmid + ")";
+	opsRecords = zoho.crm.searchRecords("Operations",opsCriteria,1,1);
+	rescheduleReason = "";
+	for each op in opsRecords
+	{
+		rescheduleReason = ifnull(op.get("Reschedule_Reason"),"");
+		break;
+	}
+
+	if(rescheduleReason == "X-ray required")
+	{
+		// Routed to P-4 (separate, not-yet-built flow) -- not this function's job.
+		return;
+	}
+	if(rescheduleReason != "Autopsy not done" && rescheduleReason != "Problem caused by DFH")
+	{
+		// Anything else (empty, unrecognized value) -- do nothing.
+		return;
+	}
+
+	// ===== Trip creation -- clones createTripOnTheDayOfAutopsyDateWithTask's Scenario A =====
+	// (pickup = DFH location, destination = autopsy facility), since a reschedule always
+	// finds the deceased already in DFH's care. See header note above.
+	trips = zoho.crm.getRelatedRecords("Trips","Deals",crmid);
+	tripAvailable = false;
+	tripId = null;
+	for each trip in trips
+	{
+		if(trip.get("Trip_Type") == "Autopsy Reschedule" && trip.get("Created_on_This_Field_Update") == "Autopsy_Reschedule")
+		{
+			tripId = trip.get("id");
+			tripAvailable = true;
+			break;
+		}
+	}
+
+	tripMap = Map();
+	opsCriteria2 = "(Related_Deal:equals:" + crmid + ")";
+	opsRecords2 = zoho.crm.searchRecords("Operations",opsCriteria2,1,1);
+	for each op in opsRecords2
+	{
+		if(ifnull(op.get("id"),"") != "")
+		{
+			opsLocation = ifnull(op.get("Location"),"");
+			if(opsLocation == "Kingston")
+			{
+				tripMap.put("Pickup_Street_Address","20A W. Kings House Rd.");
+				tripMap.put("Pickup_City","Kingston");
+			}
+			else if(opsLocation == "Montego Bay")
+			{
+				tripMap.put("Pickup_Street_Address","45 Union St.");
+				tripMap.put("Pickup_City","Montego Bay");
+			}
+			else if(opsLocation != "")
+			{
+				tripMap.put("Pickup_Street_Address",opsLocation);
+				tripMap.put("Pickup_City","Montego Bay");
+			}
+			break;
+		}
+	}
+	if(!isNull(recordInfo.get("Autopsy_Locations")))
+	{
+		try
+		{
+			autopsyAcct = zoho.crm.getRecordById("Accounts",recordInfo.get("Autopsy_Locations").get("id"));
+			tripMap.put("Destination_Street_Address",ifnull(autopsyAcct.get("Billing_Street"),""));
+			tripMap.put("Destination_City",ifnull(autopsyAcct.get("Billing_City"),""));
+			locMap = Map();
+			locMap.put("id",recordInfo.get("Autopsy_Locations").get("id"));
+			tripMap.put("Autopsy_Location",locMap);
+		}
+		catch (eAcct)
+		{
+		}
+	}
+
+	if(tripAvailable == false)
+	{
+		tripMap.put("Name","Autopsy Reschedule Trip");
+		tripMap.put("Trip_Type","Autopsy Reschedule");
+		tripMap.put("Trip_Status","DO NOT SCHEDULE");
+		tripMap.put("Deal",crmid);
+		tripMap.put("Created_on_This_Field_Update","Autopsy_Reschedule");
+		tripMap.put("Owner",recordInfo.get("Owner").get("id"));
+		tripCreationResult = zoho.crm.createRecord("Trips",tripMap,{"trigger":{"workflow"}});
+		info tripCreationResult;
+		tripAccountRelation = Map();
+		tripAccountRelation.put("Trips",tripCreationResult.get("id"));
+		tripAccountRelation.put("Related_Account_Record",recordInfo.get("Account_Name").get("id"));
+		zoho.crm.createRecord("Trips_Accounts_Relation",tripAccountRelation);
+		dealMap = Map();
+		dealMap.put("Trips",tripCreationResult.get("id"));
+		zoho.crm.updateRecord("Deals",crmid,dealMap);
+	}
+	else
+	{
+		zoho.crm.updateRecord("Trips",tripId,tripMap,{"trigger":{"workflow"}});
+	}
+
+	if(rescheduleReason == "Problem caused by DFH")
+	{
+		// DFH absorbs the cost -- trip only, no billing line, no task.
+		return;
+	}
+
+	// ===== "Autopsy not done" only, from here down: billing + Task for Shirley =====
+
+	// Add the Reschedule Trip fee to the Police Cases Sales Order (add-or-update pattern,
+	// matches the existing patchAutopsyTripQuantityOnSalesOrder / patchPickupQuantityOnSalesOrder
+	// convention in ZP-TBD-6).
+	rescheduleTripProductId = "6503357000004300032"; // Reschedule Trip, per DEVELOPER_BUILD_DOC.md §0
+	salesOrders = standalone.COQLQuery("select Subject from Sales_Orders where Deal_Name = '" + crmid + "' and Sales_Order_Type = 'Police Cases' limit 1");
+	if(salesOrders.size() > 0)
+	{
+		salesOrderDetails = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v7/Sales_Orders/" + salesOrders.toList().get(0).get("id")
+			type :GET
+			connection:"zohooauth"
+		];
+		salesOrderInfo = salesOrderDetails.get("data").get(0);
+		lineItemList = list();
+		if(salesOrderInfo.get("Ordered_Items").size() > 0)
+		{
+			lineItemList = salesOrderInfo.get("Ordered_Items");
+		}
+		productDetails = zoho.crm.getRecordById("Products",rescheduleTripProductId.toLong());
+		existingIndex = -1;
+		for each item in lineItemList
+		{
+			if(item.contains("Product_Name"))
+			{
+				productName = item.get("Product_Name");
+				if(productName != null && productName.contains("id") && productName.get("id") == rescheduleTripProductId)
+				{
+					existingIndex = lineItemList.indexOf(item);
+					break;
+				}
+			}
+		}
+		if(existingIndex >= 0)
+		{
+			existingItem = lineItemList.get(existingIndex);
+			existingQty = ifnull(existingItem.get("Quantity"),0);
+			existingItem.put("Quantity",existingQty + 1); // each reschedule adds one more trip fee
+			lineItemList.remove(existingIndex);
+			lineItemList.add(existingItem);
+		}
+		else
+		{
+			productMap = Map();
+			productMap.put("Product_Name",rescheduleTripProductId);
+			productMap.put("Quantity",1);
+			productMap.put("List_Price",productDetails.get("Unit_Price"));
+			lineItemList.add(productMap);
+		}
+		salesOrderMap = Map();
+		salesOrderMap.put("Ordered_Items",lineItemList);
+		recordList = list();
+		recordList.add(salesOrderMap);
+		dataMap = Map();
+		dataMap.put("data",recordList);
+		updateSalesOrder = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v2.1/Sales_Orders/" + salesOrders.toList().get(0).get("id")
+			type :PUT
+			parameters:dataMap.toString()
+			connection:"zohooauth"
+		];
+		info updateSalesOrder;
+		standalone.createInvoiceBasedOnSalesOrderForPolice(crmid);
+	}
+
+	// Task for Ms. Shirley -- manual invoice, since the system can't reliably tell
+	// officer-no-show from family-no-show (Andrea's design decision, confirmed 2026-08-13).
+	taskMap = Map();
+	taskMap.put("Subject","Raise manual reschedule invoice -- decide police-officer vs family charge");
+	taskMap.put("$se_module","Deals");
+	taskMap.put("What_Id",crmid);
+	taskMap.put("Owner",recordInfo.get("Owner").get("id"));
+	taskMap.put("Due_Date",zoho.currentdate.addDay(2));
+	taskMap.put("Status","Not Started");
+	taskMap.put("Send_Notification_Email",true);
+	taskMap.put("Task_Type","Reschedule Manual Invoice");
+	createTask = zoho.crm.createRecord("Tasks",taskMap);
+	info createTask;
+}

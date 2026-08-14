@@ -1,0 +1,74 @@
+// ONE-TIME DATA FIX -- run once via Setup > Developer Space > Deluge Debugger (or a
+// temporary Standalone function), then delete/archive it. Do NOT wire this to a button
+// or workflow -- it's a one-shot repair, not a recurring process.
+//
+// Andrea, 2026-08-14, verbatim: "You told me you fixed this on a prior problem and now
+// it's back. So, did you know was a problem 3 weeks ago and only fixed it for 1 hospital
+// and not the others? This needs to be fixed... Each hospital account record is easy to
+// match its products with the account it goes with."
+//
+// WHAT THIS DOES: sets Product_of_This_Hospital on 21 "Storage for <Hospital>" Products
+// that were confirmed live (2026-08-14) to have this field empty -- only "HIH Storage Fee"
+// was previously set up correctly. Every product-id/account-id pair below was individually
+// verified live via a direct record GET on the Account before being included here (not a
+// name-based guess) -- each Account_Name below was read directly off the live Account
+// record at that exact id, confirmed to exactly match the product's "Storage for X" name.
+//
+// NOT INCLUDED: "Storage for Princess Margaret Hospital" (product 6503357000024683152).
+// This product has a different Product_Category (null, not "Storage" like the other 21),
+// and its matching Account id was NOT found in the same sequential id block the other 21
+// hospital Accounts live in (checked 6503357000022426823-847 directly -- Princess Margaret
+// is not among them). Needs a manual lookup (Accounts search UI for "Princess Margaret
+// Hospital") before it can be linked -- not guessed here.
+
+string standalone.linkHospitalStorageProducts_ONETIME()
+{
+	// productId -> accountId (both verified live 2026-08-14)
+	pairs = Map();
+	pairs.put("6503357000022694344","6503357000022426823"); // Institute of Forensic Science and Legal Medicine (Account_Type=Police, not Hospital -- IFSL-M)
+	pairs.put("6503357000022694327","6503357000022426827"); // Hope Institute Hospital -- NOTE: duplicate of already-linked "HIH Storage Fee" (6503357000024553566); linking for consistency, but flag to confirm which product the billing function actually uses for HIH
+	pairs.put("6503357000022694310","6503357000022426828"); // Bay West Wellness Hospital
+	pairs.put("6503357000022694293","6503357000022426829"); // Doctors Hospital
+	pairs.put("6503357000022694276","6503357000022426830"); // GWest Medical & Surgery Centre
+	pairs.put("6503357000022694259","6503357000022426831"); // Hospiten Montego Bay
+	pairs.put("6503357000022694242","6503357000022426832"); // Montego Bay Hospital Hospitals
+	pairs.put("6503357000022694225","6503357000022426833"); // Andrews Memorial Hospital (Kin)
+	pairs.put("6503357000022694208","6503357000022426834"); // Tony Thwaites Wing
+	pairs.put("6503357000022694188","6503357000022426835"); // Bustamante Hospital for Children (KIN)
+	pairs.put("6503357000022694171","6503357000022426836"); // Kingston Public Hospital (KIN) -- spot-verified live
+	pairs.put("6503357000022694126","6503357000022426837"); // Medical Associates Hospital (KIN)
+	pairs.put("6503357000022694109","6503357000022426838"); // Spanish Town Public Hospital
+	pairs.put("6503357000022694092","6503357000022426839"); // Nuttall Memorial Hospital (KIN)
+	pairs.put("6503357000022694075","6503357000022426840"); // Victoria Jubilee Maternity Hospital (KIN)
+	pairs.put("6503357000022694058","6503357000022426841"); // Bellevue Hospital (KIN)
+	pairs.put("6503357000022694041","6503357000022426842"); // St. Ann's Bay Hospital
+	pairs.put("6503357000022694015","6503357000022426843"); // Falmouth Public General Hospital
+	pairs.put("6503357000022636219","6503357000022426844"); // Noel Holmes Hospital
+	pairs.put("6503357000022636192","6503357000022426845"); // St. Joseph's Hospital -- spot-verified live
+	pairs.put("6503357000022636128","6503357000022426847"); // Percy Junior Hospital -- spot-verified live
+
+	linked = List();
+	failed = List();
+
+	for each productId in pairs.keys()
+	{
+		accountId = pairs.get(productId);
+		updMap = Map();
+		acctLk = Map();
+		acctLk.put("id",accountId);
+		updMap.put("Product_of_This_Hospital",acctLk);
+		try
+		{
+			zoho.crm.updateRecord("Products",productId.toLong(),updMap);
+			linked.add(productId + " -> " + accountId);
+		}
+		catch (e)
+		{
+			failed.add(productId + " -> " + accountId + " FAILED: " + e.toString());
+		}
+	}
+
+	result = "LINKED (" + linked.size() + "):\n" + linked.toString() + "\n\nFAILED (" + failed.size() + "):\n" + failed.toString();
+	info result;
+	return result;
+}
