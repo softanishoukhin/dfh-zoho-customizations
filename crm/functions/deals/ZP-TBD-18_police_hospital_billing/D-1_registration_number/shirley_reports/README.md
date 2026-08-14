@@ -1,5 +1,17 @@
 # D-1 -- Ms. Shirley's police/hospital reports
 
+**STATUS (2026-08-15): IN PROGRESS -- blocked on a broken CRM->Analytics sync, found while
+checking Step 0 below.** User reported the sync has stopped with errors. Confirmed
+independently: live CRM `Deals` has **2751** records (`ZohoCRM_getRecordCount`); the synced
+Analytics `Deals` table shows only **2683** rows -- a 68-record gap, consistent with the
+sync having been stalled for a period. No tool in this connector exposes the actual sync
+error log or a way to restart the sync -- that detail only exists in Zoho Analytics'
+own **Workspace Settings -> Zoho CRM Integration / Sync** page, which needs to be checked
+directly in the UI. The SQL guideline below is still correct and ready to apply once the
+sync is fixed and confirmed current -- do not apply it against a stale/broken sync, since
+the new `Registration Number` column may not even be reachable until the sync itself is
+healthy again.
+
 **Located 2026-08-15.** These live in **Zoho Analytics**, workspace "Zoho CRM Reports"
 (orgId `871315529`, workspaceId `2981994000000006002`) -- confirmed by keyword-matching
 against `Deals.Selected_Hospital`'s active hospitals (CRH/HIH/NCH/UHWI = Cornwall Regional,
