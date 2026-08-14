@@ -105,3 +105,33 @@ See also `crm/functions/deals/ZP-TBD-6_police_km_quantity_billing/` — even onc
 independent bug in `patchPickupQuantityOnSalesOrder` can still drop the KM before it reaches
 the invoice. Both fixes are needed together for police pickup/dropoff KM billing to work
 end-to-end.
+
+## Round 4 (2026-08-14) — real payload captured, Amber's KM fix work HALTED
+The named-field parsing fix above was deployed to live `amberConnectResponse`. The user then
+ran a real, completed Police case trip through Amber and captured the actual raw webhook
+payload Amber sent (`projectDocuments/amberCheck.txt`). Findings:
+
+- The payload structure matches Amber's documented format — same multipart shape as before,
+  same field count/order as Amber's own integration doc.
+- The LAST value in the entire raw body — the position `TotalDistanceKM` occupies in Amber's
+  documented field order — is literally `"0"`, even though this was a real, driven, completed
+  Police pickup.
+
+**Conclusion: this is not a Zoho-side parsing problem.** The named-field fix deployed this
+round is still the technically correct fix for reading whatever Amber sends (it protects
+against future field-reordering the way the old positional code never did), but it cannot
+produce a real KM value if Amber's own system reports `0` for a job that clearly drove a real
+distance. The actual gap is upstream, in Amber's own telematics/distance-calculation on their
+side, not in anything Zoho controls.
+
+**Decision: work on this integration is stopped here per the user.** "We have completed a
+police case trip but didn't get any information, so we will not continue with Amber process,
+we will inform it in Completion report with what Amber response provided." This will be
+raised with Andrea (and from her, likely back to Amber Connect directly — see her original
+note: "this is now the 4th time this has been looked at... if CC inserted anything
+questionable, please verify with me") as an Amber-side data problem, not a DFH CRM defect.
+
+`patchPickupQuantityOnSalesOrder` (see ZP-TBD-6) was NOT deployed as part of this round, since
+it depends entirely on `amberConnectResponse` receiving a real KM value first — no reason to
+push a fix for the downstream billing step while the upstream data source is confirmed to be
+sending 0.
