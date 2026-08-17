@@ -1,0 +1,205 @@
+// Task: ZP-TBD-22 -- fix false "Time Changed" alert on Funeral trips
+// Zoho App: CRM
+// Module: Deals -> Trips
+// Function Name: automation.propagateFuneralTimeToTrips (EXISTING, this is a fix, not new)
+// Trigger Source: EXISTING Workflow Rule "Propagate Funeral Date to Funeral Trip" (Deals, edit,
+//                  repeat, criteria Pipeline in [Cremation with Service, Funeral with Burial]) --
+//                  no workflow change needed, only this function's body changes.
+//
+// BUG (found 2026-08-17, reported by user via a live test deal): the funeral trip is deliberately
+// created with Scheduled_Date = Deals.Funeral_Time minus 2 hours (an intentional default, per the
+// user -- not a bug). But this function compared the trip's ALREADY-OFFSET Scheduled_Date directly
+// against the Deal's RAW Funeral_Time:
+//     if(currentScheduledDate != funeralTime) { ...set Funeral_Time_Change_Alert = true... }
+// Those two values are NEVER meant to be equal (there's always a 2-hour gap by design), so this
+// comparison is true on literally every firing -- producing a false "Time Changed" pill on the
+// dispatch board even when nothing was ever rescheduled. It also unconditionally overwrote the
+// trip's Scheduled_Date with the raw (un-offset) Funeral_Time on every firing, which would have
+// silently erased the intentional 2-hour gap the next time this function actually ran for a given
+// deal.
+//
+// FIX (per user's explicit instruction, 2026-08-17): use Deals.Old_Funeral_Date_and_Time as the
+// real "was this actually rescheduled" signal -- if it has a value AND that value differs from the
+// current Deals.Funeral_Time, that IS a real time change. Deals.Old_Funeral_Date_and_Time already
+// exists as a field but was found empty/unused on every deal checked live -- confirm with Dale/
+// Andrea what (if anything) is meant to populate it when staff actually reschedule a funeral time.
+// Until that's confirmed, this function has a self-contained fallback: if Old_Funeral_Date_and_Time
+// is empty, it reconstructs "what Funeral_Time was last synced as" from the trip's own current
+// Scheduled_Date + 2 hours -- so the false-positive is fixed either way, with or without that Deal
+// field being maintained elsewhere.
+//
+// Also fixed: Scheduled_Date is now always written as Funeral_Time MINUS 2 HOURS (preserving the
+// intentional offset), instead of the raw Funeral_Time -- so this function can no longer silently
+// erase the 2-hour gap on a later edit.
+
+void automation.propagateFuneralTimeToTrips(String dealId)
+{
+	if(dealId == null || dealId == "")
+	{
+		return;
+	}
+	dealRec = Map();
+	try
+	{
+		dealRec = zoho.crm.getRecordById("Deals",dealId.toLong());
+	}
+	catch (eDeal)
+	{
+		return;
+	}
+	if(!dealRec.containKey("id"))
+	{
+		return;
+	}
+	funeralTime = "";
+	try
+	{
+		ftRaw = dealRec.get("Funeral_Time");
+		if(!isNull(ftRaw))
+		{
+			ftStr = "" + ftRaw;
+			if(ftStr != "" && ftStr != "null")
+			{
+				funeralTime = ftStr;
+			}
+		}
+	}
+	catch (eFT)
+	{
+		return;
+	}
+	if(funeralTime == "")
+	{
+		return;
+	}
+
+	// Real-reschedule signal, per the user: Deals.Old_Funeral_Date_and_Time populated AND
+	// different from the current Funeral_Time.
+	oldFuneralTime = "";
+	try
+	{
+		oftRaw = dealRec.get("Old_Funeral_Date_and_Time");
+		if(!isNull(oftRaw))
+		{
+			oftStr = "" + oftRaw;
+			if(oftStr != "" && oftStr != "null")
+			{
+				oldFuneralTime = oftStr;
+			}
+		}
+	}
+	catch (eOFT)
+	{
+		oldFuneralTime = "";
+	}
+
+	// Always write Scheduled_Date as Funeral_Time minus 2 hours (preserves the intentional
+	// default gap -- this function must never write the raw, un-offset Funeral_Time).
+	scheduledDateForTrip = funeralTime;
+	try
+	{
+		scheduledDateForTrip = funeralTime.toDateTime().subHour(2).toString("yyyy-MM-dd'T'HH:mm:ss");
+	}
+	catch (eOff)
+	{
+		scheduledDateForTrip = funeralTime;
+	}
+
+	trips = List();
+	try
+	{
+		trips = zoho.crm.getRelatedRecords("Trips","Deals",dealId.toLong());
+	}
+	catch (eRel)
+	{
+		return;
+	}
+	if(trips.isEmpty())
+	{
+		return;
+	}
+
+	for each  trip in trips
+	{
+		tripType = "";
+		tripId = "";
+		try
+		{
+			ttRaw = trip.get("Trip_Type");
+			if(!isNull(ttRaw))
+			{
+				tripType = "" + ttRaw;
+			}
+			idRaw = trip.get("id");
+			if(!isNull(idRaw))
+			{
+				tripId = "" + idRaw;
+			}
+		}
+		catch (eTrip)
+		{
+			tripType = "";
+			tripId = "";
+		}
+
+		if(tripType == "Funeral" && tripId != "")
+		{
+			currentScheduledDate = "";
+			try
+			{
+				currentTripRec = zoho.crm.getRecordById("Trips",tripId.toLong());
+				csdRaw = currentTripRec.get("Scheduled_Date");
+				if(!isNull(csdRaw))
+				{
+					currentScheduledDate = "" + csdRaw;
+				}
+			}
+			catch (eCur)
+			{
+				currentScheduledDate = "";
+			}
+
+			// Determine whether this is a real reschedule.
+			isRealChange = false;
+			if(oldFuneralTime != "" && oldFuneralTime != funeralTime)
+			{
+				// Primary signal: Deals.Old_Funeral_Date_and_Time, per the user's rule.
+				isRealChange = true;
+			}
+			else if(oldFuneralTime == "" && currentScheduledDate != "")
+			{
+				// Fallback (only used when Old_Funeral_Date_and_Time isn't being maintained
+				// yet): reconstruct the last-synced Funeral_Time from the trip's own
+				// Scheduled_Date + 2 hours, and compare THAT against the current Funeral_Time.
+				try
+				{
+					reconstructedPrevFuneralTime = currentScheduledDate.toDateTime().addHour(2).toString("yyyy-MM-dd'T'HH:mm:ss");
+					funeralTimeNormalized = funeralTime.toDateTime().toString("yyyy-MM-dd'T'HH:mm:ss");
+					if(reconstructedPrevFuneralTime != funeralTimeNormalized)
+					{
+						isRealChange = true;
+					}
+				}
+				catch (eRecon)
+				{
+					isRealChange = false;
+				}
+			}
+
+			updMap = Map();
+			updMap.put("Scheduled_Date",scheduledDateForTrip);
+			if(isRealChange)
+			{
+				updMap.put("Old_Scheduled_Date",currentScheduledDate);
+				updMap.put("Funeral_Time_Change_Alert",true);
+			}
+			try
+			{
+				zoho.crm.updateRecord("Trips",tripId.toLong(),updMap);
+			}
+			catch (eUpd)
+			{
+			}
+		}
+	}
+}
