@@ -1,19 +1,9 @@
 # D-1 -- Ms. Shirley's police/hospital reports
 
-**STATUS (2026-08-15 -- re-checked after the pause): sync is healthy now, but the new field
-still isn't in the sync's column selection.** Original blocker (record-level sync stalled --
-live Deals 2751 vs. synced 2683, a 68-record gap) is RESOLVED: re-checked live, Deals is now
-2772 records vs. 2769 synced -- a normal ~3-record lag, not a stall. Whatever was wrong with
-the sync got fixed between the pause and now.
-
-**New, narrower finding:** `Registration_Number` (created on Deals partway through this
-task) is confirmed NOT present among the Deals table's 293 synced columns in Analytics --
-this is a separate step from the record sync being healthy. A newly created CRM field is
-not automatically added to an existing Analytics sync's column selection; it has to be
-added explicitly. **Before Step 1 below can be applied, open Analytics' Workspace Settings
--> Zoho CRM Integration -> the Deals table's field mapping, and add `Registration_Number`
-to the synced fields.** No tool in this connector can do this -- Analytics field-sync
-configuration isn't exposed via any available API here.
+**STATUS (2026-08-17): COMPLETE.** All 3 steps done and confirmed live. Registration Number
+is synced into Analytics, added to all 3 Analytics query tables, and displayed in all 3
+reports where it structurally applies (the other 4 are hospital-specific summary/count
+reports with no per-record layout, so it doesn't apply there -- confirmed with user).
 
 **Located 2026-08-15.** These live in **Zoho Analytics**, workspace "Zoho CRM Reports"
 (orgId `871315529`, workspaceId `2981994000000006002`) -- confirmed by keyword-matching
@@ -48,7 +38,12 @@ User added `Registration_Number` to the Analytics sync's field selection. Re-che
 the Deals table in Analytics now has 294 synced columns including `Registration Number`
 (Plain Text, columnId `2981994000005832022`). Ready for Step 1.
 
-## Step 1 -- add the column to each query table's SQL
+## Step 1 -- DONE, confirmed live (2026-08-15)
+Verified all three query tables directly via `getQueryTableDetails`: "Registration Number"
+column present and correctly positioned in all three (SELECT + GROUP BY for 1a/1b, both
+UNION branches for 1c). Ready for Step 2 (adding the column to each Pivot's layout).
+
+## Step 1 (reference) -- add the column to each query table's SQL
 
 ### 1a. "Query Table for Hospital Invoicing Report" (feeds 5 of the 7 reports)
 In the SELECT list, add right after `"Deals"."Name of Deceased" AS "Name of Deceased",`:
@@ -81,12 +76,18 @@ column lists must match) in the same position, e.g. right after
 The outer query's `deal_trip_data.*` picks it up automatically once it's in the inner
 SELECT lists -- no change needed to the outer query itself.
 
-## Step 2 -- add the new column to each Pivot report's layout
+## Step 2 -- DONE, confirmed (2026-08-17)
+Added to the 3 reports where it belongs: "Hospital Invoicing Report", "Police Invoicing
+Report", "Weekly Police Autopsy Report".
 
-Editing the query table's SQL makes the column *available*, but each of the 7 Pivot
-reports needs the new "Registration Number" column manually dragged into its report layout
-in the Zoho Analytics UI (Pivot views don't auto-display newly added source columns). Do
-this for all 7 reports listed in the table above.
+Not added to CRH/HIH/NCH/UHWI - Hospital Invoicing Report -- confirmed with user these 4
+are summary/count reports (counts per hospital, no per-record columns at all), so there is
+no row-level layout for Registration Number to attach to. This is expected, not a gap --
+Registration Number is still fully available in the underlying query table if a per-record
+breakdown is ever added to these 4 later.
+
+All 7 reports now correctly reflect Registration Number wherever it's structurally
+applicable. D-1 reports sub-task is complete.
 
 ## Test
 
