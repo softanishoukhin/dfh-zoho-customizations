@@ -65,6 +65,13 @@ completion.
   detail panel.
 - Scoped to `cat === "funeral"` only, per the user's request -- other trip categories
   unchanged.
+- **Round 2 (2026-08-17):** user live-tested and found "Done `<time>`" was still showing
+  on non-funeral cards (e.g. Police Case Pickup) -- this was PRE-EXISTING behavior (the
+  original `isDone && t.Completion_Time` block was never category-gated, unlike the new
+  Started line), not a regression from this change. User confirmed via AskUserQuestion
+  they want it scoped to funeral-only too, for consistency (Started/Done only ever appear
+  together, and only on funeral cards). Fixed: the whole `isDone && t.Completion_Time`
+  block is now gated on `cat === "funeral"`.
 
 Data was already being fetched (`Departure_Time` and `Completion_Time` are both in
 `fetchTrips`'s field list, Trip_Manager.ds line 409) -- this was a display-only gap, not
