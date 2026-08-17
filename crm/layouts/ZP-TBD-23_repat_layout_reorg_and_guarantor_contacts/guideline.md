@@ -20,22 +20,27 @@ Existing fields (confirmed live): `Departing_Date_Time`/`_2`/`_3`/`_4`,
 `Departing_Airport` (single field), `Arriving_Airport1` (single field, picklist).
 
 **⚠️ Open question:** only ONE `Departing_Airport` and ONE `Arriving_Airport1` field exist —
-segments 2/3/4 have their own date/time, flight number, and airline fields, but **no
-per-segment airport fields**. Before regrouping, confirm with Andrea: is this intentional
+Legs 2/3/4 have their own date/time, flight number, and airline fields, but **no
+per-leg airport fields**. Before regrouping, confirm with Andrea: is this intentional
 (connecting-flight airports don't need to be separately tracked), or should
 `Departing_Airport_2/3/4` and `Arriving_Airport_2/3/4` be added as new fields so each
-segment is fully self-contained? Assuming the former (no new airport fields) unless told
-otherwise — the reorg below groups what exists per segment:
+leg is fully self-contained? Assuming the former (no new airport fields) unless told
+otherwise — the reorg below groups what exists per leg, with each Departing field placed
+immediately next to its corresponding Arriving field:
 
-- **Segment 1:** `Departing_Airport`, `Departing_Date_Time`, `Arriving_Airport1`,
-  `Arriving_Date_Time`, `Flight_Number`, `Airline`
-- **Segment 2:** `Departing_Date_Time_2`, `Arriving_Date_Time_2`, `Flight_Number_2`, `Airline_2`
-- **Segment 3:** `Departing_Date_Time_3`, `Arriving_Date_Time_3`, `Flight_Number_3`, `Airline_3`
-- **Segment 4:** `Departing_Date_Time_4`, `Arriving_Date_Time_4`, `Flight_Number_4`, `Airline_4`
+- **Leg 1 (Departing → Arriving):** `Departing_Airport`, `Departing_Date_Time`,
+  `Arriving_Airport1`, `Arriving_Date_Time`, `Flight_Number`, `Airline`
+- **Leg 2 (Departing → Arriving):** `Departing_Date_Time_2`, `Arriving_Date_Time_2`,
+  `Flight_Number_2`, `Airline_2`
+- **Leg 3 (Departing → Arriving):** `Departing_Date_Time_3`, `Arriving_Date_Time_3`,
+  `Flight_Number_3`, `Airline_3`
+- **Leg 4 (Departing → Arriving):** `Departing_Date_Time_4`, `Arriving_Date_Time_4`,
+  `Flight_Number_4`, `Airline_4`
 
 In Setup > Customization > Modules and Fields > Deals > [Full Body Repatriation /
-Repatriation with Cremation layout] > drag each segment's fields together, in this order,
-replacing wherever the departing/arriving fields currently sit scattered.
+Repatriation with Cremation layout] > drag each leg's Departing field(s) directly next to
+its matching Arriving field(s), in this order, replacing wherever the departing/arriving
+fields currently sit scattered.
 
 ### A2. Remove
 - **`MOH_Location`** (picklist) — remove from these two layouts only. Do NOT delete the
@@ -173,7 +178,7 @@ data or missing deals.
 ---
 
 ## Summary of what's needed from Andrea before this can be built
-1. Confirm segment 2/3/4 airport fields — add new ones, or leave as-is (A1)?
+1. Confirm Leg 2/3/4 airport fields — add new ones, or leave as-is (A1)?
 2. Confirm "place of birth" — use existing City/Country of Birth fields, or one new
    combined field (A5)?
 3. Confirm which "Cremation Certificate" field belongs in Repat Forms —
