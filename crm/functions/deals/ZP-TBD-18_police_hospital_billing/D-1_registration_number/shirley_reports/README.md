@@ -43,14 +43,10 @@ All three query tables are built directly on the CRM-synced **Deals** table, fil
 `Pipeline = 'Hospital Cases'` or `Pipeline = 'Police Cases'` and joined to Invoices/Invoiced
 Items/Products/Accounts (or, for the autopsy-status one, Trips/Deceased Pickups/Contacts).
 
-## Step 0 -- add Registration_Number to the Analytics sync's field selection (CONFIRMED STILL NEEDED, 2026-08-15)
-
-Confirmed live: the Deals table in Analytics has 293 synced columns and `Registration_Number`
-is not one of them. Add it: Analytics -> Workspace Settings -> Zoho CRM Integration -> Deals
-table's field mapping -> add `Registration_Number` to the synced fields -> save/re-sync. Once
-that's done, re-check the Deals table's column list in Analytics before moving to Step 1 --
-don't assume it landed just because the setting was saved; confirm the column actually
-appears.
+## Step 0 -- DONE, confirmed live (2026-08-15)
+User added `Registration_Number` to the Analytics sync's field selection. Re-checked live:
+the Deals table in Analytics now has 294 synced columns including `Registration Number`
+(Plain Text, columnId `2981994000005832022`). Ready for Step 1.
 
 ## Step 1 -- add the column to each query table's SQL
 
