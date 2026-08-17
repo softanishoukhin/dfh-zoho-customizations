@@ -1,5 +1,13 @@
 # ZP-TBD-23 — Repatriation layout reorg + guarantor Contacts migration
 
+**STATUS (2026-08-17):** A1–A5 done and applied live by the user. A6 done except two new
+fields (Customs Invoice, Repatriation Label completed) — blocked, Deals is at its custom
+field limit again; two more fields need to be deleted first (the two used last time,
+`Hospital_Discrepancy_Date` and `Letter_of_No_Interest_Discrepancy_date`, are already
+spent). Part B (Guarantor → Contacts) — NOT STARTED, three open decisions sent to Andrea
+(see `Repat_Layout_Status_and_Questions_for_Andrea_2026-08-17.docx` in
+`D:\Office\Andrea_Projects\DFH\completionReport\`). Resume once Andrea answers.
+
 Source: `D:\Office\Andrea_Projects\DFH\projectDocuments\task08172026.txt`
 Layouts confirmed by user (2026-08-17): **Full Body Repatriation** and **Repatriation with
 Cremation** (Deals module layouts).
