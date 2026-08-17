@@ -1,16 +1,19 @@
 # D-1 -- Ms. Shirley's police/hospital reports
 
-**STATUS (2026-08-15): IN PROGRESS -- blocked on a broken CRM->Analytics sync, found while
-checking Step 0 below.** User reported the sync has stopped with errors. Confirmed
-independently: live CRM `Deals` has **2751** records (`ZohoCRM_getRecordCount`); the synced
-Analytics `Deals` table shows only **2683** rows -- a 68-record gap, consistent with the
-sync having been stalled for a period. No tool in this connector exposes the actual sync
-error log or a way to restart the sync -- that detail only exists in Zoho Analytics'
-own **Workspace Settings -> Zoho CRM Integration / Sync** page, which needs to be checked
-directly in the UI. The SQL guideline below is still correct and ready to apply once the
-sync is fixed and confirmed current -- do not apply it against a stale/broken sync, since
-the new `Registration Number` column may not even be reachable until the sync itself is
-healthy again.
+**STATUS (2026-08-15 -- re-checked after the pause): sync is healthy now, but the new field
+still isn't in the sync's column selection.** Original blocker (record-level sync stalled --
+live Deals 2751 vs. synced 2683, a 68-record gap) is RESOLVED: re-checked live, Deals is now
+2772 records vs. 2769 synced -- a normal ~3-record lag, not a stall. Whatever was wrong with
+the sync got fixed between the pause and now.
+
+**New, narrower finding:** `Registration_Number` (created on Deals partway through this
+task) is confirmed NOT present among the Deals table's 293 synced columns in Analytics --
+this is a separate step from the record sync being healthy. A newly created CRM field is
+not automatically added to an existing Analytics sync's column selection; it has to be
+added explicitly. **Before Step 1 below can be applied, open Analytics' Workspace Settings
+-> Zoho CRM Integration -> the Deals table's field mapping, and add `Registration_Number`
+to the synced fields.** No tool in this connector can do this -- Analytics field-sync
+configuration isn't exposed via any available API here.
 
 **Located 2026-08-15.** These live in **Zoho Analytics**, workspace "Zoho CRM Reports"
 (orgId `871315529`, workspaceId `2981994000000006002`) -- confirmed by keyword-matching
@@ -40,15 +43,14 @@ All three query tables are built directly on the CRM-synced **Deals** table, fil
 `Pipeline = 'Hospital Cases'` or `Pipeline = 'Police Cases'` and joined to Invoices/Invoiced
 Items/Products/Accounts (or, for the autopsy-status one, Trips/Deceased Pickups/Contacts).
 
-## Step 0 -- confirm the CRM->Analytics sync picked up the new Deals field
+## Step 0 -- add Registration_Number to the Analytics sync's field selection (CONFIRMED STILL NEEDED, 2026-08-15)
 
-`Registration_Number` was only just created on Deals (see `onDeceasedPickupCheckIn_CHANGES.md`
-in the parent folder). Zoho Analytics syncs CRM modules on its own schedule/field-selection
-config -- **before editing any query below, open the "Deals" table in this Analytics
-workspace and confirm `Registration Number` appears as an available column.** If it doesn't
-yet, either wait for the next sync cycle or manually add the field to the sync's field
-selection (Analytics workspace settings -> the Deals table's CRM sync configuration) --
-don't assume it's there.
+Confirmed live: the Deals table in Analytics has 293 synced columns and `Registration_Number`
+is not one of them. Add it: Analytics -> Workspace Settings -> Zoho CRM Integration -> Deals
+table's field mapping -> add `Registration_Number` to the synced fields -> save/re-sync. Once
+that's done, re-check the Deals table's column list in Analytics before moving to Step 1 --
+don't assume it landed just because the setting was saved; confirm the column actually
+appears.
 
 ## Step 1 -- add the column to each query table's SQL
 
