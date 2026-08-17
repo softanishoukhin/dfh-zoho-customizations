@@ -77,6 +77,27 @@ Data was already being fetched (`Departure_Time` and `Completion_Time` are both 
 `fetchTrips`'s field list, Trip_Manager.ds line 409) -- this was a display-only gap, not
 a missing-data problem.
 
+### 3. Funeral detail panel: scheduled departure time appeared overwritten by actual driver start time -- FIXED
+User reported (2026-08-15 screenshot, Sherlon Samuels): "Departure Date & Time" in the
+funeral trip detail panel showed the driver's actual start time, not the originally
+scheduled departure.
+
+Root cause: `Trips.Departure_Time` does double duty. Trip Manager's assignment flow
+writes it as the PLANNED departure when scheduling a driver/vehicle
+(`updMap.put("Departure_Time",depFormatted)`, Trip_Manager.ds ~3195), and also writes the
+same value to `Scheduled_Date` in the same update (~3196). The Driver App's `startJob`
+(Driver_App.ds ~5988) later overwrites the SAME `Departure_Time` field with the real
+start timestamp when the driver taps Start -- `Scheduled_Date` is never touched by
+`startJob`. So the originally scheduled value was never actually lost, it just silently
+shifted meaning in the one field the funeral panel displayed (planned before start,
+actual after) under a single ambiguous label, "Departure Date & Time" (widget.html ~1406).
+
+**Fixed (widget.html, direct edit):** the funeral detail panel now shows both, distinctly:
+- "Scheduled Departure" -- always reads `Scheduled_Date` (the original TM-planned value,
+  never overwritten).
+- "Actual Departure (driver)" -- only shown once `Trip_Status` is Started or Completed,
+  reads `Departure_Time` (the real driver start time).
+
 ## Deploy
 1. `app.js` and `widget.html` changes are already applied directly to the live workspace
    copies (per [[feedback_widget_js_html_direct_edit]]) -- no separate paste-in-place step
