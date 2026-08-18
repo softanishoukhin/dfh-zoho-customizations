@@ -1,0 +1,194 @@
+// Task: ZP-TBD-24, part 2 -- Burial Schedule missing manually-assigned vehicles
+// Zoho App: Creator (Trip_Manager.ds)
+// Function Name: list getBurialSchedule(String fromDate, String toDate) -- EXISTING, this is
+//                a fix, not new.
+//
+// BUG (reported 2026-08-18): the Burial Schedule only ever reads Deals.Hearse -- a picklist
+// field that gets set from the invoice/sales-order booking flow. It never looks at the actual
+// Funeral trip's own Vehicle / Amber_Vehicle / Rental_Vehicles fields, which is what Trip
+// Manager staff set when they manually assign a hearse to a funeral trip (independent of
+// whatever was booked on the invoice). The old CRM report showed both; this one only shows
+// the invoice-booked value, so any funeral where TM manually assigned/changed the vehicle
+// shows blank in the Burial Schedule even though a vehicle IS assigned.
+//
+// FIX: in the same batched Trips COQL query that already pulls Departure_Time per Deal, also
+// pull Vehicle, Amber_Vehicle, and Rental_Vehicles. Build a second per-deal map of the
+// TM-assigned vehicle name. When building each output row, use Deals.Hearse if it has a
+// value; otherwise fall back to the TM-assigned vehicle name from the trip.
+
+list getBurialSchedule(String fromDate, String toDate)
+{
+	result = List();
+	fromD = ifnull(fromDate,"").trim();
+	toD = ifnull(toDate,"").trim();
+	if(fromD == "" || toD == "")
+	{
+		return result;
+	}
+	fromDT = fromD + "T00:00:00-05:00";
+	toDT = toD + "T23:59:59-05:00";
+	deals = List();
+	try
+	{
+		dq = Map();
+		dq.put("select_query","select id, Name_of_Deceased, Casket_Type, Church_Chapel, Place_of_Internment, Hearse, Funeral_Time from Deals where Funeral_Time between '" + fromDT + "' and '" + toDT + "' order by Funeral_Time asc limit 200");
+		dresp = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v7/coql"
+			type :POST
+			parameters:dq.toString()
+			headers:{"Content-Type":"application/json"}
+			connection:"zoho_oauth_connection"
+		];
+		if(dresp.containKey("data"))
+		{
+			deals = dresp.get("data");
+		}
+	}	catch (eDeals)
+	{
+	}
+	if(deals.isEmpty())
+	{
+		return result;
+	}
+	idList = List();
+	for each  d in deals
+	{
+		idList.add("" + d.get("id"));
+	}
+	depByDeal = Map();
+	// NEW: TM-assigned vehicle name per Deal, fallback source for the Hearse column.
+	vehByDeal = Map();
+	batch = "";
+	batchCount = 0;
+	idx = 0;
+	total = idList.size();
+	for each  did in idList
+	{
+		if(batch == "")
+		{
+			batch = did;
+		}
+		else
+		{
+			batch = batch + "," + did;
+		}
+		batchCount = batchCount + 1;
+		idx = idx + 1;
+		if(batchCount == 50 || idx == total)
+		{
+			try
+			{
+				tq = Map();
+				// NEW: also select Vehicle / Amber_Vehicle / Rental_Vehicles alongside
+				// Departure_Time, so the manually-assigned vehicle is available as a fallback.
+				tq.put("select_query","select id, Deal, Departure_Time, Vehicle, Amber_Vehicle, Rental_Vehicles from Trips where Deal in (" + batch + ") and Trip_Type = 'Funeral' limit 200");
+				tresp = invokeurl
+				[
+					url :"https://www.zohoapis.com/crm/v7/coql"
+					type :POST
+					parameters:tq.toString()
+					headers:{"Content-Type":"application/json"}
+					connection:"zoho_oauth_connection"
+				];
+				if(tresp.containKey("data"))
+				{
+					for each  tr in tresp.get("data")
+					{
+						dep = ifnull(tr.get("Departure_Time"),"");
+						dlk = tr.get("Deal");
+						tdid = "";
+						try
+						{
+							tdid = "" + dlk.get("id");
+						}						catch (eLk)
+						{
+							tdid = "" + dlk;
+						}
+						if(tdid != "" && tdid != "null")
+						{
+							if(dep != "")
+							{
+								depByDeal.put(tdid,dep);
+							}
+							// NEW: resolve whichever vehicle lookup is populated, in this
+							// priority order -- Vehicle (removal/company vehicle), then
+							// Amber_Vehicle (removal vehicle booked via Amber), then
+							// Rental_Vehicles.
+							vehName = "";
+							try
+							{
+								vLk = tr.get("Vehicle");
+								if(!isNull(vLk))
+								{
+									vehName = ifnull(vLk.get("name"),"");
+								}
+							}							catch (eV)
+							{
+								vehName = "";
+							}
+							if(vehName == "")
+							{
+								try
+								{
+									avLk = tr.get("Amber_Vehicle");
+									if(!isNull(avLk))
+									{
+										vehName = ifnull(avLk.get("name"),"");
+									}
+								}								catch (eAV)
+								{
+									vehName = "";
+								}
+							}
+							if(vehName == "")
+							{
+								try
+								{
+									rvLk = tr.get("Rental_Vehicles");
+									if(!isNull(rvLk))
+									{
+										vehName = ifnull(rvLk.get("name"),"");
+									}
+								}								catch (eRV)
+								{
+									vehName = "";
+								}
+							}
+							if(vehName != "")
+							{
+								vehByDeal.put(tdid,vehName);
+							}
+						}
+					}
+				}
+			}			catch (eTrips)
+			{
+			}
+			batch = "";
+			batchCount = 0;
+		}
+	}
+	for each  d in deals
+	{
+		did = "" + d.get("id");
+		row = Map();
+		row.put("dealId",did);
+		row.put("deceasedName",ifnull(d.get("Name_of_Deceased"),""));
+		row.put("casketType",ifnull(d.get("Casket_Type"),""));
+		row.put("church",ifnull(d.get("Church_Chapel"),""));
+		row.put("internment",ifnull(d.get("Place_of_Internment"),""));
+		// NEW: fall back to the TM-assigned vehicle (from the Funeral trip) when the
+		// invoice-booked Hearse picklist is empty.
+		hearseVal = ifnull(d.get("Hearse"),"");
+		if(hearseVal == "")
+		{
+			hearseVal = ifnull(vehByDeal.get(did),"");
+		}
+		row.put("hearse",hearseVal);
+		row.put("funeralTime",ifnull(d.get("Funeral_Time"),""));
+		row.put("departureTime",ifnull(depByDeal.get(did),""));
+		result.add(row);
+	}
+	return result;
+}
