@@ -1,5 +1,11 @@
 # ZP-TBD-26 -- Easy ON/OFF switch: pause Pre-Visit and Document Pickup trip creation
 
+**STATUS (2026-08-18): DEPLOYED AND CONFIRMED PASSING.** Deployed as a Text-type Org
+Variable with values `"ON"`/`"OFF"` (compared as a string) rather than the originally
+proposed Boolean `true`/`false` -- `getOrgVariable` returns a string, so this is actually
+the cleaner match and is what's live. Guideline below updated to reflect the actual
+deployed code.
+
 Andrea's request (2026-08-18): temporarily stop Trip Manager from getting flooded with
 Pre-Visit and Document/miscellaneous trips while the Ops App is being built, WITHOUT a
 "complicated coding change that takes hours to turn off and back on." Operational trips
@@ -19,15 +25,15 @@ several of these same functions), so this isn't a new mechanism, just one more v
    in your org's Setup menu -- same place).
 2. Create a new Org Variable:
    - API name: `Pause_Misc_Trip_Creation`
-   - Type: **Boolean**
-   - Default value: **false** (unchecked = normal operation, nothing paused)
+   - Type: **Text**
+   - Default value: **"OFF"** (normal operation, nothing paused)
 3. Save.
 
 ### To pause the two trip types (any time, takes seconds)
-Set `Pause_Misc_Trip_Creation` to **true**. No code change, no redeploy.
+Set `Pause_Misc_Trip_Creation` to **"ON"**. No code change, no redeploy.
 
 ### To resume (any time, takes seconds)
-Set `Pause_Misc_Trip_Creation` back to **false**.
+Set `Pause_Misc_Trip_Creation` back to **"OFF"**.
 
 ## What gets paused vs. what keeps running
 
@@ -68,7 +74,7 @@ Add this as the FIRST executable line inside the function body (right after the 
 `{`, before anything else runs -- no Deal GET, no Trips search, nothing, if paused):
 
 ```deluge
-if(zoho.crm.getOrgVariable("Pause_Misc_Trip_Creation") == true)
+if(zoho.crm.getOrgVariable("Pause_Misc_Trip_Creation") == "ON")
 {
 	return;
 }
@@ -96,13 +102,16 @@ Apply the identical 4-line guard (just the `if` block above) to the very top of 
 1. Create the `Pause_Misc_Trip_Creation` Org Variable (one-time setup above).
 2. Open each of the 8 functions listed above in Setup > Developer Space > Functions, add
    the 4-line guard as the first line inside the function body, save.
-3. **Test 1 (paused):** set `Pause_Misc_Trip_Creation` to true. Trigger each of the 8
+3. **Test 1 (paused):** set `Pause_Misc_Trip_Creation` to "ON". Trigger each of the 8
    functions' normal trigger fields on a test Deal (e.g. set Pre_Visit_Viewing_Date, mark
    Form_D_Uploaded... whichever applies) -- confirm no Trip record is created for any of
    them.
-4. **Test 2 (operational trips unaffected while paused):** with the variable still true,
+4. **Test 2 (operational trips unaffected while paused):** with the variable still "ON",
    confirm Funeral, Cremation, Ship In, Repat, and Police/Hospital/First Call/Wholesale
    Local/Airport initial pickup trips still get created normally -- these functions were
    never touched, so they should be completely unaffected, but worth confirming live.
-5. **Test 3 (resume):** set `Pause_Misc_Trip_Creation` back to false. Repeat test 1's
+5. **Test 3 (resume):** set `Pause_Misc_Trip_Creation` back to "OFF". Repeat test 1's
    triggers -- confirm all 8 trip types now get created again normally.
+
+## CONFIRMED (2026-08-18)
+User deployed and tested all 3 steps above -- passing. Live and active.
