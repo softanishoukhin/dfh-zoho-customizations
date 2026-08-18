@@ -1,5 +1,12 @@
 # ZP-TBD-29 — Invoice due-date rules (1-year default + per-pipeline operational date)
 
+**STATUS (2026-08-18): DEPLOYED AND CONFIRMED PASSING.** User applied the fix to both
+functions and tested all 5 scenarios (1-year default, date-entered-later replacement,
+Cremation with Service body/ashes-in-church exception, Ship-in resolving to either
+scenario, Books/Xero propagation) -- confirmed working. The one residual open item noted
+below (exact workflow wiring for the recalculation trigger) is resolved by this
+confirmation -- the recalculation fires correctly in practice.
+
 Source: `task08182026.txt`. Applies to Deals pipelines: Funeral with Burial, Cremation with
 Service, Cremation Only, Ship Ins, Full Body Repatriation, Repatriation with Cremation.
 
