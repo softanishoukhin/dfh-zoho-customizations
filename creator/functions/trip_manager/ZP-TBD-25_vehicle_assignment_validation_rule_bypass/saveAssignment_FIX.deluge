@@ -1,10 +1,3 @@
-// Task: ZP-TBD-25 -- Trip Manager vehicle assignment doesn't trigger the Prevent Edit
-// Vehicle validation rule. See metadata.md in this folder for the full root-cause writeup
-// and test plan -- kept out of this file's own comments since Zoho's Deluge editor can
-// choke on a quote that spans two // comment lines.
-//
-// Paste starting from the function declaration below -- do not include this note block.
-
 map saveAssignment(string tripId, string hearseId, string removalId, string rentalId, string driverId, string attendantId, string departureTime)
 {
 	result = Map();
@@ -142,7 +135,14 @@ map saveAssignment(string tripId, string hearseId, string removalId, string rent
 			}
 			if(putCode != "SUCCESS")
 			{
-				exceptionMessage = putMessage != "" ? putMessage : ("Trip update did not return SUCCESS: " + putResp.toString());
+				if(putMessage != "")
+				{
+					exceptionMessage = putMessage;
+				}
+				else
+				{
+					exceptionMessage = "Trip update did not return SUCCESS: " + putResp.toString();
+				}
 			}
 		}		catch (e)
 		{
