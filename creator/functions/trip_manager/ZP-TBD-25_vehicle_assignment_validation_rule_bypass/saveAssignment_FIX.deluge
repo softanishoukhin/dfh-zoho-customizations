@@ -1,36 +1,9 @@
-// Task: ZP-TBD-25 -- Trip Manager vehicle assignment doesn't trigger "Prevent Edit Vehicle"
-// Zoho App: Creator (Trip_Manager.ds)
-// Function Name: map saveAssignment(...) -- EXISTING, this is a fix, not new.
-// Reported by: user, 2026-08-18: editing Hearse Vehicles directly on a Trip in CRM fires the
-//              "Prevent Edit Vehicle" Validation Rule (which also creates/updates the matching
-//              Vehicle_Bookings record), but assigning the same field through Trip Manager does
-//              not.
+// Task: ZP-TBD-25 -- Trip Manager vehicle assignment doesn't trigger the Prevent Edit
+// Vehicle validation rule. See metadata.md in this folder for the full root-cause writeup
+// and test plan -- kept out of this file's own comments since Zoho's Deluge editor can
+// choke on a quote that spans two // comment lines.
 //
-// ROOT CAUSE (confirmed live): CRM has a genuine Validation Rule on Trips.Vehicle ("Prevent Edit
-// Vehicle", function preventEditVehicle) -- not a workflow rule. Validation Rules are only
-// enforced by Zoho's actual REST API / UI save pipeline. Deluge's built-in
-// zoho.crm.updateRecord(...) task -- even with {"trigger":{"workflow"}} -- does NOT go through
-// that pipeline for validation rules; that trigger option only opts specific WORKFLOW rules in,
-// it has no effect on validation rules at all. saveAssignment's vehicle write
-// (Trip_Manager.ds ~3254) uses exactly that Deluge task, so the validation rule -- and its
-// Vehicle_Bookings sync side effect -- never runs when TM assigns a vehicle.
-//
-// This is the same category of gap already fixed elsewhere in this codebase (Driver_App.ds's
-// startJob/acceptTrip -- see their own header comments: "CRM update via a WORKFLOW-FIRING REST
-// PUT ... none of them ran while this used the plain ... zoho.crm.updateRecord call"). Same fix
-// here: replace the Deluge updateRecord call with a raw REST PUT via invokeurl, which goes
-// through the real API pipeline and enforces Validation Rules, so "Prevent Edit Vehicle" (and
-// its Vehicle_Bookings sync) fires correctly.
-//
-// ADDITIONAL BEHAVIOR CHANGE: preventEditVehicle can genuinely REJECT the save (e.g. "This
-// vehicle is already booked on this day.", or "This vehicle cannot be edited because it was
-// generated from the Deal product selection process."). Previously TM never saw this because the
-// validation rule never ran. Now that it does, saveAssignment parses the REST response and
-// surfaces that exact rejection message back to the UI instead of a generic failure, so TM staff
-// see the real reason instead of just "assignment failed."
-//
-// Only the vehicle-write block changes below (search for "REST PUT" in the diff below) -- every
-// other part of saveAssignment (missing-item checks, Trip_Status logic, etc.) is unchanged.
+// Paste starting from the function declaration below -- do not include this note block.
 
 map saveAssignment(string tripId, string hearseId, string removalId, string rentalId, string driverId, string attendantId, string departureTime)
 {
