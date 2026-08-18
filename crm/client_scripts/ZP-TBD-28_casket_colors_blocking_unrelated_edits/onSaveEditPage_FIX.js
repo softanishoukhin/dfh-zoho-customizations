@@ -67,9 +67,6 @@ function onSaveEditPage(){
 //    after color was finalized, as a Funeral Director-role owner, still blocks with the
 //    "locked" message.
 //
-// Open item (not yet independently re-verified): the hardcoded
-// FUNERAL_DIRECTOR_ROLE_ID = "6503357000005270017" carried the original developer's own
-// comment "// confirm this is current before shipping" -- never confirmed as far as this
-// investigation found. Worth checking Setup > Users and Control > Roles > Funeral Director
-// to confirm the id still matches, since the 24-hour lock (test 3 above) silently no-ops
-// (fails open) if the role lookup doesn't match anything.
+// FUNERAL_DIRECTOR_ROLE_ID = "6503357000005270017" -- confirmed correct by the user
+// (2026-08-18), resolving the original developer's own "confirm before shipping" comment.
+// No longer an open item.
