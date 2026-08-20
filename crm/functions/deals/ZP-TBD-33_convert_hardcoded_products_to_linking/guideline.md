@@ -1,5 +1,10 @@
 # ZP-TBD-33 — Convert remaining hardcoded Police/Hospital products to the linking process
 
+**STATUS (2026-08-20): DEPLOYED AND CONFIRMED PASSING.** All three parts (Part A --
+Transfer/Reschedule/Decomp in CreateSalesOrderforPoliceCase, Part B -- Reschedule/X-ray in
+handleAutopsyReschedule, Part C -- Hospital Release Family Bill fix in
+CreateInvoiceonSelectingDFHNotSelected) applied and tested by the user, all passing.
+
 Requested by Andrea (`phBillingTask08202026.txt`, 2026-08-20): "convert all of the billing
 for police and hospital to the linking process... get converted where it's not." Per the
 `PH_Billing_Code_Map_2026-08-19.docx` sent yesterday, "the linking process" is the existing
