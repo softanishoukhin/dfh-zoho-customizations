@@ -1,5 +1,9 @@
 # ZP-TBD-36 — Retain the Unidentified name when a deceased is renamed (Identified)
 
+**STATUS (2026-08-20): DEPLOYED AND TESTED, BASIC PASS.** User has done a first round of
+testing; a second round is planned before this is considered fully confirmed. The
+repeat-rename open question below is still unanswered.
+
 Requested by Andrea (`PH_Billing process and Workflows.docx`, "Rename Function
 (Unidentified → Identified)"): *"we need a way to retain the unidentified name in the
 deal... insert the unidentified name in a field on Deal and the related record named,

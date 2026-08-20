@@ -1,5 +1,8 @@
 # ZP-TBD-35 — Remove the manual reschedule Task
 
+**STATUS (2026-08-20): DEPLOYED AND TESTED, BASIC PASS.** User has done a first round of
+testing; a second round is planned before this is considered fully confirmed.
+
 Requested by Andrea (`PH_Billing process and Workflows.docx`): *"Please remove the task
 that is generated for this. We want billing to be automated, so remove the section of
 code that creates a task for follow up."* Pinpointed exactly in the 2026-08-19 code map;
