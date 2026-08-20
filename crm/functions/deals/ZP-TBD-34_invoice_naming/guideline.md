@@ -1,5 +1,8 @@
 # ZP-TBD-34 — Invoice naming: IFSL, Hospital Name, Family Transfer
 
+**STATUS (2026-08-20): DEPLOYED AND CONFIRMED PASSING.** All 4 naming changes applied and
+tested by the user.
+
 Requested by Andrea (`PH_Billing process and Workflows.docx`, "New Invoice Naming
 Structure"), scoped in the 2026-08-19 code map and confirmed 2026-08-20: implement the 3
 naming rules that don't depend on the still-unbuilt MNSJ split (see [[ZP-TBD-33]] /
