@@ -1,5 +1,11 @@
 # ZP-TBD-39 — CRM-side changes
 
+**STATUS (2026-08-21): APPLIED IN SANDBOX, TESTING IN PROGRESS.** Not yet deployed to
+production -- waiting on the Creator-side changes (see the sibling guideline in
+`creator/functions/headstone_request/ZP-TBD-39_headstone_workflow_rebuild/guideline.md`,
+still in progress) before this goes live, since the CRM-side routing calls into
+Creator-side functions that aren't finished/tested yet.
+
 Apply in this order. Each numbered section is independently testable before moving to the
 next.
 
