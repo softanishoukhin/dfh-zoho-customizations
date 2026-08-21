@@ -1,5 +1,7 @@
 # ZP-TBD-37 — Create the MNSJ Account (outstanding billing party)
 
+**STATUS (2026-08-20): DEPLOYED, TESTED, AND CONFIRMED PASSING.**
+
 Requested by Andrea, 2026-08-20: *"please just create the new acct that is outstanding.
 client can adjust this."* This was the one genuinely-blocked open item from the 2026-08-19
 code map (§3/§8) -- no MNSJ Account/Contact existed anywhere in the system, confirmed by a

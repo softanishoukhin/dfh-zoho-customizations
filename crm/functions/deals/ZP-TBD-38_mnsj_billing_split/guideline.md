@@ -1,5 +1,8 @@
 # ZP-TBD-38 — MNSJ 2-day overflow billing split
 
+**STATUS (2026-08-20): DEPLOYED, TESTED, AND CONFIRMED PASSING.** IFSL/MNSJ split
+confirmed working live.
+
 Depends on [[ZP-TBD-37]] (MNSJ Account must exist first -- run that script and paste the
 resulting Account id everywhere below marked `<MNSJ_ACCOUNT_ID_HERE>`).
 
