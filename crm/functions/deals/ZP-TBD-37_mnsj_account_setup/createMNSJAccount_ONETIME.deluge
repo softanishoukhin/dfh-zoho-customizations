@@ -1,0 +1,41 @@
+// ONE-TIME script -- creates the MNSJ Account + a placeholder Contact under it, so the
+// MNSJ billing split (ZP-TBD-38) has a real billing party to point at.
+//
+// Requested by Andrea, 2026-08-20: "please just create the new acct that is outstanding.
+// client can adjust this." -- i.e. create a reasonable placeholder now; DFH will correct
+// the real name/address/contact details later. Do NOT invent a real address/phone/email --
+// leave those blank for DFH to fill in, only the name is set.
+//
+// Run this ONCE in the CRM function editor (or as a one-off Custom Function execution),
+// same pattern as H-1's linkHospitalStorageProducts_ONETIME.deluge. After running, copy
+// the printed Account id into ZP-TBD-38's guideline where marked
+// "<MNSJ_ACCOUNT_ID_HERE>".
+
+void standalone.createMNSJAccountOneTime()
+{
+	// Guard: don't create a duplicate if this has already been run.
+	existing = zoho.crm.searchRecords("Accounts","(Account_Name:equals:MNSJ)",1,1);
+	if(existing.size() > 0)
+	{
+		info "MNSJ Account already exists, id = " + existing.get(0).get("id") + " -- not creating a duplicate.";
+		return;
+	}
+
+	acctMap = Map();
+	acctMap.put("Account_Name","MNSJ");
+	// Andrea/DFH to fill in the real billing address, phone, and any other details --
+	// intentionally left blank rather than guessed.
+	createdAccount = zoho.crm.createRecord("Accounts",acctMap);
+	info createdAccount;
+	mnsjAccountId = createdAccount.get("id");
+	info "MNSJ Account created, id = " + mnsjAccountId;
+
+	// Placeholder Contact under the new Account, so the invoice/Sales-Order Contact_Name
+	// field (used elsewhere for Billing_City/Zip/etc.) has something to resolve against.
+	contactMap = Map();
+	contactMap.put("Last_Name","MNSJ Billing Contact");
+	contactMap.put("Account_Name",mnsjAccountId);
+	createdContact = zoho.crm.createRecord("Contacts",contactMap);
+	info createdContact;
+	info "MNSJ placeholder Contact created, id = " + createdContact.get("id");
+}
