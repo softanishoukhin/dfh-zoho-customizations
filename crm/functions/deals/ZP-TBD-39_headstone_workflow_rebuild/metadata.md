@@ -87,3 +87,11 @@ Creator side (`creator/functions/headstone_request/ZP-TBD-39_headstone_workflow_
    only the `Funeral_w_Burial` layout. If other Deal layouts also need this workflow, they
    need the fields added to those layouts before the read-only lock (§8 of `guideline.md`)
    is applied there too.
+4. **Mixed-group Deals, found during testing 2026-08-24:** if a Hillview 1 product is
+   added first (routes straight to vendor, `Headstone_Request_Sent` flips true) and a
+   Hillview 2/3 product gets added to the same Deal afterward, nothing re-evaluates --
+   the fire-once guard silently absorbs the second save, so the family never gets involved
+   even though a stricter-group product is now on the Deal. Not covered by the brief.
+   Needs a decision from Andrea: should adding a Hillview 2/3 product after the vendor
+   path already fired re-open the process to the family, or is the current "first
+   qualifying save decides, permanently" behavior acceptable?

@@ -432,9 +432,24 @@ This is where the new family inputs need to land.
 Resolve it in `Pre_fill_Data`'s existing family-branch loop (the one gated on
 `Hillview_Group != blank` after the §1 fix) -- the first qualifying product's
 `Hillview_Group` is already being read there via `productInfo.get("Hillview_Group")`.
-Add a new **hidden Single Line text field**, `Hillview_Group_On_Form`, and set
-`input.Hillview_Group_On_Form = productInfo.get("Hillview_Group");` at that point (same
-pattern already used for `Session_Variable_Selected_Product` elsewhere in this form).
+Add a new **hidden Single Line text field**, `Hillview_Group_On_Form`.
+
+**Bug found live (2026-08-24), fix this exact spot:** the loop in `Pre_fill_Data` runs
+over *every* product on the Deal, not just the Hillview one -- setting
+`input.Hillview_Group_On_Form = productInfo.get("Hillview_Group");` unconditionally on
+every iteration means a non-Hillview product processed later in the loop (a casket, an
+urn, flowers, anything) silently overwrites the value back to blank, which is why Shape/
+Epitaph stayed hidden even though DOB/DOD (set once, outside this loop) showed fine. Guard
+the assignment so it only fires when the current row actually has a real group:
+```deluge
+if(!isNull(productInfo.get("Hillview_Group")) && productInfo.get("Hillview_Group") != "" && productInfo.get("Hillview_Group") != "-None-")
+{
+	input.Hillview_Group_On_Form = productInfo.get("Hillview_Group");
+}
+```
+Place this right where the old unconditional line was (same pattern already used for
+`Session_Variable_Selected_Product` elsewhere in this form, just with the added guard).
+
 Then in `Show_Hide_Disabled_Fields`, add field rules keyed on
 `input.Hillview_Group_On_Form`:
 - **All variants (Hillview 2/3 -- Hillview 1 never reaches this form, see §4):**
