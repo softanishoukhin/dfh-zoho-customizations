@@ -205,6 +205,23 @@ recognizes.
 
 ## 4. New: `standalone.createFormRecordAndNotifyVendor(String crmid)`
 
+**Confirmed live (2026-08-24) against the two pieces flagged open in the first draft of
+this guideline** -- both resolved from `sendEmailToVendorForDraft`'s own live code, not
+guessed:
+- `Products.Vendor_Name` is a lookup to the **Vendors** module (confirmed both via live
+  CRM field metadata and via `sendEmailToVendorForDraft`'s own
+  `zoho.crm.getRecordById("Vendors", itemInfo.get("Vendor_Name").get("id")...)` call).
+- The real, already-proven email delivery mechanism is the existing helper function
+  `sendEmailToVendor(string email, string vendorID, string dealID, string creatorRecordID)`
+  (`Headstone_Request.ds` line 741) -- it pulls email template id `6503357000032002034`,
+  substitutes the deal/record/vendor ids into the template's placeholder edit-link, and
+  sends via `POST /crm/v8/Vendors/{vendorID}/actions/send_mail`. **Reuse it directly below
+  instead of writing new email-sending code.**
+- The real base URL for a vendor edit link (found inside `sendEmailToVendor`'s own
+  commented-out reference line) is:
+  `https://creatorapp.zohopublic.com/delapenhafuneralhome/headstone-request/report-perma/All_Headstone_Requests/G70TtaW73JgO204waODaUDFnHmESHPh8WVGOgEpJAYDx2HD7C9bj3kqFNRH8XbC9CPag4DNT27EUShxUUhhXjY1pyFskdM6wkuhE`
+  with `?record_id=<id>&Is_Vendor=yes&vendor_id=<id>&deal_id=<id>` appended.
+
 New Creator function, called via REST from CRM's rewritten
 `manageZeroRatedHeadstoneProduct` (see the CRM guideline §4) for the Hillview-1
 straight-to-vendor path -- no family step. Creates a bare Creator record scoped to the
@@ -225,8 +242,7 @@ string standalone.createFormRecordAndNotifyVendor(String crmid)
 {
 	dealInfo = zoho.crm.getRecordById("Deals",crmid.toLong());
 	existingProducts = ifnull(dealInfo.get("Product_Selection"),list());
-	vendorGroups = Map();
-	// vendorId -> true, just to dedupe
+	vendorIds = list();
 	for each  item in existingProducts
 	{
 		childID = "";
@@ -253,14 +269,14 @@ string standalone.createFormRecordAndNotifyVendor(String crmid)
 		{
 			vendorId = "";
 		}
-		if(vendorId != "")
+		if(vendorId != "" && !vendorIds.contains(vendorId))
 		{
-			vendorGroups.put(vendorId,true);
+			vendorIds.add(vendorId);
 		}
 	}
 
 	lastEditUrl = "";
-	for each  vendorId in vendorGroups.keys()
+	for each  vendorId in vendorIds
 	{
 		newForm = Headstone_Request_Form();
 		newForm.deal_id = crmid;
@@ -269,25 +285,14 @@ string standalone.createFormRecordAndNotifyVendor(String crmid)
 		insertResult = newForm.insert();
 		if(insertResult == "success")
 		{
-			recordId = newForm.ID;
-			editUrl = "https://creatorapp.zoho.com/delapenhafuneralhome/headstone-request/Headstone_Form_Page?deal_id=" + crmid + "&Is_Vendor=yes&vendor_id=" + vendorId + "&record_id=" + recordId;
-			// Confirm this base URL matches the live Headstone_Form_Page URL exactly --
-			// copy it from the existing "Headstone Request" email template's link rather
-			// than retyping, to avoid a typo'd domain/path.
-			lastEditUrl = editUrl;
-			vendorInfo = zoho.crm.getRecordById("Products",vendorId.toLong());
-			// NOTE: confirm whether Vendor_Name on Products actually points to a
-			// Vendors/Accounts/Contacts module record, not Products -- adjust the
-			// getRecordById module name accordingly; not independently verified this pass.
+			recordId = newForm.ID.toString();
+			vendorInfo = zoho.crm.getRecordById("Vendors",vendorId.toLong());
 			vendorEmail = ifnull(vendorInfo.get("Email"),"");
 			if(vendorEmail != "")
 			{
-				// Copy the exact email-sending mechanism already proven in
-				// sendEmailToVendorForDraft (not fully quoted in this pass's research --
-				// pull it fresh before writing this block) rather than inventing a new
-				// one here. Point the link at editUrl above instead of the draft-request
-				// link it normally sends.
+				thisapp.sendEmailToVendor(vendorEmail,vendorId,crmid,recordId);
 			}
+			lastEditUrl = "https://creatorapp.zohopublic.com/delapenhafuneralhome/headstone-request/report-perma/All_Headstone_Requests/G70TtaW73JgO204waODaUDFnHmESHPh8WVGOgEpJAYDx2HD7C9bj3kqFNRH8XbC9CPag4DNT27EUShxUUhhXjY1pyFskdM6wkuhE?record_id=" + recordId + "&Is_Vendor=yes&vendor_id=" + vendorId + "&deal_id=" + crmid;
 		}
 	}
 	dealUpdateMap = Map();
@@ -299,14 +304,6 @@ string standalone.createFormRecordAndNotifyVendor(String crmid)
 	return "";
 }
 ```
-
-**This function is a starting skeleton, not a finished drop-in** -- two pieces need
-confirming live before it's trustworthy: (1) whether `Products.Vendor_Name` resolves to a
-`Vendors`, `Accounts`, or `Contacts` module record (the guideline above guesses
-`Products`, which is almost certainly wrong -- fix before applying), and (2) the exact
-email-sending block from `sendEmailToVendorForDraft`, which needs to be pulled fresh and
-copied in rather than written from scratch. Flagging both explicitly rather than
-presenting invented code as proven.
 
 **Also needed:** register this as a Custom API (`Get_Headstone_Vendor_Notify` or similar
 name, matching this project's established Custom-API-per-function convention) so the CRM

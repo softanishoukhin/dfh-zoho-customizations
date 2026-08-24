@@ -49,11 +49,11 @@ function checkHillviewCompleteness(){
 	var missing = [];
 	var hasHillviewProduct = false;
 	var subform = ZDK.Page.getField("Product_Selection");
-	var rows = subform ? subform.getRows() : [];
+	var rows = subform ? subform.getValue() : [];
 	for (var i = 0; i < rows.length; i++){
 		var row = rows[i];
-		var childProductField = row.getField("Child_Product");
-		var childId = childProductField ? childProductField.getValue() : null;
+		var childProductField = row.Child_Product;
+		var childId = childProductField ? childProductField.id : null;
 		if (!childId) continue;
 		var productRecord = ZDK.Apps.CRM.Products.fetchById(childId);
 		var hillviewGroup = productRecord ? productRecord.Hillview_Group : null;
@@ -88,14 +88,12 @@ function onSaveEditPage(){
 }
 ```
 
-**Confirm before finalizing:** `ZDK.Page.getField("Product_Selection").getRows()` and
-per-row `row.getField(...)` are the documented shape for reading subform rows in a Client
-Script, but this codebase's only proven prior Client Script precedent
-(`casketSpecialInstructionsTimin`, ZP-TBD-28) only ever read single top-level fields and
-used `ZDK.Apps.CRM.<Module>.fetchById(...)` (which this script also uses, for the linked
-Product) — subform row iteration has not been exercised in this codebase before. Spot-check
-the exact method names against the CRM Client Script editor's autocomplete/ZDK reference
-when applying, before relying on this in production.
+**CONFIRMED (2026-08-24): deployed and tested, passing.** Subform rows are read via
+`subform.getValue()` (an array of plain row objects), with each linked lookup field read
+as a direct property (`row.Child_Product.id`), not via `getRows()`/`row.getField(...)` as
+originally drafted -- correcting the earlier untested guess. This is now the proven
+pattern for reading `Product_Selection` from a Deal Client Script in this codebase; reuse
+it directly (don't re-guess) anywhere else a subform needs reading from a Client Script.
 
 ## 4. `standalone.manageZeroRatedHeadstoneProduct` (id `6503357000031808072`) — rewrite
 
