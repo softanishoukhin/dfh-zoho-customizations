@@ -189,7 +189,7 @@ else
 	zoho.crm.updateRecord("Deals",crmid,updateMap);
 	try
 	{
-		getUrl("https://www.zohoapis.com/creator/custom/delapenhafuneralhome/<CUSTOM_API_NAME>?publickey=<CUSTOM_API_PUBLIC_KEY>&crmid=" + crmid);
+		getUrl("https://www.zohoapis.com/creator/custom/delapenhafuneralhome/Notify_Headstone_Vendor?publickey=Js0xZv5kxBgJ3Z096E6MBvhrM&crmid=" + crmid);
 	}
 	catch (eNotify)
 	{
@@ -214,9 +214,10 @@ getUrl("https://www.zohoapis.com/creator/custom/delapenhafuneralhome/Sleep_API?p
 ```
 Same shape: `getUrl(...)`, a plain **GET**, authenticated by a **Public Key** in the query
 string (not OAuth, not a CRM `zapikey`). `69fNOfX03TwjyaAgAYyRTJSBd` is `Sleep_API`'s own
-key -- it is **not reusable** for a different Custom API; the new one gets its own key
-when created (see the Creator-side guideline §4 for the exact setup steps). Once created,
-replace `<CUSTOM_API_NAME>` and `<CUSTOM_API_PUBLIC_KEY>` above with the real values.
+key -- it is **not reusable** for a different Custom API; each one gets its own.
+
+**Confirmed live (2026-08-24):** the Custom API is registered as `Notify_Headstone_Vendor`
+with public key `Js0xZv5kxBgJ3Z096E6MBvhrM` -- already substituted into the call above.
 
 ## 5. Retire the manual path
 

@@ -52,8 +52,47 @@ being set is now the single source of truth for "this product is in the workflow
 the brief's stated goal of consolidating the trigger onto one field.
 
 ### `Auto_Populate_Subform_Pic` (on user input of `Auto_Populate_Subform_Picklist_Values`)
-Same two-branch filter (identical structure to `Pre_fill_Data`'s) -- apply the identical
-replacement. Then find the picklist-population block:
+**Found still unconverted live, 2026-08-24 -- flagging explicitly since the "same as
+Pre_fill_Data" instruction below got missed the first time through.** This function does
+TWO separate things and both need the fix, not just one:
+
+1. The row-matching filter (decides which existing product feeds into `allRowProducts`).
+   Find:
+   ```deluge
+   if(input.Is_Vendor == "yes" && existingProduct.get("Parent_Product").get("name") == "Headstone")
+   {
+   	if(productVendorID == input.vendor_id)
+   	{
+   		allRowProducts.add(existingProduct.get("Child_Product").get("name") + "-" + existingProduct.get("Child_Product").get("id"));
+   	}
+   }
+   else if(existingProduct.get("Parent_Product").get("name") == "Headstone" && productInfo.get("Include_in_Headstone_Workflow") == true)
+   {
+   	allRowProducts.add(existingProduct.get("Child_Product").get("name") + "-" + existingProduct.get("Child_Product").get("id"));
+   }
+   ```
+   Replace with:
+   ```deluge
+   if(input.Is_Vendor == "yes" && ifnull(productInfo.get("Hillview_Group"),"") != "" && ifnull(productInfo.get("Hillview_Group"),"") != "-None-")
+   {
+   	if(productVendorID == input.vendor_id)
+   	{
+   		allRowProducts.add(existingProduct.get("Child_Product").get("name") + "-" + existingProduct.get("Child_Product").get("id"));
+   	}
+   }
+   else if(ifnull(productInfo.get("Hillview_Group"),"") != "" && ifnull(productInfo.get("Hillview_Group"),"") != "-None-")
+   {
+   	allRowProducts.add(existingProduct.get("Child_Product").get("name") + "-" + existingProduct.get("Child_Product").get("id"));
+   }
+   ```
+   **This is the important one to fix** -- most of the confirmed Hillview 1/2 products
+   live under the `Pre Need` parent, not `Headstone` (per `product-mapping.md`), so leaving
+   this unconverted means `allRowProducts` ends up with fewer entries than
+   `input.Select_Product` has rows, and the loop right below it
+   (`r.Product_Name = allRowProducts.get(slotNumber)`) will throw an index error or
+   silently mismatch products to rows for exactly those Deals.
+
+2. The picklist-population block, separately -- find:
 ```deluge
 headstoneProducts = zoho.crm.searchRecords("Products","(Parent_Product:equals:Headstone)");
 headstoneProductsMap = list();
@@ -194,6 +233,18 @@ to debug if something doesn't fire.
 - **`createPurchaseOrderForTheParticularVendor`**: find
   `if(dealInfo.get("Headstone_Vendor_Status") == "Vendor Approved")` → replace the string
   with `"Ready for Family"`.
+- **`afterApprovingAndSubmittingTheForm`** (found live 2026-08-24, missed in the first pass
+  of this guideline): find
+  `if(dealInfo.get("Headstone_Vendor_Status") != "Vendor Approved")` (guards the
+  `Headstone_Vendor_Status = "Vendor Review"` write, right before the function re-fetches
+  the Deal and checks that same field to decide whether to create the PO) → replace the
+  string with `"Ready for Family"`. **This one is critical**: left as `"Vendor Approved"`,
+  the `!=` check is always true post-rename, so this line unconditionally overwrites
+  `Headstone_Vendor_Status` back to `"Vendor Review"` on every approval, right before the
+  PO-creation check re-reads that same field and fails -- silently blocking every PO again,
+  the exact bug this rebuild exists to fix. There are **5** total `"Vendor Approved"`
+  string occurrences across the file, not the 3 originally listed here -- this one and the
+  `createPurchaseOrderForTheParticularVendor` gate above were the two missed.
 
 Do this only after the CRM-side picklist value itself has been renamed (§6 of the CRM
 guideline) -- otherwise these three writes will store a value the picklist no longer
