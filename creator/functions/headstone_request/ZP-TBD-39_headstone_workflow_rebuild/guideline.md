@@ -303,47 +303,150 @@ string standalone.createFormRecordAndNotifyVendor(String crmid)
 }
 ```
 
-**Also needed:** register this as a Custom API (`Get_Headstone_Vendor_Notify` or similar
-name, matching this project's established Custom-API-per-function convention) so the CRM
-REST call in the guideline's §4 (`.../functions/createformrecordandnotifyvendor/actions/execute`)
-resolves -- Creator functions calling out from CRM via `invokeurl` need to be exposed the
-same way `sendheadstonerequest` already is.
+**Custom API setup, concrete steps (corrected 2026-08-24 -- this must be a Creator
+Public Key Custom API, not a CRM-style OAuth/zapikey call):**
+
+1. In the Creator builder, go to **Settings (gear icon) > Custom APIs > Add Custom API**.
+2. Name it (e.g. `Notify_Headstone_Vendor`) -- this name goes in the CRM guideline's URL
+   in place of `<CUSTOM_API_NAME>`.
+3. **Method: GET.** This matches the only other CRM-to-Creator call already proven in this
+   codebase -- the `Sleep_API` call at the top of `CreateSalesOrderforPoliceCase`
+   (`getUrl("https://www.zohoapis.com/creator/custom/delapenhafuneralhome/Sleep_API?publickey=...&seconds=10")`).
+   There is no existing precedent anywhere in this codebase for a CRM function calling a
+   Creator function via OAuth or a CRM-style `zapikey` -- Public Key + GET is the pattern
+   that's actually proven to work here.
+4. **Authentication: Public Key.** Creator generates a key for this specific Custom API
+   when you save it -- copy that key into the CRM guideline's `<CUSTOM_API_PUBLIC_KEY>`
+   placeholder. It is a different key from `Sleep_API`'s (`69fNOfX03TwjyaAgAYyRTJSBd`) --
+   each Custom API gets its own.
+5. **Parameter:** add `crmid` as an expected input parameter (the Custom API passes
+   through whatever query params the caller sends -- the CRM guideline's call appends
+   `&crmid=<id>`).
+6. **Function to execute:** map it to `standalone.createFormRecordAndNotifyVendor`, passing
+   through the `crmid` parameter.
+7. Publish/enable the Custom API, then update the CRM-side guideline's placeholders with
+   the real name and key.
 
 ---
 
 ## 5. Family form -- three variants by Hillview Group
 
-Add to the form, driven by whichever `Hillview_Group` the Deal's qualifying product
-carries (resolve once in `Pre_fill_Data`, store on a hidden form field, e.g.
-`input.Hillview_Group_On_Form`, then use it to show/hide the fields below in
-`Show_Hide_Disabled_Fields`):
+**The real submit dispatcher, confirmed live (2026-08-24):** every form submit (vendor or
+family, add or edit) funnels through one workflow, `On_Submitting_the_Form` (`type = form`,
+`record event = on add or edit`):
+```deluge
+theForm = Headstone_Request_Form[ID == input.ID];
+dealInfo = zoho.crm.getRecordById("Deals",input.deal_id.toLong());
+if(input.Is_Vendor == "yes")
+{
+	thisapp.afterProcessedByVendor(theForm);
+}
+else
+{
+	if(input.Approve == true)
+	{
+		thisapp.afterApprovingAndSubmittingTheForm(theForm);
+	}
+	else
+	{
+		thisapp.sendEmailToVendorForDraft(theForm);
+	}
+}
+openUrl("https://creatorapp.zohopublic.com/delapenhafuneralhome/headstone-request/page-perma/Thank_you_Page/...","same window");
+```
+The family's **first** submission (giving their details, before any draft exists) is the
+`Is_Vendor != "yes"` + `Approve != true` branch -- it calls `sendEmailToVendorForDraft`.
+This is where the new family inputs need to land.
 
-- **All variants (Hillview 1/2/3):** Deceased Name/DOB/DOD already shown read-only (from
-  ZP-TBD-27's prior fix) -- no change needed here. Add **Headstone Shape** (Oval/Square
-  picklist) as a required family input on ALL variants -- writes to the new
-  `Headstone_Shape` Deal field on submit.
-- **Hillview 2 and 3 only:** add the epitaph/Bible-verse input, writing to the new
-  `Headstone_Epitaph1` Deal field on submit -- shown for these two groups, hidden for
-  Hillview 1 (which never reaches the family form at all, per §4).
-- **Hillview 3 only:** additionally show the picture-upload input -- writes to the new
-  `Headstone_Picture` Deal field on submit.
+### Step 1 -- determine which Hillview Group applies, and show/hide accordingly
+Resolve it in `Pre_fill_Data`'s existing family-branch loop (the one gated on
+`Hillview_Group != blank` after the §1 fix) -- the first qualifying product's
+`Hillview_Group` is already being read there via `productInfo.get("Hillview_Group")`.
+Add a new **hidden Single Line text field**, `Hillview_Group_On_Form`, and set
+`input.Hillview_Group_On_Form = productInfo.get("Hillview_Group");` at that point (same
+pattern already used for `Session_Variable_Selected_Product` elsewhere in this form).
+Then in `Show_Hide_Disabled_Fields`, add field rules keyed on
+`input.Hillview_Group_On_Form`:
+- **All variants (Hillview 2/3 -- Hillview 1 never reaches this form, see §4):**
+  Deceased Name/DOB/DOD already shown read-only (ZP-TBD-27's prior fix, unchanged). Add
+  **Headstone Shape** (new Oval/Square field on the form, not just the Deal) as a required
+  input, shown for both groups.
+- **Hillview 2 and 3:** show the new epitaph/Bible-verse input field.
+- **Hillview 3 only:** additionally show the new picture-upload input field.
+
+### Step 2 -- write the family's inputs to the Deal on submit
+Add this to `On_Submitting_the_Form`, in the `else` branch (`Is_Vendor != "yes"`), right
+before the `if(input.Approve == true)` check -- `dealInfo` is already fetched at the top
+of this workflow:
+```deluge
+dealUpdateMap = Map();
+if(!isNull(input.Headstone_Shape))
+{
+	dealUpdateMap.put("Headstone_Shape",input.Headstone_Shape);
+}
+if(!isNull(input.Headstone_Epitaph_On_Form))
+{
+	dealUpdateMap.put("Headstone_Epitaph1",input.Headstone_Epitaph_On_Form);
+}
+if(!isNull(input.Headstone_Picture_On_Form))
+{
+	dealUpdateMap.put("Headstone_Picture",input.Headstone_Picture_On_Form);
+}
+if(dealUpdateMap.size() > 0)
+{
+	zoho.crm.updateRecord("Deals",input.deal_id.toLong(),dealUpdateMap);
+}
+```
+(Form field names `Headstone_Epitaph_On_Form` / `Headstone_Picture_On_Form` are
+placeholders for whatever you name the new form fields in Step 1 -- keep them distinct
+from the Deal field names `Headstone_Epitaph1`/`Headstone_Picture` to avoid confusing the
+two in the Form Builder; adjust the exact names above to match what you actually create.)
 
 ## 6. `NOK Not Approved` handling
 
-Find the "not approved" branch in `afterApprovingAndSubmittingTheForm` (the `else` of
-whatever condition reads the family's Approve/Reject choice on submit -- confirm the exact
-field name live, the research pass for this guideline focused on the approved path's bug
-and didn't quote the reject branch verbatim). Add:
-```deluge
-dealMap.put("NOK_Not_Approved",true);
-```
-alongside whatever it already sets on rejection (per the live code seen in
-`afterProcessedByVendor`'s parallel "not approved" branch, it currently sets
-`Headstone_Request_Status = "NOK Review"` -- keep that, just add the new field write next
-to it). The existing loop (vendor re-drafts, family reviews again) continues unchanged.
+**Real finding, not in the brief:** this form has **no reject/decline mechanism at all
+today.** Traced every use of `input.Approve` in the file -- it only has two live states:
+`true` (final approval) or empty/false, which the dispatcher above routes to
+`sendEmailToVendorForDraft`, i.e. treated as "send/resend to vendor," not "family rejected
+the draft." `afterProcessedByVendor`'s `"NOK Review"` status write is about the *vendor*
+not yet marking a draft ready, unrelated to the family declining -- do not confuse the two
+as an earlier draft of this guideline briefly did.
+
+**This means implementing "family rejects the draft" is new UI, not a find-and-modify.**
+Recommend:
+1. Add a new checkbox to the family's draft-review screen (shown alongside the existing
+   Approve checkbox, only when they're reviewing a vendor's uploaded draft) -- e.g.
+   `Reject_Draft`.
+2. In `On_Submitting_the_Form`'s `else` branch, add a third case ahead of the existing two:
+   ```deluge
+   if(input.Reject_Draft == true)
+   {
+   	dealMap = Map();
+   	dealMap.put("NOK_Not_Approved",true);
+   	zoho.crm.updateRecord("Deals",input.deal_id.toLong(),dealMap);
+   }
+   else if(input.Approve == true)
+   {
+   	thisapp.afterApprovingAndSubmittingTheForm(theForm);
+   }
+   else
+   {
+   	thisapp.sendEmailToVendorForDraft(theForm);
+   }
+   ```
+3. **Open design question, needs an answer before this is finished, not guessed:** what
+   should happen to the vendor after a rejection -- does the vendor need to be notified to
+   re-draft, and does their `Approved_by_Vendor` / draft status need to be reset so the
+   "Ready for Family" loop can run again? The brief says "the existing loop continues from
+   there," but there is no existing family-reject loop to continue -- confirm with Andrea
+   whether rejecting should re-open the vendor's draft (reset `Approved_by_Vendor` to
+   false and re-email them) or something else, then extend step 2 above accordingly.
 
 ## 7. Strip unused form fields
 
 Per the brief's "strip form fields the new process no longer uses" -- do this last, after
 everything above is applied and tested, so it's clear from live testing which fields are
-actually still read/written by the rebuilt workflow before removing anything.
+actually still read/written by the rebuilt workflow before removing anything. One concrete
+candidate already identified: the large commented-out dead-code block in
+`afterApprovingAndSubmittingTheForm` (~lines 354-424, flagged for deletion in §2) --
+anything it referenced that isn't used elsewhere is safe to remove alongside it.

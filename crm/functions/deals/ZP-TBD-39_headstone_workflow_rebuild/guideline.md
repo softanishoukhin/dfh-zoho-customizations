@@ -187,11 +187,13 @@ else
 	// standalone.createFormRecordAndNotifyVendor, for the record-creation half of this.
 	updateMap.put("Headstone_Request_Status","Submitted");
 	zoho.crm.updateRecord("Deals",crmid,updateMap);
-	createVendorRecords = invokeurl
-	[
-		url :"https://www.zohoapis.com/crm/v7/functions/createformrecordandnotifyvendor/actions/execute?auth_type=apikey&zapikey=1003.e2dbe4df1dd83bbca7110c05c43a1a22.3baee41485bf8bce183704938c9d0653&crmid=" + crmid
-		type :GET
-	];
+	try
+	{
+		getUrl("https://www.zohoapis.com/creator/custom/delapenhafuneralhome/<CUSTOM_API_NAME>?publickey=<CUSTOM_API_PUBLIC_KEY>&crmid=" + crmid);
+	}
+	catch (eNotify)
+	{
+	}
 }
 return "";
 }
@@ -200,10 +202,21 @@ return "";
 **Deluge-only note:** no ternary anywhere above (per this project's standing rule) — the
 `routeToFamily` branch uses if/else.
 
-**API key note:** the same `zapikey` already used by the live function's REST call to
-`sendheadstonerequest` is reused verbatim for the new
-`createformrecordandnotifyvendor` call — confirm this key is still valid/scoped correctly
-for the new Custom API when it's created (see the Creator-side guideline for that setup).
+**Corrected 2026-08-24 -- the previous draft had the wrong endpoint shape for this call.**
+`createFormRecordAndNotifyVendor` is a **Creator** function, not a CRM function -- it
+cannot be called via the `/crm/v7/functions/.../actions/execute?auth_type=apikey&zapikey=...`
+pattern used for `sendheadstonerequest` above (that pattern is CRM-function-only). The
+correct, already-proven mechanism in this exact codebase is the **Creator Custom API**
+call already used by `CreateSalesOrderforPoliceCase` (the `Sleep_API` call at the very top
+of that function):
+```deluge
+getUrl("https://www.zohoapis.com/creator/custom/delapenhafuneralhome/Sleep_API?publickey=69fNOfX03TwjyaAgAYyRTJSBd&seconds=10");
+```
+Same shape: `getUrl(...)`, a plain **GET**, authenticated by a **Public Key** in the query
+string (not OAuth, not a CRM `zapikey`). `69fNOfX03TwjyaAgAYyRTJSBd` is `Sleep_API`'s own
+key -- it is **not reusable** for a different Custom API; the new one gets its own key
+when created (see the Creator-side guideline §4 for the exact setup steps). Once created,
+replace `<CUSTOM_API_NAME>` and `<CUSTOM_API_PUBLIC_KEY>` above with the real values.
 
 ## 5. Retire the manual path
 
