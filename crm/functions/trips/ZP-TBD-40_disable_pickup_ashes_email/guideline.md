@@ -1,5 +1,7 @@
 # ZP-TBD-40 — Turn off the "Cremains available for pickup" email
 
+**STATUS (2026-08-24): DEPLOYED, TESTED, AND CONFIRMED PASSING.**
+
 Requested by Andrea (2026-08-24), via Carol Webster's forwarded email screenshot: a
 recurring "Cremains are available at our office for pickup at your convenience" email kept
 arriving even after the cremains had already been collected. Andrea's instruction: turn
