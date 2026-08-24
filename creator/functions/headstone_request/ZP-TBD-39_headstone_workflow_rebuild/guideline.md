@@ -327,19 +327,20 @@ string standalone.createFormRecordAndNotifyVendor(String crmid)
 	lastEditUrl = "";
 	for each  vendorId in vendorIds
 	{
-		newForm = Headstone_Request_Form();
-		newForm.deal_id = crmid;
-		newForm.vendor_id = vendorId;
-		newForm.Is_Vendor = "yes";
-		insertResult = newForm.insert();
-		if(insertResult == "success")
+		recordId = insert into Headstone_Request_Form
+		[
+			deal_id=crmid
+			vendor_id=vendorId
+			Is_Vendor="yes"
+			Added_User=zoho.loginuser
+		];
+		if(!isNull(recordId))
 		{
-			recordId = newForm.ID.toString();
 			vendorInfo = zoho.crm.getRecordById("Vendors",vendorId.toLong());
 			vendorEmail = ifnull(vendorInfo.get("Email"),"");
 			if(vendorEmail != "")
 			{
-				thisapp.sendEmailToVendor(vendorEmail,vendorId,crmid,recordId);
+				thisapp.sendEmailToVendor(vendorEmail,vendorId,crmid,recordId.toString());
 			}
 			lastEditUrl = "https://creatorapp.zohopublic.com/delapenhafuneralhome/headstone-request/report-perma/All_Headstone_Requests/G70TtaW73JgO204waODaUDFnHmESHPh8WVGOgEpJAYDx2HD7C9bj3kqFNRH8XbC9CPag4DNT27EUShxUUhhXjY1pyFskdM6wkuhE?record_id=" + recordId + "&Is_Vendor=yes&vendor_id=" + vendorId + "&deal_id=" + crmid;
 		}
@@ -353,6 +354,24 @@ string standalone.createFormRecordAndNotifyVendor(String crmid)
 	return "";
 }
 ```
+
+**Confirmed live (2026-08-24), replacing the originally-guessed `newForm.insert()` syntax:**
+Creator's insert syntax is `insert into Form_Name [field = value ...]`, and the statement
+itself returns the new record's id directly -- assign it to a variable (`recordId` above),
+there's no separate `insertResult == "success"` check or `.ID` lookup needed. Confirmed
+per Zoho's own "Add data to a different app" documentation, matching what was actually
+applied and works live.
+
+**Required form setting -- `Select_Product` must be non-mandatory:** the insert above
+deliberately leaves `Select_Product` empty (it's a subform, and building its rows here
+would duplicate the population logic `Pre_fill_Data` already does correctly once the
+vendor opens the record). If `Select_Product` is marked mandatory on the form, this insert
+fails with *"The following mandatory field should not be left blank [Select_Product]"*.
+Fix: **Form Builder > `Headstone_Request_Form` > click `Select_Product` > Validation/
+Advanced settings > turn off Mandatory > Save.** This is safe -- the bare record only
+exists for a moment before the vendor opens their emailed link, at which point
+`Pre_fill_Data`'s on-load script populates `Select_Product` for real, the same way it
+already does for the family-originated flow.
 
 **Custom API setup, concrete steps (corrected 2026-08-24 -- this must be a Creator
 Public Key Custom API, not a CRM-style OAuth/zapikey call):**
