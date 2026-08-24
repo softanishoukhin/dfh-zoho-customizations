@@ -59,6 +59,18 @@ Creator side (`creator/functions/headstone_request/ZP-TBD-39_headstone_workflow_
    Cemetery," not "Headstone." Left untouched here (out of the rework's stated scope) but
    flagged as a pre-existing data inconsistency for Andrea to decide on separately.
 
+## Resolved since first draft
+
+- **5th Deal field (epitaph/Bible verse) added, confirmed 2026-08-24: `Headstone_Epitaph1`**
+  (multi-line text). Used throughout the Creator-side guideline's §5 form-variant section.
+- **The two open unknowns in the Creator-side `createFormRecordAndNotifyVendor` function
+  (Vendor_Name's target module, the real vendor email-sending mechanism) are resolved** --
+  see that guideline's §4, pulled directly from `sendEmailToVendorForDraft`'s live code.
+- **The FD popup Client Script's subform-read approach is confirmed correct, deployed, and
+  tested passing** — `subform.getValue()` + direct property access (`row.Child_Product.id`),
+  not the originally-drafted `getRows()`/`getField()` guess. See this folder's
+  `guideline.md` §3.
+
 ## Open items for Andrea (not guessed — see `product-mapping.md` for detail)
 
 1. "Phase 3 Traditional" (listed under Hillview 1) has no matching standalone product

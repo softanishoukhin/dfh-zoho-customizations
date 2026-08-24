@@ -5,12 +5,10 @@ engagement — apply directly in the Creator Workflow/Form Builder editors. Read
 full (1699 lines) before writing this; every function/workflow named below was confirmed
 to exist with the code quoted.
 
-**Open item found while writing this, not in the brief's 4-field list:** the process
-description says Hillview 2/3 family verification includes "Epitaph / Bible verse," but
-the brief's "four new Deal fields" table has no field for it. A 5th field is needed --
-recommend `Headstone_Epitaph` (multi-line text) on Deals. Flagging rather than silently
-adding a field the brief never asked for; confirm the name/type with Andrea before adding
-it, then treat it exactly like the other 4 fields everywhere below.
+**5th field, confirmed (2026-08-24):** the process description's "Epitaph / Bible verse"
+input (Hillview 2/3 only, missing from the brief's original 4-field table) is now a real
+field on Deals -- **`Headstone_Epitaph1`** (multi-line text). Use this exact API name
+everywhere the epitaph field is referenced below.
 
 ---
 
@@ -324,9 +322,9 @@ carries (resolve once in `Pre_fill_Data`, store on a hidden form field, e.g.
   ZP-TBD-27's prior fix) -- no change needed here. Add **Headstone Shape** (Oval/Square
   picklist) as a required family input on ALL variants -- writes to the new
   `Headstone_Shape` Deal field on submit.
-- **Hillview 2 and 3 only:** add the epitaph/Bible-verse input (see the open item at the
-  top of this file re: the missing 5th Deal field) -- shown for these two groups, hidden
-  for Hillview 1 (which never reaches the family form at all, per §4).
+- **Hillview 2 and 3 only:** add the epitaph/Bible-verse input, writing to the new
+  `Headstone_Epitaph1` Deal field on submit -- shown for these two groups, hidden for
+  Hillview 1 (which never reaches the family form at all, per §4).
 - **Hillview 3 only:** additionally show the picture-upload input -- writes to the new
   `Headstone_Picture` Deal field on submit.
 
