@@ -429,35 +429,52 @@ The family's **first** submission (giving their details, before any draft exists
 This is where the new family inputs need to land.
 
 ### Step 1 -- determine which Hillview Group applies, and show/hide accordingly
-Resolve it in `Pre_fill_Data`'s existing family-branch loop (the one gated on
-`Hillview_Group != blank` after the §1 fix) -- the first qualifying product's
-`Hillview_Group` is already being read there via `productInfo.get("Hillview_Group")`.
-Add a new **hidden Single Line text field**, `Hillview_Group_On_Form`.
+**Final confirmed design (2026-08-24), after two rounds of live debugging -- do it this
+way, not the original draft below the line.** Add a new Single Line text field,
+`Hillview_Group_On_Form` (not hidden -- it's harmless to leave visible, and hiding it was
+never actually required for the fix). Put the show/hide logic **inside `Pre_fill_Data`
+itself**, not in the separate `Show_Hide_Disabled_Fields` workflow -- both are independent
+"on load" handlers with no guaranteed execution order relative to each other, and keeping
+the field-set and the field-show in the same script removes that risk entirely rather than
+hoping one runs before the other.
 
-**Bug found live (2026-08-24), fix this exact spot:** the loop in `Pre_fill_Data` runs
-over *every* product on the Deal, not just the Hillview one -- setting
-`input.Hillview_Group_On_Form = productInfo.get("Hillview_Group");` unconditionally on
-every iteration means a non-Hillview product processed later in the loop (a casket, an
-urn, flowers, anything) silently overwrites the value back to blank, which is why Shape/
-Epitaph stayed hidden even though DOB/DOD (set once, outside this loop) showed fine. Guard
-the assignment so it only fires when the current row actually has a real group:
+At the very top of `Pre_fill_Data`'s on-load script (before anything else), default them
+hidden:
+```deluge
+hide Headstone_Shape;
+hide Headstone_Epitaph_On_Form;
+hide Headstone_Picture_On_Form;
+```
+Then inside the existing product loop, right where `Hillview_Group_On_Form` gets set,
+guard the assignment (a real bug found live: the loop runs over *every* product on the
+Deal, not just the Hillview one -- an unconditional assignment gets overwritten back to
+blank by the next non-Hillview row) and show the fields immediately based on the
+now-current value:
 ```deluge
 if(!isNull(productInfo.get("Hillview_Group")) && productInfo.get("Hillview_Group") != "" && productInfo.get("Hillview_Group") != "-None-")
 {
 	input.Hillview_Group_On_Form = productInfo.get("Hillview_Group");
 }
+if(input.Hillview_Group_On_Form == "Hillview 2" || input.Hillview_Group_On_Form == "Hillview 3")
+{
+	show Headstone_Shape;
+	show Headstone_Epitaph_On_Form;
+}
+if(input.Hillview_Group_On_Form == "Hillview 3")
+{
+	show Headstone_Picture_On_Form;
+}
 ```
-Place this right where the old unconditional line was (same pattern already used for
-`Session_Variable_Selected_Product` elsewhere in this form, just with the added guard).
+**Do not** also add hide/show rules for these 3 fields in `Show_Hide_Disabled_Fields` --
+leave that workflow's existing logic alone (it already handles `Is_Vendor` show/hide for
+other fields, which is unrelated and still correct); adding a second, competing copy of
+the Hillview-group logic there is what caused the original bug.
 
-Then in `Show_Hide_Disabled_Fields`, add field rules keyed on
-`input.Hillview_Group_On_Form`:
 - **All variants (Hillview 2/3 -- Hillview 1 never reaches this form, see §4):**
-  Deceased Name/DOB/DOD already shown read-only (ZP-TBD-27's prior fix, unchanged). Add
-  **Headstone Shape** (new Oval/Square field on the form, not just the Deal) as a required
-  input, shown for both groups.
-- **Hillview 2 and 3:** show the new epitaph/Bible-verse input field.
-- **Hillview 3 only:** additionally show the new picture-upload input field.
+  Deceased Name/DOB/DOD already shown read-only (ZP-TBD-27's prior fix, unchanged).
+  `Headstone Shape` (Oval/Square) shown for both groups.
+- **Hillview 2 and 3:** epitaph/Bible-verse input shown.
+- **Hillview 3 only:** picture-upload input additionally shown.
 
 ### Step 2 -- write the family's inputs to the Deal on submit
 Add this to `On_Submitting_the_Form`, in the `else` branch (`Is_Vendor != "yes"`), right
