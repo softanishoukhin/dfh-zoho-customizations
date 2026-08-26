@@ -5,10 +5,10 @@ detailed dev task list, verified against live production 2026-08-24) plus follow
 from Andrea the same evening. Multi-day effort — this ticket tracks the whole rework as items
 land, rather than one function at a time.
 
-## Status: IN PROGRESS. Items below are confirmed live; everything else from the task list is
-still open (see the source doc's Part 4, plus items 9-11 and 13-15 below — advance reschedule,
-hospital reschedule billing, registration number placement — and the new master/child Books
-invoice requirement Andrea raised separately, still to be designed).
+## Status: IN PROGRESS. All of Part 2 (items 1-15) is now closed — see below for detail on each.
+Still open: item 6 (blocked on Andrea), Part 4 V2/V3 validations, and the new master/child Books
+invoice requirement Andrea raised separately (still to be designed), plus the full documentation
+set requested.
 
 ## Done and confirmed live
 
@@ -219,10 +219,12 @@ separate screen `hospMorgueCard` (hospital multi-deceased check-in) also had one
 
 ### Item 15 — registration number on the Hospital Invoicing Report
 Confirmed the report exists (`Hospital Invoicing Report`, Zoho Analytics Pivot view, id
-`2981994000000178879`, workspace `2981994000000006002`). No tool access to edit Analytics view
-fields — **manual step for Andrea/the user**: open the report, remove `Registration_Number`
-from its field selection (row/column/data, since it's a Pivot view), without touching the
-underlying shared table if the Police Invoicing Report draws from the same source.
+`2981994000000178879`, workspace `2981994000000006002`), and confirmed the Police Invoicing
+Report (`2981994000000148618`) is a separate, independent Pivot view in the same workspace, so
+removing the field from Hospital's layout alone couldn't affect Police's. No tool access to edit
+Analytics view fields — done manually by the user (Registration_Number removed from the Hospital
+report's pivot field selection). **User-confirmed, not independently verified** — no tool
+available here to read back the report's column list.
 
 ## Open items carried over from the source doc (not started)
 
