@@ -146,13 +146,54 @@ if(isXray)
 }
 ```
 
+### Item 10 — advance reschedule (police send a new date before any trip happens)
+Traced the actual mechanics rather than assuming the memo's framing was complete.
+`automation.createTripOnTheDayOfAutopsyDateWithTask` fires on every edit to `Autopsy_Date_Time`
+(field-update workflow, not the driver-disposition flow items 1-4 cover). For a single deceased
+it already correctly finds the existing "Autopsy Initial" trip and updates its date — contrary
+to the memo's claim that nothing updates the existing trip; this should be spot-checked live but
+reads correctly in the code.
+
+**Confirmed real gap:** each "Autopsy Initial" trip gets grouped onto a shared "Multi Deceased
+Autopsy Trip" by a separate function, `automation.groupAutopsyTrips`, matched by same
+location + same date and stamped via a `Parent_Trip` lookup on the child. When
+`createTripOnTheDayOfAutopsyDateWithTask` updated an existing trip's date, it never re-ran that
+grouping step — so the deceased's own trip got the new date, but stayed stamped to the old
+date's parent batch trip and never got attached to the correct new-date one.
+
+**Fix applied and confirmed live.** In the existing-trip branch of
+`createTripOnTheDayOfAutopsyDateWithTask`:
+
+```deluge
+else
+{
+	zoho.crm.updateRecord("Trips",tripId,tripMap,{"trigger":{"workflow"}});
+	result = invokeurl
+	[
+		url :"https://www.zohoapis.com/crm/v7/functions/groupautopsytrips/actions/execute?auth_type=apikey&zapikey=1003.e2dbe4df1dd83bbca7110c05c43a1a22.3baee41485bf8bce183704938c9d0653&childTripId=" + tripId
+		type :GET
+	];
+}
+```
+
+(REST execute call, not a direct `automation.groupAutopsyTrips(tripId)` call — a direct
+cross-function call failed live with "Not able to find 'groupAutopsyTrips' function"; the REST
+pattern matches how `sendheadstonerequest`/`Notify_Headstone_Vendor` are already called
+elsewhere in this codebase and is confirmed working.)
+
+**Known residual gap, not fixed today:** the *old* parent batch trip's cached
+`Deceased_Names_Summary` text isn't refreshed when a child leaves it — only the *new* parent's
+summary gets rebuilt inside `groupAutopsyTrips`. So the old batch trip can keep showing a
+deceased who's no longer actually scheduled for that date until something else happens to touch
+it. Display-only, not a billing issue — low priority.
+
 ## Open items carried over from the source doc (not started)
 
-See `PH-BILLING-DEV-TASKS.md` item 6 (above, blocked on Andrea), 10 (advance reschedule), 11
-(hospital reschedule billing), 13-15 (registration number placement), and Part 4 V2/V3
-validations. Also open: a new requirement from Andrea for a master/child Books invoice linking
-mechanism (she recalls building something like this months ago; not yet located in the repo, CRM
-function names, or CRM Invoices fields — she is checking her own records for it).
+See `PH-BILLING-DEV-TASKS.md` item 6 (above, blocked on Andrea), 11 (hospital reschedule
+billing), 13-15 (registration number placement), and Part 4 V2/V3 validations. Also open: a new
+requirement from Andrea for a master/child Books invoice linking mechanism (she recalls building
+something like this months ago; not yet located in the repo, CRM function names, or CRM Invoices
+fields — she is checking her own records for it).
 
 Full documentation set (admin setup, initial-trip billing logic, decomposed charges, storage
 logic, LONI/Release rules, family storage invoices, autopsy trips incl. reschedule, DA
