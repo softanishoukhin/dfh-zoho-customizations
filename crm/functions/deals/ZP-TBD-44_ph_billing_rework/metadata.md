@@ -204,13 +204,32 @@ that hospital's own `Product_Category = 'Pickup'` product, tagged via `Product_o
 to the existing `Hospital Cases` Sales Order and return early -- no family/MNSJ logic, no new
 Sales Order type. Police Cases fall through to the existing items-1-4 logic unchanged.
 
+### Items 13-14 — registration number placement (Driver App)
+Confirmed both check-in screens live in `app.js`: `autopsyCheckinHtml` (police/regular morgue
+check-in, inside the Autopsy Batch flow) already had the Registration Number field; a second,
+separate screen `hospMorgueCard` (hospital multi-deceased check-in) also had one.
+
+**Fix applied, edited directly (widget JS, not a `.ds` file):**
+- Item 13: removed the Registration Number field entirely from `hospMorgueCard` (hospital
+  screen). Left untouched on the police/regular screen (`autopsyCheckinHtml`).
+- Item 14: `renderAutopsyBatchInner`'s "Complete Trip" gate (`allSet`/`done` calculation) now
+  also requires a non-blank Registration Number for every deceased not already in DFH's care
+  (`d.inCare !== 'Yes'`), not just an outcome selection. Bottom helper text updated to say so
+  when that's what's blocking completion.
+
+### Item 15 — registration number on the Hospital Invoicing Report
+Confirmed the report exists (`Hospital Invoicing Report`, Zoho Analytics Pivot view, id
+`2981994000000178879`, workspace `2981994000000006002`). No tool access to edit Analytics view
+fields — **manual step for Andrea/the user**: open the report, remove `Registration_Number`
+from its field selection (row/column/data, since it's a Pivot view), without touching the
+underlying shared table if the Police Invoicing Report draws from the same source.
+
 ## Open items carried over from the source doc (not started)
 
-See `PH-BILLING-DEV-TASKS.md` item 6 (above, blocked on Andrea), 13-15 (registration number
-placement), and Part 4 V2/V3 validations. Also open: a new requirement from Andrea for a
-master/child Books invoice linking mechanism (she recalls building something like this months
-ago; not yet located in the repo, CRM function names, or CRM Invoices fields — she is checking
-her own records for it).
+See `PH-BILLING-DEV-TASKS.md` item 6 (above, blocked on Andrea) and Part 4 V2/V3 validations.
+Also open: a new requirement from Andrea for a master/child Books invoice linking mechanism (she
+recalls building something like this months ago; not yet located in the repo, CRM function
+names, or CRM Invoices fields — she is checking her own records for it).
 
 Full documentation set (admin setup, initial-trip billing logic, decomposed charges, storage
 logic, LONI/Release rules, family storage invoices, autopsy trips incl. reschedule, DA
