@@ -130,13 +130,29 @@ apply to; needs Andrea to clarify where this charge is meant to happen before it
   Order + Family invoice, officer no-show routes to the existing `Police Cases - MNSJ` Sales
   Order + MNSJ invoice. IFSL Sales Order is untouched on both no-show paths.
 
+### Item 9 — X-ray field on the Deal
+Confirmed via live field metadata: no X-ray field existed on Deals or Operations at all before
+tonight. Andrea confirmed this is report-only — auto-set, no other behavior depends on it.
+
+**Build, applied and confirmed live:** new checkbox field `X_Ray_Required` on Deals, defaulting
+false. `automation.handleAutopsyReschedule` sets it true at the end of the X-ray billing path:
+
+```deluge
+if(isXray)
+{
+	xrayFlagMap = Map();
+	xrayFlagMap.put("X_Ray_Required",true);
+	zoho.crm.updateRecord("Deals",crmid,xrayFlagMap);
+}
+```
+
 ## Open items carried over from the source doc (not started)
 
-See `PH-BILLING-DEV-TASKS.md` item 6 (above, blocked on Andrea), 9 (X-ray field on Deal), 10
-(advance reschedule), 11 (hospital reschedule billing), 13-15 (registration number placement),
-and Part 4 V2/V3 validations. Also open: a new requirement from Andrea for a master/child Books
-invoice linking mechanism (she recalls building something like this months ago; not yet located
-in the repo, CRM function names, or CRM Invoices fields — she is checking her own records for it).
+See `PH-BILLING-DEV-TASKS.md` item 6 (above, blocked on Andrea), 10 (advance reschedule), 11
+(hospital reschedule billing), 13-15 (registration number placement), and Part 4 V2/V3
+validations. Also open: a new requirement from Andrea for a master/child Books invoice linking
+mechanism (she recalls building something like this months ago; not yet located in the repo, CRM
+function names, or CRM Invoices fields — she is checking her own records for it).
 
 Full documentation set (admin setup, initial-trip billing logic, decomposed charges, storage
 logic, LONI/Release rules, family storage invoices, autopsy trips incl. reschedule, DA
