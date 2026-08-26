@@ -5,10 +5,10 @@ detailed dev task list, verified against live production 2026-08-24) plus follow
 from Andrea the same evening. Multi-day effort — this ticket tracks the whole rework as items
 land, rather than one function at a time.
 
-## Status: IN PROGRESS. All of Part 2 (items 1-15) is now closed — see below for detail on each.
-Still open: item 6 (blocked on Andrea), Part 4 V2/V3 validations, and the new master/child Books
-invoice requirement Andrea raised separately (still to be designed), plus the full documentation
-set requested.
+## Status: IN PROGRESS. All of Part 2 (items 1-15) and Part 4 (V1-V3) are now closed — see below.
+Still open: item 6 (blocked on Andrea), the new master/child Books invoice requirement (Andrea
+is handling the explanation to herself, no design work needed from us), and the full
+documentation set requested.
 
 ## Done and confirmed live
 
@@ -226,12 +226,62 @@ Analytics view fields — done manually by the user (Registration_Number removed
 report's pivot field selection). **User-confirmed, not independently verified** — no tool
 available here to read back the report's column list.
 
-## Open items carried over from the source doc (not started)
+## Part 4 — developer validation, all closed
 
-See `PH-BILLING-DEV-TASKS.md` item 6 (above, blocked on Andrea) and Part 4 V2/V3 validations.
-Also open: a new requirement from Andrea for a master/child Books invoice linking mechanism (she
-recalls building something like this months ago; not yet located in the repo, CRM function
-names, or CRM Invoices fields — she is checking her own records for it).
+### V1 — the pre-filled KM on autopsy trips
+Closed via Item 12 above. Confirmed still working exactly as designed, not damaged by the
+KM-rework or invoice-naming projects. Andrea's answer (police autopsy trips bill by KM, the
+distance is a known constant per location, so it belongs in the quantity field) resolved the
+open pricing-model question — the mechanism was extended from 3 hardcoded locations to any
+location via the new `Autopsy_Fixed_KM` Accounts field, rather than rebuilt as flat pricing.
+**Still recommended:** a real live test on each of the 3 (now field-driven) locations to confirm
+the billed amount matches what Ms. Shirley expects — mechanically correct per the code, but
+worth a human sanity check on a real case.
+
+### V2 — product tagging validation
+1. **Police tagging complete, confirmed live.** All 9 scenarios (Pickup, Storage, Decompose
+   Storage, Decomp Fee, Autopsy Trip, Transfer Trip, Reschedule Trip, X-ray Trip, Storage -
+   Family) exist under the police parent, one product each, no duplicates causing ambiguity.
+   Minor unrelated finding: an orphaned, uncategorized duplicate named "IFSLM Autopsy Trip Police
+   Case" (`6503357000024281102`) sits alongside the correctly-tagged one
+   (`6503357000019249155`) — harmless (never matched by any category query) but worth deleting
+   for tidiness, Andrea's call.
+2. **Hospital Storage label genuinely missing, confirmed and fixed** — see Issue A above.
+3. **Nothing else was relabeled on 2026-08-20, confirmed live.** All ~25 hospital `Storage -
+   Family` products share the exact same modification timestamp (`2026-08-20T02:34:28`, one
+   outlier a few hours later same day); every other category (Pickup, PME Fee, PME Transport
+   Fee, Autopsy Trip) has a completely unrelated modified time. Clean evidence only Storage was
+   touched that day.
+4. **No crossover risk between Storage and Storage - Family on hospital billing, confirmed
+   live.** `createSalesOrderForHospitalCase` only ever queries `Product_Category = 'Storage'` —
+   it never adds a `Storage - Family` line to begin with, so there's no live code path where the
+   two could collide. (The `Storage - Family` hospital products that exist appear to be
+   dormant/manual-only today — same situation uncovered for the police side under item 6.)
+5. **"Storage for Hospital" $0 fallback confirmed to fire only when a hospital genuinely has no
+   linked Storage product** (the `else` branch of the COQL lookup in
+   `UpdateStorageFeeonHospitalReleaseDate`). Price confirmed deliberately $0 by Andrea (Issue A
+   above).
+
+### V3 — other confirmations
+1. **Convert hardcoded LONI/MNSJ storage product lookups to the tagging/COQL pattern?** Still an
+   open decision for Andrea, not implemented — recommend deferring specifically because
+   `StorageFeebasedonLetterofNoInterestWorkflow` has already been edited twice tonight (items 7
+   and 8); stacking a third structural change on the same function in one day raises risk for
+   little immediate benefit. Worth doing later as a deliberate, separately-tested change.
+2. **Hospital reschedule: branch vs. separate function?** Resolved by Item 11 above — branched
+   inside `handleAutopsyReschedule` rather than a separate function, since the trip-creation half
+   is already shared/pipeline-agnostic.
+3. **Should the reschedule trip be created at disposition time, or only once the new date
+   arrives?** Still an open decision for Andrea (her own stated concern: "nothing should sit
+   incorrectly in Trip Manager"). Today it's created immediately with no date and status "DO NOT
+   SCHEDULE" — visible in Trip Manager but clearly flagged as not-yet-scheduled. Not changed;
+   flagging for her call rather than guessing at a workflow-visibility preference.
+
+## Open items carried over from the source doc
+
+Item 6 (blocked on Andrea — see above). A new requirement from Andrea for a master/child Books
+invoice linking mechanism — she is explaining this to herself/handling it directly, no design
+work needed from us here.
 
 Full documentation set (admin setup, initial-trip billing logic, decomposed charges, storage
 logic, LONI/Release rules, family storage invoices, autopsy trips incl. reschedule, DA
