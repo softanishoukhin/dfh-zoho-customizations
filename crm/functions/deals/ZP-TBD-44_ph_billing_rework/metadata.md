@@ -6,10 +6,9 @@ from Andrea the same evening. Multi-day effort — this ticket tracks the whole 
 land, rather than one function at a time.
 
 ## Status: IN PROGRESS. Items below are confirmed live; everything else from the task list is
-still open (see the source doc's Part 2/3/4 for the full remaining list — autopsy reschedule
-billing items 1-6, advance reschedule item 10, hospital reschedule billing item 11, registration
-number placement items 13-15, plus the new master/child Books invoice requirement Andrea raised
-separately, still to be designed).
+still open (see the source doc's Part 4, plus items 9-11 and 13-15 below — advance reschedule,
+hospital reschedule billing, registration number placement — and the new master/child Books
+invoice requirement Andrea raised separately, still to be designed).
 
 ## Done and confirmed live
 
@@ -95,14 +94,49 @@ if(!isNull(recordInfo.get("Autopsy_Date_Time")) && alId != "")
 Any future autopsy location just needs `Autopsy_Fixed_KM` populated on its Account record — no
 code change needed again. Confirmed live, matches exactly.
 
+### Items 1-4 — autopsy reschedule no-show billing (family vs officer vs institution)
+Confirmed via live code that none of this existed before tonight: every reschedule, regardless
+of cause, billed the same IFSL Sales Order with just a trip fee. Andrea confirmed the design:
+whoever caused the no-show pays for it — family no-show bills the family directly, officer
+no-show bills MNSJ, and IFSL gets nothing added for either. Storage-on-reschedule (source doc
+item 5) is confirmed **not** a bug — only the trip fee is meant to be added, nothing else.
+
+Investigated item 6 ("family's storage isn't stopped when a new date is entered") in depth: a
+`Storage - Family` product exists under the police parent (`Storage Fee`, `6503357000029739051`,
+$1,500) and the system has a generic rule elsewhere (`deleteFamilyBillingOnClosedLost`) treating
+`Storage - Family` lines as protected/family-owed — but no function anywhere actually creates or
+updates that line on a police case. **Left open** — nothing exists yet for a stop-condition to
+apply to; needs Andrea to clarify where this charge is meant to happen before it can be built.
+
+**Build, applied and confirmed live:**
+- Driver App (`app.js`): the single `"Autopsy not done"` reschedule-reason option (`notdone`
+  key) split into two — `family_noshow` ("Family did not show") and `officer_noshow` ("Officer
+  did not show"). Driver picks the reason at disposition time, same screen as before.
+- `Driver_App.ds` `saveAutopsyDisposition`: `rescheduleMap` updated to map the two new widget
+  keys to the two new CRM picklist labels.
+- New picklist values: `Operations.Reschedule_Reason` gained `"Family did not show"` /
+  `"Officer did not show"` (old `"Autopsy not done"` kept for historical records, never actually
+  used per source doc Issue C). `Sales_Orders.Sales_Order_Type` gained `"Police Cases - Family"`
+  (mirrors the existing `"Police Cases - MNSJ"`).
+- New function `standalone.createInvoiceBasedOnSalesOrderForFamily` — a straight mirror of the
+  existing `createInvoiceBasedOnSalesOrderForMNSJ`, creating/updating an `Invoice_For = "Family"`
+  invoice from the `Police Cases - Family` Sales Order.
+- `automation.handleAutopsyReschedule` rewritten: the early guard now recognizes the two new
+  reasons instead of the retired `"Autopsy not done"` (a first deploy attempt accidentally lost
+  the entire trip-creation block when only the billing half was patched in-place — caught during
+  live re-verification and fixed by replacing the whole function body wholesale on the second
+  attempt, confirmed live word-for-word afterward). Billing now branches by reason: X-ray
+  unchanged (still bills IFSL), family no-show routes to the new `Police Cases - Family` Sales
+  Order + Family invoice, officer no-show routes to the existing `Police Cases - MNSJ` Sales
+  Order + MNSJ invoice. IFSL Sales Order is untouched on both no-show paths.
+
 ## Open items carried over from the source doc (not started)
 
-See `PH-BILLING-DEV-TASKS.md` Part 2 items 1-6 (autopsy reschedule billing, one connected job),
-9 (X-ray field on Deal), 10 (advance reschedule), 11 (hospital reschedule billing), 13-15
-(registration number placement), and Part 4 V2/V3 validations. Also open: a new requirement from
-Andrea for a master/child Books invoice linking mechanism (she recalls building something like
-this months ago; not yet located in the repo, CRM function names, or CRM Invoices fields —
-needs either her memory of a keyword/date to search precisely, or a fresh design).
+See `PH-BILLING-DEV-TASKS.md` item 6 (above, blocked on Andrea), 9 (X-ray field on Deal), 10
+(advance reschedule), 11 (hospital reschedule billing), 13-15 (registration number placement),
+and Part 4 V2/V3 validations. Also open: a new requirement from Andrea for a master/child Books
+invoice linking mechanism (she recalls building something like this months ago; not yet located
+in the repo, CRM function names, or CRM Invoices fields — she is checking her own records for it).
 
 Full documentation set (admin setup, initial-trip billing logic, decomposed charges, storage
 logic, LONI/Release rules, family storage invoices, autopsy trips incl. reschedule, DA
