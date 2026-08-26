@@ -187,13 +187,30 @@ summary gets rebuilt inside `groupAutopsyTrips`. So the old batch trip can keep 
 deceased who's no longer actually scheduled for that date until something else happens to touch
 it. Display-only, not a billing issue — low priority.
 
+### Item 11 — hospital reschedules billed nothing (and worse: wrong Sales Order type risk)
+Confirmed root cause is worse than the source doc's framing: the `Handle Autopsy Reschedule`
+workflow has **no Pipeline restriction at all** — it fires for any Deal with a related
+Operations record, Police or Hospital alike. Since `handleAutopsyReschedule`'s billing logic
+only ever looked for/created `"Police Cases"`-family Sales Orders, a hospital reschedule would
+have created a wrongly-typed Police Sales Order on a Hospital Deal, not simply skipped billing.
+
+Andrea confirmed: hospital reschedules should reuse an existing hospital product (no new
+"Reschedule Trip" category needed), no family/MNSJ fault-split (that's police-only), and storage
+should be left running as normal (no change needed there since nothing already touches it).
+
+**Fix applied and confirmed live.** `automation.handleAutopsyReschedule` now branches on
+`Pipeline` right after the shared trip-creation block: Hospital Cases add one trip fee (reusing
+that hospital's own `Product_Category = 'Pickup'` product, tagged via `Product_of_This_Hospital`)
+to the existing `Hospital Cases` Sales Order and return early -- no family/MNSJ logic, no new
+Sales Order type. Police Cases fall through to the existing items-1-4 logic unchanged.
+
 ## Open items carried over from the source doc (not started)
 
-See `PH-BILLING-DEV-TASKS.md` item 6 (above, blocked on Andrea), 11 (hospital reschedule
-billing), 13-15 (registration number placement), and Part 4 V2/V3 validations. Also open: a new
-requirement from Andrea for a master/child Books invoice linking mechanism (she recalls building
-something like this months ago; not yet located in the repo, CRM function names, or CRM Invoices
-fields — she is checking her own records for it).
+See `PH-BILLING-DEV-TASKS.md` item 6 (above, blocked on Andrea), 13-15 (registration number
+placement), and Part 4 V2/V3 validations. Also open: a new requirement from Andrea for a
+master/child Books invoice linking mechanism (she recalls building something like this months
+ago; not yet located in the repo, CRM function names, or CRM Invoices fields — she is checking
+her own records for it).
 
 Full documentation set (admin setup, initial-trip billing logic, decomposed charges, storage
 logic, LONI/Release rules, family storage invoices, autopsy trips incl. reschedule, DA
