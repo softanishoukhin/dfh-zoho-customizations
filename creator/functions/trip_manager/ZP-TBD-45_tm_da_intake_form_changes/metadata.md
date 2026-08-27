@@ -113,7 +113,10 @@ to capture what Andrea needs, and no fields on Operations to store it.
   not-started → `renderCrematoryDropoffStart`, on-scene (`Started`/`Completed`) →
   `renderCrematoryDropoffComplete`.
 - `renderCrematoryDropoffStart(trip)` — pre-start checklist, 2 items: "Documents collected",
-  "Deceased loaded" (`repatRow` reused as-is). Both must be checked to enable Start Trip
+  "Deceased loaded" (`crematoryRow` — a dedicated row helper, not `repatRow`; `repatRow` hardcodes
+  `onchange="repatGateCheck()"`, which no-ops here since `state.repatSteps` is never set for this
+  flow, so reusing it directly silently never enabled Start Trip — caught during Andrea's live
+  test). Both must be checked to enable Start Trip
   (`crematoryStartGateCheck`), which reuses the existing generic `Save_Start_Job` API — no new
   start API needed. Checklist state persists via the existing `Checklist_State` field
   (`persistChecklistState`/`restoreChecklistState`, same mechanism as every other flow in this
