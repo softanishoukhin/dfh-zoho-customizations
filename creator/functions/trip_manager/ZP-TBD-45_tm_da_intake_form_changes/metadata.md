@@ -425,81 +425,73 @@ check-in location the old code already used as `checkinLoc`. It's functionally i
 "current location of the deceased" means for this rule, so there's no need for a separate new
 `Case_Location` field at all. Only **one** new field is actually needed: `Destination`.
 
-**Fix (guideline — apply directly in CRM, no write-capable MCP tool exists for either
-function):** copy the normalized `Destination` onto the `Deceased_Pickups` record once at
-creation time (from the original case Deal's `DFH_Destination`), then compare it against the
-existing `Location` field at check-in time.
+**Third correction (from the user — this is the one that actually matters):** copying
+`Destination` from a Deal in `onDeceasedPickupCreate` (as drafted above) still doesn't work,
+because **no Deal ever gets `DFH_Destination`/`Case_Location` written to it for Police/Hospital
+cases at all** — confirmed by reading `Intake_Form.ds` directly. For these two deal types, the
+on-submit workflow never builds a `dealDataMap` at intake time; it builds a `tripMap` straight
+from `input.*` (the raw form fields) and POSTs it directly to `/crm/v8/Trips`, then — if a
+deceased name was entered — builds a `childMap` and POSTs it directly to
+`/crm/v8/Deceased_Pickups` (two near-identical blocks, one for Hospital around line 7278, one for
+Police around line 7570 — each already computes `dfhDest` locally from `input.DFH_Destination`
+to set the Trip's `Destination_City`, right before building `childMap`). So the correct place to
+capture Destination (and Location, since the same is true for it) is **directly in that intake
+code, using the raw form values already in scope** — not a lookup added later in a completely
+different CRM function.
+
+**Fix (guideline — apply directly in Creator; can't be done here per the `.ds` guideline-only
+rule):** in *both* of those `.ds` blocks, add two lines right after `childMap.put("Trip",tlk);`:
+
+```
+// ZP-TBD-45 Task 6: capture Location and Destination straight from the intake form onto this
+// Deceased_Pickups record -- no Deal ever carries these two fields for Police/Hospital cases,
+// so this is the only correct place to set them. dfhDest is already computed just above for
+// the Trip; Case_Location comes straight from input the same way.
+caseLocRaw = "";
+try
+{
+	caseLocRaw = ifnull(input.Case_Location,"");
+}
+catch (e)
+{
+	caseLocRaw = "";
+}
+if(caseLocRaw.contains("Kingston"))
+{
+	childMap.put("Location","Kingston");
+}
+else if(caseLocRaw.contains("Montego"))
+{
+	childMap.put("Location","Montego Bay");
+}
+if(dfhDest == "20A Kingston")
+{
+	childMap.put("Destination","Kingston");
+}
+else
+{
+	childMap.put("Destination","Montego Bay");
+}
+```
+
+This makes `onDeceasedPickupCreate` entirely unnecessary for this task — no CRM automation
+function needs to change at all, only the two `.ds` blocks. (`Location` set here is a same-day
+best guess from intake; the Driver App's real morgue check-in still overwrites it later with the
+actual confirmed location before `onDeceasedPickupCheckIn` runs, so the eventual comparison
+always uses the true value, not the intake guess.)
 
 **Step 1 — one new field on `Deceased_Pickups`:**
 | API Name | Type | Notes |
 |---|---|---|
 | `Destination` | Picklist | Values: `Kingston`, `Montego Bay` — matches the existing `Location` field's values exactly |
 
-**Step 2 — `onDeceasedPickupCreate`:** add this right after `isPolice = tripType == "Police Case Pickup";`:
-```
-// ZP-TBD-45 Task 6: Deceased_Pickups.Location already holds the deceased's current location
-// (Kingston/Montego Bay) once checked in. What's missing is the Destination -- that only lives
-// on the ORIGINAL case-level Deal linked to this pickup Trip (each deceased here gets its own
-// separate auto-created Deal below, which never carries DFH_Destination). Copy the normalized
-// Destination onto this Deceased_Pickups record now, once, so onDeceasedPickupCheckIn can
-// compare it against Location directly.
-if(isHospital || isPolice)
-{
-	originalDealId = "";
-	try
-	{
-		originalDealId = ifnull(tripInfo.get("Deal").get("id"),"");
-	}
-	catch (e)
-	{
-		originalDealId = "";
-	}
-	if(originalDealId != "")
-	{
-		originalDeal = Map();
-		try
-		{
-			originalDeal = zoho.crm.getRecordById("Deals",originalDealId.toLong());
-		}
-		catch (e)
-		{
-			originalDeal = Map();
-		}
-		destRaw = ifnull(originalDeal.get("DFH_Destination"),"");
-		destNorm = "";
-		if(destRaw.contains("Kingston"))
-		{
-			destNorm = "Kingston";
-		}
-		else if(destRaw.contains("Montego") || destRaw.contains("Mobay") || destRaw.contains("Union"))
-		{
-			destNorm = "Montego Bay";
-		}
-		if(destNorm != "")
-		{
-			pickupDestUpd = Map();
-			pickupDestUpd.put("Destination",destNorm);
-			try
-			{
-				zoho.crm.updateRecord("Deceased_Pickups",pId.toLong(),pickupDestUpd);
-			}
-			catch (e)
-			{
-			}
-		}
-	}
-}
-```
-(`tripInfo` is already fetched earlier in this function — this reuses it, no extra Trip lookup
-needed. Only runs for `isHospital`/`isPolice`, matching the confirmed Police/Hospital-only
-scope.)
-
-**Step 3 — `onDeceasedPickupCheckIn`:** replace the existing "Transport auto-create" block (near
+**Step 2 — `onDeceasedPickupCheckIn`:** replace the existing "Transport auto-create" block (near
 the end, right before `if(!childUpd.isEmpty())`) with:
 ```
 // Transport auto-create (ZP-TBD-45 Task 6): Location already holds where the deceased currently
-// is (set at check-in); Destination is copied onto this Deceased_Pickups record once, at
-// creation, by onDeceasedPickupCreate. Compare the two directly -- no Deal lookup needed.
+// is (set at check-in, overwriting the intake guess); Destination was captured straight from
+// the intake form onto this Deceased_Pickups record (see the Intake_Form.ds change above).
+// Compare the two directly -- no Deal lookup needed.
 caseLoc = ifnull(dp.get("Location"),"");
 destLoc = ifnull(dp.get("Destination"),"");
 if(caseLoc != "" && caseLoc != "-None-" && destLoc != "" && caseLoc != destLoc)
@@ -550,7 +542,8 @@ if(caseLoc != "" && caseLoc != "-None-" && destLoc != "" && caseLoc != destLoc)
 `caseLoc` here is just `Location` (renamed in the variable name for continuity with the rest of
 the function, but reads the existing field — no Deal lookup, no new field for it). This drops
 the old `dealRec.get("Case_Location")` lookup entirely; the only genuinely new piece of data is
-`Destination`, populated once by `onDeceasedPickupCreate`.
+`Destination`, captured directly from the intake form (see the `.ds` change above) — this
+function itself needs no changes beyond this comparison block.
 
 **Scope decision (confirmed with the user):** Police/Hospital-only for now. Case Location is
 also collected at intake for First Call/Ship In/Wholesale Airport (Task 5), but those deal types
@@ -560,9 +553,12 @@ Destination also auto-create a Transport record for those 3 deal types? If yes, 
 separate follow-up task (a different trigger point entirely, since there's no Deceased_Pickups
 record to hang it on for those types).
 
-Not yet applied — pending the user adding the 1 new `Deceased_Pickups` field (`Destination`) and
-pasting both Deluge changes in, then testing: (1) a Police/Hospital case with Destination ≠
-(eventual check-in) Location → expect a Transport record after check-in; (2) one where they'd
-match → expect none; (3) confirm the `Deceased_Pickups` record already shows `Destination`
-populated right after creation, before any check-in happens (proves Step 2 worked independently
-of Step 3).
+Not yet applied — pending the user adding the 1 new `Deceased_Pickups` field (`Destination`),
+pasting the `.ds` change into both the Hospital and Police intake blocks, and pasting the
+`onDeceasedPickupCheckIn` change in, then testing: (1) submit a fresh Police or Hospital intake
+with Case Location = Kingston, DFH Destination = Mobay → confirm the resulting `Deceased_Pickups`
+record already shows `Location = Kingston` and `Destination = Montego Bay` right after
+submission, before any physical check-in; (2) complete the actual morgue check-in (which
+overwrites `Location` with whatever's really chosen there) with a location that still differs
+from `Montego Bay` → expect a Transport record to appear; (3) repeat with matching values →
+expect none.
