@@ -201,3 +201,122 @@ convention (one dedicated Operations record per trip, not per Deal) was confirme
 reading `automation.createOperationsRecordOnTripCreation`'s source directly.
 
 Confirmed deployed and tested by Andrea, passed.
+
+### Task 4 — Intake App (NOKIntake): future pickup date
+Andrea's brief (`projectDocuments/Intake App — future pickup date.txt`): the Intake App
+(confirmed to mean the **NOKIntake** widget, `widgets/NOKIntake/NOKIntake`) has no way to
+schedule a pickup for a future date — First Call and Wholesale (Local/Airport) trips are
+effectively created for "now." Wants a new field, **"Schedule Date and Time"**, shown only for
+Deal Type First Call / Wholesale Local / Wholesale Airport (not Police, not Hospital), that
+becomes the Trip's `Scheduled_Date`. TM still assigns/changes the actual time and driver later.
+
+Traced across three layers:
+- `widgets/NOKIntake/NOKIntake/app/app.js` — the widget's own visibility engine
+  (`RULES[<effective deal type>].fields`, toggled by `applyDealType()`). `effectiveType()` splits
+  `Deal_Type = "Wholesale"` into `Wholesale_Local`/`Wholesale_Airport` via the `Wholesale_Type`
+  sub-select. `buildData()` submits via `ZOHO.CREATOR.DATA.addRecords` into the Creator form
+  `NOK_Information_Form` — not a direct CRM write — so any new field has to exist on that form.
+- `widgets/NOKIntake/NOKIntake/Intake_Form.ds` — the real Creator form schema + its on-submit
+  workflow (guideline-only, per the `.ds` rule). The workflow reads `theForm.<field>` and builds
+  `dealDataMap`, which creates/updates the actual CRM Deal.
+- Two CRM automation functions create the Trip, pulled live, **neither honors a user-supplied
+  schedule today**:
+  - `Create Trips from Deals for First Call` (`automation.createTripsFromDealsForFirstCall`, id
+    `6503357000021370161`) — never sets `Scheduled_Date` at all.
+  - `Create Trip for Wholesale` (`automation.createTripForWholesale`, id `6503357000027289033`)
+    — handles both Local and Airport. Airport sets `Scheduled_Date = Arriving_Date_Time` (flight
+    arrival); Local defaults to `zoho.currenttime.addBusinessDay(1)` (next business day).
+
+**Widget changes (done, direct-edited):**
+- `app/widget.html` — new field, same shape as the existing `wrap_Notes`/`wrap_Call_Taken_By`
+  rows, placed near Pickup Location:
+  ```html
+  <div class="row" id="wrap_Schedule_Date_and_Time"><label>Schedule Date and Time</label><input id="Schedule_Date_and_Time" type="datetime-local"/></div>
+  ```
+- `app/app.js`:
+  - Added `"wrap_Schedule_Date_and_Time"` to `TOP_FIELDS`.
+  - Added `"wrap_Schedule_Date_and_Time"` to the `fields` array of exactly the 3 in-scope
+    `RULES` entries: `"First Call"`, `"Wholesale_Local"`, `"Wholesale_Airport"` — this is what
+    scopes the field to only those types; `"Police"`/`"Hospital"` were left untouched.
+  - New helper `vDateTime(id)` next to `vDate(id)` — converts the `datetime-local` input's
+    `YYYY-MM-DDTHH:mm` into `dd-MMM-yyyy HH:mm:ss` (same shape `vDate` already produces for
+    dates, reusing the `MON` array). Returns `""` when empty — field is optional.
+  - Added `"Schedule_Date_and_Time": vDateTime("Schedule_Date_and_Time")` to `buildData()`.
+
+**CRM change needed (guideline):** add one new field to **Deals**: `Schedule_Date_and_Time` —
+DateTime.
+
+**Creator form guideline — `Intake_Form.ds`** (apply directly in Creator, not edited here):
+new field definition, matching the shape of the form's existing `type = datetime` fields (e.g.
+`Date_and_Time_of_Departure`):
+```
+Schedule_Date_and_Time
+(
+	type = datetime
+	displayname = "Schedule Date and Time"
+	timedisplayoptions = "hh:mm"
+	alloweddays = 0,1,2,3,4,5,6
+	row = 1
+	column = 1
+	width = medium
+)
+```
+Plus one line added to the on-submit workflow's `dealDataMap` construction (near the existing
+conditional puts for First Call/Wholesale, e.g. around the block that already gates on
+`theForm.Deal_Type == "First Call" || ... isDealTypeWholesaleLocal ...`):
+```
+if(theForm.Deal_Type == "First Call" || theForm.Deal_Type == "Wholesale")
+{
+	dealDataMap.put("Schedule_Date_and_Time",theForm.Schedule_Date_and_Time);
+}
+```
+Verify the exact insertion point and value shape against the live `.ds` before pasting — the
+snippet above is for reference, not a verbatim live excerpt.
+
+**Deluge guideline — update both trip-creation functions** to prefer the new field over their
+current defaults, falling back to today's behavior when it's blank (so deals that don't set it
+keep working exactly as now):
+- `createTripsFromDealsForFirstCall` — after building `tripMap`, add:
+  ```
+  if(!isNull(recordInfo.get("Schedule_Date_and_Time")) && recordInfo.get("Schedule_Date_and_Time") != "")
+  {
+  	tripMap.put("Scheduled_Date",recordInfo.get("Schedule_Date_and_Time"));
+  }
+  ```
+- `createTripForWholesale` — in each of the `Wholesale_Type == "Airport"` / `else` (Local)
+  branches, check the new field first and only fall back to `Arriving_Date_Time` /
+  `addBusinessDay(1)` when it's blank, e.g.:
+  ```
+  if(!isNull(recordInfo.get("Schedule_Date_and_Time")) && recordInfo.get("Schedule_Date_and_Time") != "")
+  {
+  	tripMap.put("Scheduled_Date",recordInfo.get("Schedule_Date_and_Time"));
+  }
+  else if(recordInfo.get("Wholesale_Type") == "Airport")
+  {
+  	tripMap.put("Scheduled_Date",recordInfo.get("Arriving_Date_Time"));
+  	tripMap.put("Trip_Type","Wholesale Airport");
+  	tripMap.put("Name","Initial Trip for " + recordInfo.get("Account_Name").get("name"));
+  }
+  else
+  {
+  	date_str = zoho.currenttime.addBusinessDay(1);
+  	parsed_date = date_str.toTime("dd-MMM-yyyy HH:mm:ss");
+  	iso_format = parsed_date.toString("yyyy-MM-dd'T'HH:mm:ssXXX");
+  	tripMap.put("Scheduled_Date",iso_format);
+  	tripMap.put("Trip_Type","Wholesale Local");
+  	tripMap.put("Name","Pickup Trip for " + recordInfo.get("Account_Name").get("name"));
+  }
+  ```
+  (the `Trip_Type`/`Name` puts still need to happen regardless of which Scheduled_Date branch
+  fires — restructure carefully against the live function rather than pasting this over it
+  wholesale, since the original also has an `if(recordInfo.get("Wholesale_Type") == "Airport")`
+  test used for `Trip_Type`/`Name` that must stay correct independent of the new date-priority
+  check.)
+
+Out of scope: Police and Hospital deal types (untouched), `Wholesale_Type` itself, and the
+Airport flight-time field `Arriving_Date_Time` (still used as the fallback). No required-field
+validation on the new field — optional, since TM can still adjust the time later.
+
+Not yet tested live — pending the Deal field, `.ds` form + workflow update, and the two Deluge
+function updates being applied by the user, then republish + a real submission through each of
+the 3 in-scope deal types.
