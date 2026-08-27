@@ -89,5 +89,4 @@ removed), which has full free-tier support for cell fills/fonts — the header r
 with a solid plum background and bold white text, and the day-group divider rows get a light
 plum tint to match. PDF export (`app/lib/jspdf.umd.min.js` + AutoTable) is unaffected.
 
-Not yet tested live (needs a real render to confirm the header color reads correctly) — pending
-Andrea's test.
+Confirmed deployed and tested by Andrea, passed.
