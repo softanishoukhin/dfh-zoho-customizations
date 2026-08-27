@@ -64,16 +64,30 @@ local `<script src="lib/...">` reference doesn't touch CSP.
   AutoTable) — new `exportDailyReportPdf()` builds a genuine multi-page landscape PDF: fixed
   8pt font that never shrinks, header row repeats on every page (AutoTable's own pagination, not
   the browser's), day-group divider rows, branded header + page-number footer redrawn per page.
-- **`app/lib/xlsx.full.min.js`** (SheetJS) — new `exportDailyReportExcel()` builds a real `.xlsx`
-  file: header row frozen (`ws["!freeze"]`), day-groups as merged full-width rows, autofilter,
-  sensible column widths. Since it's a real Excel file, Andrea has full control over Excel's own
-  print/page-setup from there, which sidesteps the same shrinking problem a second, independent
-  way.
+- **`app/lib/exceljs.min.js`** (ExcelJS) — new `exportDailyReportExcel()` builds a real `.xlsx`
+  file: header row frozen (`views:[{state:"frozen",ySplit:1}]`) and styled (solid plum fill,
+  bold white text, matching the on-screen header), day-groups as merged full-width styled rows,
+  autofilter, sensible column widths, wrapped cell text. Downloaded via `wb.xlsx.writeBuffer()` +
+  a `Blob`/temporary `<a download>` link (ExcelJS has no built-in browser save helper). Since
+  it's a real Excel file, Andrea has full control over Excel's own print/page-setup from there,
+  which sidesteps the same shrinking problem a second, independent way.
 - The existing "Print" button is reused for the PDF export specifically on the Daily Funeral
   Report view (relabeled "Export PDF" there); it's untouched everywhere else (Burial Schedule,
   Driver Sheet Detail still use the normal browser print dialog, since only the Daily Funeral
   Report was reported as a problem). A new "Export Excel" button sits next to it, visible only on
   the Daily Funeral Report view.
 
-Not yet tested live (needs a real render to confirm PDF/Excel output visually) — pending
+**Follow-up fix (same task):** Andrea's first live test of the Excel export came back as "excel
+formatting with header color could be better." Root cause: the first version was built with
+SheetJS (`xlsx` npm package) — its free/Community Edition can write formulas, merges, freeze
+panes, and autofilters into a real `.xlsx`, but **cannot write cell styles (fill color, bold,
+font color) at all** — that's a Pro-only feature of that library, undocumented until you hit it.
+Every style object set on a cell was silently dropped on write, which is why the header rendered
+in plain default black-on-white regardless of what was set. Swapped the Excel export from
+SheetJS to **ExcelJS** (`app/lib/exceljs.min.js`, replacing `app/lib/xlsx.full.min.js` which was
+removed), which has full free-tier support for cell fills/fonts — the header row now renders
+with a solid plum background and bold white text, and the day-group divider rows get a light
+plum tint to match. PDF export (`app/lib/jspdf.umd.min.js` + AutoTable) is unaffected.
+
+Not yet tested live (needs a real render to confirm the header color reads correctly) — pending
 Andrea's test.
