@@ -402,67 +402,116 @@ Found it via [[project_autopsy_sprint]] (the earlier Transport Module build) and
 **`onDeceasedPickupCheckIn`** (CRM automation function, id `6503357000069144520`, fires from the
 Driver App's police/hospital morgue check-in flow on `Deceased_Pickups` records). It already has
 a "Transport auto-create" block near the end — but it currently compares the wrong two things:
-the **physical check-in location** (`Deceased_Pickups.Location`, e.g. which morgue the deceased
-was actually checked into) against `Deal.Case_Location`, only running at all if a check-in
-location was recorded. That's a different comparison than what Andrea's asking for now.
+the **physical check-in location** (`Deceased_Pickups.Location`) against `Deal.Case_Location`.
 
-**Fix (guideline — apply directly in the CRM function, no write-capable MCP tool exists for
-this):** replace that block's comparison with **Case Location vs Destination**
-(`Deal.DFH_Destination`, the same field used by the trip-creation functions to route to Kingston
-vs Montego Bay), and drop the dependency on a physical check-in ever having happened — this
-should fire based on the Deal's own fields, independent of whether/how the deceased was checked
-in.
+**Correction caught during review (important — changes the whole approach):** the first draft of
+this fix assumed `dealRec` (the Deal linked from `dp.get("Deal")`) would have both
+`Case_Location` and `DFH_Destination` set. It doesn't. Traced why via `onDeceasedPickupCreate`
+(id `6503357000068702919`, the function that runs when a `Deceased_Pickups` record is first
+created): for Police/Hospital multi-deceased cases, **each individual deceased gets a brand-new,
+separate Deal auto-created** by this function (`isHospital`/`isPolice` branches build a fresh
+`dealDataMap` from `tripInfo` alone and call `zoho.crm.createRecord("Deals", ...)`) — and that
+`dealDataMap` never includes `Case_Location` or `DFH_Destination`. Those two fields only exist on
+the **original case-level Deal** created at intake (the one NOKIntake wrote `Case_Location`/
+`DFH_Destination` onto per Task 5), which is reachable only via
+`Deceased_Pickups.Trip → Trip.Deal` — not via `Deceased_Pickups.Deal`, which points at the new
+per-deceased Deal instead. So `dealRec.get("Case_Location")` in `onDeceasedPickupCheckIn` would
+almost always come back blank for Police/Hospital pickups, and the Transport record would never
+fire.
 
-Current block (to be replaced), near the end of the function, right before `if(!childUpd.isEmpty())`:
-```
-// Transport auto-create: if checked-in location doesn't match case location
-checkinLoc = ifnull(dp.get("Location"),"");
-if(checkinLoc != "" && checkinLoc != "-None-")
-{
-	caseLoc = "";
-	caseLocRaw = ifnull(dealRec.get("Case_Location"),"");
-	if(caseLocRaw.contains("Kingston") || caseLocRaw.contains("Kings House"))
-	{
-		caseLoc = "Kingston";
-	}
-	else if(caseLocRaw.contains("Montego") || caseLocRaw.contains("Union"))
-	{
-		caseLoc = "Montego Bay";
-	}
-	if(caseLoc != "" && checkinLoc != caseLoc)
-	{
-		... (COQL idempotency check + zoho.crm.createRecord("Transport", ...) with
-		     Current_Location = checkinLoc)
-	}
-}
-```
+**Fix (guideline — apply directly in CRM, no write-capable MCP tool exists for either
+function):** store `Case_Location` and `Destination` directly **on the `Deceased_Pickups`
+record itself**, copied once from the original case Deal at creation time, so
+`onDeceasedPickupCheckIn` can read them straight off `dp` with no further lookups.
 
-New block:
+**Step 1 — new fields on `Deceased_Pickups`:**
+| API Name | Type | Notes |
+|---|---|---|
+| `Case_Location` | Picklist | Values: `Kingston`, `Montego Bay` (normalized form, not the full Deal picklist labels — only ever used for this comparison) |
+| `Destination` | Picklist | Same two values: `Kingston`, `Montego Bay` |
+
+**Step 2 — `onDeceasedPickupCreate`:** add this right after `isPolice = tripType == "Police Case Pickup";`:
 ```
-// Transport auto-create (ZP-TBD-45 Task 6): if the deceased's Case Location differs from the
-// Destination, a Transportation record is needed to move them between the two branches.
-// Independent of whether/how the deceased was checked in -- only depends on the Deal's own
-// Case_Location and DFH_Destination fields.
-caseLocRaw = ifnull(dealRec.get("Case_Location"),"");
-caseLoc = "";
-if(caseLocRaw.contains("Kingston") || caseLocRaw.contains("Kings House"))
+// ZP-TBD-45 Task 6: for Police/Hospital cases, each deceased gets its own auto-created Deal
+// (below) which never carries Case_Location/Destination -- those only exist on the ORIGINAL
+// case-level Deal linked to this pickup Trip. Copy the normalized values onto this
+// Deceased_Pickups record now, once, so onDeceasedPickupCheckIn can compare them directly.
+if(isHospital || isPolice)
 {
-	caseLoc = "Kingston";
+	originalDealId = "";
+	try
+	{
+		originalDealId = ifnull(tripInfo.get("Deal").get("id"),"");
+	}
+	catch (e)
+	{
+		originalDealId = "";
+	}
+	if(originalDealId != "")
+	{
+		originalDeal = Map();
+		try
+		{
+			originalDeal = zoho.crm.getRecordById("Deals",originalDealId.toLong());
+		}
+		catch (e)
+		{
+			originalDeal = Map();
+		}
+		caseLocRaw = ifnull(originalDeal.get("Case_Location"),"");
+		caseLocNorm = "";
+		if(caseLocRaw.contains("Kingston") || caseLocRaw.contains("Kings House"))
+		{
+			caseLocNorm = "Kingston";
+		}
+		else if(caseLocRaw.contains("Montego") || caseLocRaw.contains("Union"))
+		{
+			caseLocNorm = "Montego Bay";
+		}
+		destRaw = ifnull(originalDeal.get("DFH_Destination"),"");
+		destNorm = "";
+		if(destRaw.contains("Kingston"))
+		{
+			destNorm = "Kingston";
+		}
+		else if(destRaw.contains("Montego") || destRaw.contains("Mobay") || destRaw.contains("Union"))
+		{
+			destNorm = "Montego Bay";
+		}
+		if(caseLocNorm != "" || destNorm != "")
+		{
+			pickupLocUpd = Map();
+			if(caseLocNorm != "")
+			{
+				pickupLocUpd.put("Case_Location",caseLocNorm);
+			}
+			if(destNorm != "")
+			{
+				pickupLocUpd.put("Destination",destNorm);
+			}
+			try
+			{
+				zoho.crm.updateRecord("Deceased_Pickups",pId.toLong(),pickupLocUpd);
+			}
+			catch (e)
+			{
+			}
+		}
+	}
 }
-else if(caseLocRaw.contains("Montego") || caseLocRaw.contains("Union"))
-{
-	caseLoc = "Montego Bay";
-}
-destRaw = ifnull(dealRec.get("DFH_Destination"),"");
-destLoc = "";
-if(destRaw.contains("Kingston"))
-{
-	destLoc = "Kingston";
-}
-else if(destRaw.contains("Montego") || destRaw.contains("Mobay") || destRaw.contains("Union"))
-{
-	destLoc = "Montego Bay";
-}
+```
+(`tripInfo` is already fetched earlier in this function — this reuses it, no extra Trip lookup
+needed. Only runs for `isHospital`/`isPolice`, matching the confirmed Police/Hospital-only
+scope.)
+
+**Step 3 — `onDeceasedPickupCheckIn`:** replace the existing "Transport auto-create" block (near
+the end, right before `if(!childUpd.isEmpty())`) with:
+```
+// Transport auto-create (ZP-TBD-45 Task 6): Case_Location and Destination are copied onto this
+// Deceased_Pickups record once, at creation, by onDeceasedPickupCreate -- read them directly
+// here instead of from dealRec (the per-deceased Deal never carries these two fields).
+caseLoc = ifnull(dp.get("Case_Location"),"");
+destLoc = ifnull(dp.get("Destination"),"");
 if(caseLoc != "" && destLoc != "" && caseLoc != destLoc)
 {
 	existingTransport = false;
@@ -508,38 +557,19 @@ if(caseLoc != "" && destLoc != "" && caseLoc != destLoc)
 	}
 }
 ```
+This drops the old `checkinLoc`/`dealRec.get("Case_Location")` normalization entirely — all
+normalization now happens once, in `onDeceasedPickupCreate`, at record-creation time.
 
-What changed and why:
-- Comparison is now `caseLoc` vs `destLoc` (both derived from Deal fields), not `checkinLoc` vs
-  `caseLoc` — matches Andrea's literal rule.
-- `destLoc` normalization mirrors the same Kingston/Montego-Bay bucketing `createTripsFromDealsForFirstCall`/
-  `createTripForWholesale` already use for `DFH_Destination` (`"Montego Bay"`/`"45 Union Street"`/
-  `"Mobay Ops Center"` → Montego Bay; else → Kingston) — extended slightly here to also catch
-  `"Mobay"` literally, matching the Deal's actual stored value.
-- Removed the `checkinLoc != "" && checkinLoc != "-None-"` guard entirely — the new rule doesn't
-  depend on a physical check-in, only on the Deal's Case_Location/Destination being set.
-- `Current_Location` on the created Transport record is now set to `caseLoc` (where the deceased
-  currently is) instead of `checkinLoc` — this is what "needs transportation between those
-  locations" means: the transport starts at the case location.
-- Idempotency check (COQL against `Transport` by `Operations` + `Category = 'Deceased'`) is
-  unchanged — still prevents duplicate Transport records for the same case.
+**Scope decision (confirmed with the user):** Police/Hospital-only for now. Case Location is
+also collected at intake for First Call/Ship In/Wholesale Airport (Task 5), but those deal types
+never create a `Deceased_Pickups` record, so neither function above ever runs for them —
+deliberately left that way. **Still needs a question back to Andrea:** should Case Location ≠
+Destination also auto-create a Transport record for those 3 deal types? If yes, that's a
+separate follow-up task (a different trigger point entirely, since there's no Deceased_Pickups
+record to hang it on for those types).
 
-**Scope decision (confirmed with the user):** Police/Hospital-only is fine for now — this
-function only runs when `onDeceasedPickupCheckIn` fires (the Deceased_Pickups check-in flow),
-since that's the existing function Andrea said to modify rather than rebuild. Case Location is
-now also collected at intake for First Call/Ship In/Wholesale Airport (Task 5), but those deal
-types never create a `Deceased_Pickups` record, so this function never runs for them — a case of
-one of those types with mismatched Case Location/Destination will **not** get an auto-created
-Transport record from this fix. Deliberately left that way rather than guessing at a second
-trigger point.
-
-**Needs a question back to Andrea** (raise alongside reporting Task 6 done): confirm whether
-Case Location ≠ Destination should also auto-create a Transport record for First Call, Ship In,
-and Wholesale Airport cases, now that those deal types collect Case Location too — if yes, that's
-a new, separate trigger point (most likely added inside the trip-creation functions themselves,
-e.g. `createTripsFromDealsForFirstCall`), scoped as its own follow-up task rather than folded
-into this one.
-
-Not yet applied — pending the user pasting this into the live `onDeceasedPickupCheckIn` function
-in CRM, then testing a Police/Hospital case with Case Location ≠ Destination (expect a Transport
-record) and one with them equal (expect none).
+Not yet applied — pending the user adding the 2 `Deceased_Pickups` fields and pasting both
+Deluge changes in, then testing: (1) a Police/Hospital case with Case Location ≠ Destination →
+expect a Transport record after check-in; (2) one with them equal → expect none; (3) confirm the
+`Deceased_Pickups` record actually shows `Case_Location`/`Destination` populated right after
+creation, before any check-in happens (proves Step 2 worked independently of Step 3).
