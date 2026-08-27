@@ -344,19 +344,17 @@ Andrea's brief (`projectDocuments/Intake App — Case Location.txt`): the Deal a
 **Case Location** field; she wants it added to the Intake App form, positioned directly above
 **Destination**, defaulting to **Mobay** unless changed.
 
-Confirmed live (`Deals.Case_Location`, field id `6503357000001131206`) — a picklist, only 2 real
+Confirmed live (`Deals.Case_Location`, field id `6503357000001131206`) — a picklist, only 2
 values:
 - `Delapenha Funeral Home - 20A W. Kings House Rd., Kingston`
-- `Delapenha Funeral Home - 45 Union St., Montego` (display label says "...Montego Bay", but the
-  actual stored value is truncated to "...Montego" — a pre-existing data quirk on the field
-  itself, not something introduced here; the "Mobay" default uses this value verbatim)
+- `Delapenha Funeral Home - 45 Union St., Montego Bay` (the CRM API's own metadata response
+  truncated this to "...Montego" for its `actual_value` — confirmed with the user this is just
+  an API-response quirk, the real field value is the full "...Montego Bay")
 
 **Widget changes (done, direct-edited):**
 - `app/widget.html` — new `<select id="Case_Location">` with the 2 real Deal picklist values
-  (option text shows the full "Montego Bay" label; the submitted `value` for that option is the
-  actual truncated `...Montego` string so it matches the Deal field exactly), placed immediately
-  before the existing `wrap_DFH_Destination` row, defaulted (`selected`) to the Montego/Mobay
-  option.
+  verbatim, placed immediately before the existing `wrap_DFH_Destination` row, defaulted
+  (`selected`) to the Montego Bay/Mobay option.
 - `app/app.js`:
   - Added `"wrap_Case_Location"` to `TOP_FIELDS`.
   - Added `"wrap_Case_Location"` to the `fields` array of every `RULES` entry that already shows
@@ -379,8 +377,8 @@ Case_Location
 	type = picklist
 	displayname = "Case Location"
 	maxchar = 120
-	values = {"Delapenha Funeral Home - 20A W. Kings House Rd., Kingston","Delapenha Funeral Home - 45 Union St., Montego"}
-	initial value = "Delapenha Funeral Home - 45 Union St., Montego"
+	values = {"Delapenha Funeral Home - 20A W. Kings House Rd., Kingston","Delapenha Funeral Home - 45 Union St., Montego Bay"}
+	initial value = "Delapenha Funeral Home - 45 Union St., Montego Bay"
 	row = 1
 	column = 1
 	width = medium
