@@ -322,10 +322,19 @@ through unparsed the same way is correct and consistent with the existing code:
   test used for `Trip_Type`/`Name` that must stay correct independent of the new date-priority
   check.)
 
-Out of scope: Police and Hospital deal types (untouched), `Wholesale_Type` itself, and the
-Airport flight-time field `Arriving_Date_Time` (still used as the fallback). No required-field
-validation on the new field — optional, since TM can still adjust the time later.
+Out of scope: Police and Hospital deal types (untouched), `Wholesale_Type` itself. No
+required-field validation on the new field — optional, since TM can still adjust the time later.
 
-Not yet tested live — pending the Deal field, `.ds` form + workflow update, and the two Deluge
-function updates being applied by the user, then republish + a real submission through each of
-the 3 in-scope deal types.
+**As deployed:** `createTripsFromDealsForFirstCall` matches the guideline exactly. In
+`createTripForWholesale`, the `Schedule_Date_and_Time`-first check was wired into the **Local**
+branch only — the **Airport** branch still always uses `Arriving_Date_Time` unconditionally,
+never checking the new field. Flagged during review; the user confirmed this is intentional —
+**Wholesale Airport stays flight-arrival-only**, so in practice the new field only affects First
+Call and Wholesale Local, despite Andrea's brief listing Wholesale Airport as in-scope too. Also
+separately confirmed via the live CRM workflow-rule trace: only Wholesale Local is actually wired
+to call `createTripForWholesale` automatically ("On Create - Create Trips for Regular Trip",
+condition #5, `Pipeline = Wholesale AND Wholesale_Type = Local`) — no rule was found calling it
+automatically for Wholesale Airport, so the Airport branch's behavior here may rarely matter in
+practice.
+
+Confirmed deployed and tested by Andrea, passed.
