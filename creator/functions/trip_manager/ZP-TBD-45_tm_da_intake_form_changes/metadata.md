@@ -338,3 +338,59 @@ automatically for Wholesale Airport, so the Airport branch's behavior here may r
 practice.
 
 Confirmed deployed and tested by Andrea, passed.
+
+### Task 5 — Intake App (NOKIntake): Case Location field
+Andrea's brief (`projectDocuments/Intake App — Case Location.txt`): the Deal already has a
+**Case Location** field; she wants it added to the Intake App form, positioned directly above
+**Destination**, defaulting to **Mobay** unless changed.
+
+Confirmed live (`Deals.Case_Location`, field id `6503357000001131206`) — a picklist, only 2 real
+values:
+- `Delapenha Funeral Home - 20A W. Kings House Rd., Kingston`
+- `Delapenha Funeral Home - 45 Union St., Montego` (display label says "...Montego Bay", but the
+  actual stored value is truncated to "...Montego" — a pre-existing data quirk on the field
+  itself, not something introduced here; the "Mobay" default uses this value verbatim)
+
+**Widget changes (done, direct-edited):**
+- `app/widget.html` — new `<select id="Case_Location">` with the 2 real Deal picklist values
+  (option text shows the full "Montego Bay" label; the submitted `value` for that option is the
+  actual truncated `...Montego` string so it matches the Deal field exactly), placed immediately
+  before the existing `wrap_DFH_Destination` row, defaulted (`selected`) to the Montego/Mobay
+  option.
+- `app/app.js`:
+  - Added `"wrap_Case_Location"` to `TOP_FIELDS`.
+  - Added `"wrap_Case_Location"` to the `fields` array of every `RULES` entry that already shows
+    `wrap_DFH_Destination` — `"First Call"`, `"Hospital"`, `"Police"`, `"Wholesale_Airport"`,
+    `"Ship In"` — positioned right before `wrap_DFH_Destination` in each array, matching the
+    field's actual DOM position set in the HTML (array order doesn't control layout, only
+    show/hide, but keeping it consistent for readability). `"Wholesale_Local"` was deliberately
+    **not** touched — it never shows Destination at all, so there's no "above Destination"
+    position to anchor to there.
+  - Added `"Case_Location": v("Case_Location")` to `buildData()`.
+
+**Creator form guideline — `Intake_Form.ds`** (apply directly in Creator, not edited here): new
+picklist field mirroring the Deal's real values exactly, plus one `dealDataMap.put` line
+(unconditional — Case Location isn't scoped to specific deal types like the Schedule Date field
+was):
+Matches the exact shape of the form's existing `Deal_Type` picklist field:
+```
+Case_Location
+(
+	type = picklist
+	displayname = "Case Location"
+	maxchar = 120
+	values = {"Delapenha Funeral Home - 20A W. Kings House Rd., Kingston","Delapenha Funeral Home - 45 Union St., Montego"}
+	initial value = "Delapenha Funeral Home - 45 Union St., Montego"
+	row = 1
+	column = 1
+	width = medium
+)
+```
+```
+dealDataMap.put("Case_Location",theForm.Case_Location);
+```
+Verify the insertion point in the on-submit workflow before pasting.
+
+Not yet tested live — pending the `.ds` field + workflow line being applied, then republish and
+confirm Case Location appears above Destination for First Call/Hospital/Police/Ship
+In/Wholesale Airport, defaults to Mobay, and the Deal ends up with the correct value.
