@@ -187,13 +187,20 @@ response.put("status","success");
 return response;
 ```
 
-Before wiring this up live: confirm `Related_Trip` on Operations is actually how existing trips
-resolve their `operations_id` elsewhere in this app (the Hospital Storage / Autopsy batch flows
-already surface `operations_id` per trip/pickup row from some existing Deluge function) — pull
-that function's source first and reuse its exact resolution logic instead of assuming
-`Related_Trip:equals` is correct, in case it's actually keyed off `Related_Deal` or a different
-relationship.
+**Found and fixed while testing:** a fresh Crematory Dropoff test trip had no Operations record
+at all, so `Complete_Crematory_Dropoff`'s `Related_Trip:equals:<tripId>` search (correct as
+written) came up empty. Root cause traced to the CRM workflow rule **"Create Operations Record
+On Trip Creation"** (id `6503357000066905449`, fires `automation.createOperationsRecordOnTripCreation`
+on every Trip create) — its criteria was `Trip_Type not_equal [Funeral, Airport Dropoff, Ashes
+Pickup, Transfer to Other Funeral Home, Autopsy Reschedule, Document Pickup, Pre-Visit, Burial
+Order, Hospital Storage, MOH Trip, Multi Deceased Autopsy Trip]`, and Crematory Dropoff was
+sitting in that exclusion list, so it silently never got its own Operations record like every
+other trip type does. Fixed by removing Crematory Dropoff from that exclusion list (done
+directly in CRM, confirmed via the live workflow rule). `Complete_Crematory_Dropoff`'s
+`Related_Trip` resolution logic did not need to change — the app's per-trip Operations record
+convention (one dedicated Operations record per trip, not per Deal) was confirmed correct by
+reading `automation.createOperationsRecordOnTripCreation`'s source directly.
 
-Not yet tested live — pending the 3 Operations fields + `Complete_Crematory_Dropoff` custom API
-being created in Creator, then republish + Andrea walking a real Crematory Dropoff trip
-end-to-end.
+Pending: re-test end-to-end now that new Crematory Dropoff trips get their Operations record —
+create a fresh test trip, confirm Operations record auto-creates, then walk the Driver App flow
+(checklist → complete → verify the 3 fields land on that Operations record).
