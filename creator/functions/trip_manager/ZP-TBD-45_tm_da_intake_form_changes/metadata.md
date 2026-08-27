@@ -553,12 +553,4 @@ Destination also auto-create a Transport record for those 3 deal types? If yes, 
 separate follow-up task (a different trigger point entirely, since there's no Deceased_Pickups
 record to hang it on for those types).
 
-Not yet applied — pending the user adding the 1 new `Deceased_Pickups` field (`Destination`),
-pasting the `.ds` change into both the Hospital and Police intake blocks, and pasting the
-`onDeceasedPickupCheckIn` change in, then testing: (1) submit a fresh Police or Hospital intake
-with Case Location = Kingston, DFH Destination = Mobay → confirm the resulting `Deceased_Pickups`
-record already shows `Location = Kingston` and `Destination = Montego Bay` right after
-submission, before any physical check-in; (2) complete the actual morgue check-in (which
-overwrites `Location` with whatever's really chosen there) with a location that still differs
-from `Montego Bay` → expect a Transport record to appear; (3) repeat with matching values →
-expect none.
+Confirmed deployed and tested by Andrea, passed.
