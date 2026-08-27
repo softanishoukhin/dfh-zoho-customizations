@@ -90,3 +90,110 @@ with a solid plum background and bold white text, and the day-group divider rows
 plum tint to match. PDF export (`app/lib/jspdf.umd.min.js` + AutoTable) is unaffected.
 
 Confirmed deployed and tested by Andrea, passed.
+
+### Task 3 — Crematory Drop-off: proper TM/DA configuration
+Andrea's brief (`projectDocuments/crematoryDropoffconfiguration.txt`): Crematory Drop-off trips
+were never properly built out for the driver flow. `Trip_Type = "Crematory Dropoff"` already
+exists and is actively used in CRM, and Trip Manager already assigns it fine in practice — its
+`categoryOf()` function (in `tripManagerApp/app/widget.html`) silently defaulted any
+unrecognized trip type to `"pickup"`, so nothing blocked TM assignment. Added
+`"Crematory Dropoff":1` to the `PICKUP_TYPES` map there explicitly, so this no longer depends on
+an implicit default.
+
+The real gap was **Driver App** (`driverApp/app/app.js`): a Crematory Dropoff trip fell through
+to the generic body-pickup flow (`renderJobDetail`'s default branches) — Place of Removal,
+Pronouncement of Death, Police on Scene, Morgue location/drawer, Condition/Size — none of which
+applies to driving an already-prepared deceased to a crematory and back. There was also nowhere
+to capture what Andrea needs, and no fields on Operations to store it.
+
+**Fix — new dedicated flow**, following the same shape as the existing Repatriation flow
+(`renderRepatriationStart`/`renderRepatriationSteps`) and its checkbox-gate pattern
+(`repatRow`/`repatGateCheck`):
+- `openJobDetail`'s dispatcher gets two new branches for `Trip_Type === "Crematory Dropoff"`:
+  not-started → `renderCrematoryDropoffStart`, on-scene (`Started`/`Completed`) →
+  `renderCrematoryDropoffComplete`.
+- `renderCrematoryDropoffStart(trip)` — pre-start checklist, 2 items: "Documents collected",
+  "Deceased loaded" (`repatRow` reused as-is). Both must be checked to enable Start Trip
+  (`crematoryStartGateCheck`), which reuses the existing generic `Save_Start_Job` API — no new
+  start API needed. Checklist state persists via the existing `Checklist_State` field
+  (`persistChecklistState`/`restoreChecklistState`, same mechanism as every other flow in this
+  app — works automatically because it walks every input/select/textarea id under
+  `#detail-body`, not a hardcoded field list).
+- `renderCrematoryDropoffComplete(trip)` — completion form: Funeral Home (`<select>`,
+  `Honeyghan's` default-selected + `Other`), Receiving Attendant (text), Pickup Items for Return
+  (textarea, required — driver types "None" if nothing to return, per Andrea's instruction that
+  everything listed is required). All three gate the "Complete Trip" button
+  (`crematoryCompleteGateCheck`). Handles the `Trip_Status === "Completed"` reopen case the same
+  way `renderJobDetail`/`renderRepatriationSteps` do (`applyCompletedReadOnly`).
+- `submitCrematoryDropoffComplete()` calls a **new** custom API, `Complete_Crematory_Dropoff`
+  (not yet created in Creator — guideline below), with `tripId`, `funeralHomeName`,
+  `receivingAttendant`, `pickupItems`, `completionTime`.
+
+**CRM change needed (guideline — apply directly in Zoho, not done here):** add 3 new fields to
+the **Operations** module:
+| API Name | Type | Notes |
+|---|---|---|
+| `Funeral_Home_Name` | Picklist | Values: `Honeyghan's` (default), `Other` |
+| `Receiving_Attendant` | Single Line | — |
+| `Pickup_Items_for_Return` | Multi Line (text area) | — |
+
+**Deluge guideline — new Creator custom API `Complete_Crematory_Dropoff`** (POST). Mirrors the
+existing `Save_Complete_Job`/`Save_Start_Job` pattern already used by every other flow in this
+app. Resolves the Operations record the same way the app's other trip-linked saves do — via
+`Related_Trip` on Operations matched to the trip id (same relationship already exposed elsewhere
+as `operations_id` in trip/pickup rows, e.g. the Hospital/Autopsy batch flows):
+
+```deluge
+// Complete_Crematory_Dropoff -- Creator custom API, POST
+// input: tripId, funeralHomeName, receivingAttendant, pickupItems, completionTime
+response = Map();
+tripId = input.tripId;
+funeralHomeName = input.funeralHomeName;
+receivingAttendant = input.receivingAttendant;
+pickupItems = input.pickupItems;
+completionTime = input.completionTime;
+
+if(tripId == null || tripId == "")
+{
+	response.put("status","error");
+	response.put("message","Missing tripId.");
+	return response;
+}
+
+opsRows = zoho.crm.searchRecords("Operations","(Related_Trip:equals:" + tripId + ")");
+
+if(opsRows != null && opsRows.size() > 0)
+{
+	opsId = opsRows.get(0).get("id");
+	opsUpdate = Map();
+	opsUpdate.put("Funeral_Home_Name",funeralHomeName);
+	opsUpdate.put("Receiving_Attendant",receivingAttendant);
+	opsUpdate.put("Pickup_Items_for_Return",pickupItems);
+	zoho.crm.updateRecord("Operations",opsId,opsUpdate);
+}
+else
+{
+	response.put("status","error");
+	response.put("message","No Operations record linked to this trip (Related_Trip) -- could not save drop-off details.");
+	return response;
+}
+
+tripUpdate = Map();
+tripUpdate.put("Trip_Status","Completed");
+tripUpdate.put("Completion_Time",completionTime);
+zoho.crm.updateRecord("Trips",tripId,tripUpdate);
+
+response.put("status","success");
+return response;
+```
+
+Before wiring this up live: confirm `Related_Trip` on Operations is actually how existing trips
+resolve their `operations_id` elsewhere in this app (the Hospital Storage / Autopsy batch flows
+already surface `operations_id` per trip/pickup row from some existing Deluge function) — pull
+that function's source first and reuse its exact resolution logic instead of assuming
+`Related_Trip:equals` is correct, in case it's actually keyed off `Related_Deal` or a different
+relationship.
+
+Not yet tested live — pending the 3 Operations fields + `Complete_Crematory_Dropoff` custom API
+being created in Creator, then republish + Andrea walking a real Crematory Dropoff trip
+end-to-end.
