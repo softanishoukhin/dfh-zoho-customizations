@@ -524,15 +524,21 @@ What changed and why:
 - Idempotency check (COQL against `Transport` by `Operations` + `Category = 'Deceased'`) is
   unchanged — still prevents duplicate Transport records for the same case.
 
-One judgment call worth flagging to Andrea: this still only runs when `onDeceasedPickupCheckIn`
-fires (i.e. only for Police/Hospital cases going through the Deceased_Pickups check-in flow),
-since that's the existing function she said to modify rather than rebuild. Case Location is now
-also collected at intake for First Call/Ship In/Wholesale Airport (Task 5), but those deal types
-never create a `Deceased_Pickups` record, so this function never runs for them — a First
-Call/Ship In/Wholesale Airport case with mismatched Case Location/Destination will **not**
-currently get an auto-created Transport record. If that's needed too, it'll need a second
-trigger point elsewhere (e.g. inside the trip-creation functions themselves), which is out of
-scope for "modify the existing function."
+**Scope decision (confirmed with the user):** Police/Hospital-only is fine for now — this
+function only runs when `onDeceasedPickupCheckIn` fires (the Deceased_Pickups check-in flow),
+since that's the existing function Andrea said to modify rather than rebuild. Case Location is
+now also collected at intake for First Call/Ship In/Wholesale Airport (Task 5), but those deal
+types never create a `Deceased_Pickups` record, so this function never runs for them — a case of
+one of those types with mismatched Case Location/Destination will **not** get an auto-created
+Transport record from this fix. Deliberately left that way rather than guessing at a second
+trigger point.
+
+**Needs a question back to Andrea** (raise alongside reporting Task 6 done): confirm whether
+Case Location ≠ Destination should also auto-create a Transport record for First Call, Ship In,
+and Wholesale Airport cases, now that those deal types collect Case Location too — if yes, that's
+a new, separate trigger point (most likely added inside the trip-creation functions themselves,
+e.g. `createTripsFromDealsForFirstCall`), scoped as its own follow-up task rather than folded
+into this one.
 
 Not yet applied — pending the user pasting this into the live `onDeceasedPickupCheckIn` function
 in CRM, then testing a Police/Hospital case with Case Location ≠ Destination (expect a Transport
