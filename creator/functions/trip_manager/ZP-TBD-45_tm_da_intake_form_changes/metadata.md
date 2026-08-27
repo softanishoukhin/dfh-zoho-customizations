@@ -389,6 +389,4 @@ dealDataMap.put("Case_Location",theForm.Case_Location);
 ```
 Verify the insertion point in the on-submit workflow before pasting.
 
-Not yet tested live — pending the `.ds` field + workflow line being applied, then republish and
-confirm Case Location appears above Destination for First Call/Hospital/Police/Ship
-In/Wholesale Airport, defaults to Mobay, and the Deal ends up with the correct value.
+Confirmed deployed and tested by Andrea, passed.
