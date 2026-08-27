@@ -45,3 +45,35 @@ The scrollbar stays fully interactive while pinned — dragging it or scrolling 
 table horizontally, since it's the same live element repositioned, not a clone.
 
 Confirmed deployed and tested by Andrea, passed.
+
+### Task 2 — Daily Funeral Report: Excel/print layout was shrinking to fit one page
+Andrea's actual "Print" button only ever triggered the browser's native `window.print()` — there
+was no real Excel export anywhere in the app. The font-shrinking she saw is the browser print
+dialog's own "fit to page" scaling, which cannot be turned off or overridden from the page's own
+CSS or JS (confirmed by inspecting the existing print CSS, which was already correctly written
+for multi-page: `thead{display:table-header-group}` for repeating headers, `tr{page-break-inside:
+avoid}`, no page-height constraint forcing one sheet — none of that matters once the browser's
+own scale setting overrides it).
+
+**Fix: stopped relying on browser print for this report, added two real export options
+instead.** Both libraries are bundled locally in `app/lib/` (installed via npm, dist files
+copied in) rather than loaded from a CDN — no `plugin-manifest.json` change needed, since a
+local `<script src="lib/...">` reference doesn't touch CSP.
+
+- **`app/lib/jspdf.umd.min.js`** + **`app/lib/jspdf.plugin.autotable.min.js`** (jsPDF 3.x +
+  AutoTable) — new `exportDailyReportPdf()` builds a genuine multi-page landscape PDF: fixed
+  8pt font that never shrinks, header row repeats on every page (AutoTable's own pagination, not
+  the browser's), day-group divider rows, branded header + page-number footer redrawn per page.
+- **`app/lib/xlsx.full.min.js`** (SheetJS) — new `exportDailyReportExcel()` builds a real `.xlsx`
+  file: header row frozen (`ws["!freeze"]`), day-groups as merged full-width rows, autofilter,
+  sensible column widths. Since it's a real Excel file, Andrea has full control over Excel's own
+  print/page-setup from there, which sidesteps the same shrinking problem a second, independent
+  way.
+- The existing "Print" button is reused for the PDF export specifically on the Daily Funeral
+  Report view (relabeled "Export PDF" there); it's untouched everywhere else (Burial Schedule,
+  Driver Sheet Detail still use the normal browser print dialog, since only the Daily Funeral
+  Report was reported as a problem). A new "Export Excel" button sits next to it, visible only on
+  the Daily Funeral Report view.
+
+Not yet tested live (needs a real render to confirm PDF/Excel output visually) — pending
+Andrea's test.
