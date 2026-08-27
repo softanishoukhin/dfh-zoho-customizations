@@ -140,54 +140,50 @@ the **Operations** module:
 | `Receiving_Attendant` | Single Line | — |
 | `Pickup_Items_for_Return` | Multi Line (text area) | — |
 
-**Deluge guideline — new Creator custom API `Complete_Crematory_Dropoff`** (POST). Mirrors the
-existing `Save_Complete_Job`/`Save_Start_Job` pattern already used by every other flow in this
-app. Resolves the Operations record the same way the app's other trip-linked saves do — via
-`Related_Trip` on Operations matched to the trip id (same relationship already exposed elsewhere
-as `operations_id` in trip/pickup rows, e.g. the Hospital/Autopsy batch flows):
+**Deluge — new Creator custom API `Complete_Crematory_Dropoff`** (POST). Mirrors the existing
+`Save_Complete_Job`/`Save_Start_Job` pattern already used by every other flow in this app.
+Resolves the Operations record via `Related_Trip` on Operations matched to the trip id (one
+dedicated Operations record per trip — see the "Found and fixed" note below). As-deployed
+version (created directly in Creator by the user, with two corrections over the original
+guideline draft: `.toLong()` on both `updateRecord` calls since Deluge's CRM connector wants an
+int64 id rather than the raw string, and `{"trigger":{"workflow"}}` on the Trip completion
+update so anything tied to `Trip_Status = Completed` still fires):
 
 ```deluge
-// Complete_Crematory_Dropoff -- Creator custom API, POST
-// input: tripId, funeralHomeName, receivingAttendant, pickupItems, completionTime
-response = Map();
-tripId = input.tripId;
-funeralHomeName = input.funeralHomeName;
-receivingAttendant = input.receivingAttendant;
-pickupItems = input.pickupItems;
-completionTime = input.completionTime;
-
-if(tripId == null || tripId == "")
+map Complete_Crematory_Dropoff(string tripId, string funeralHomeName, string receivingAttendant, string pickupItems, string completionTime)
 {
-	response.put("status","error");
-	response.put("message","Missing tripId.");
+	// Complete_Crematory_Dropoff -- Creator custom API, POST
+	// input: tripId, funeralHomeName, receivingAttendant, pickupItems, completionTime
+	response = Map();
+	if(tripId == null || tripId == "")
+	{
+		response.put("status","error");
+		response.put("message","Missing tripId.");
+		return response;
+	}
+	opsRows = zoho.crm.searchRecords("Operations","(Related_Trip:equals:" + tripId + ")");
+	if(opsRows != null && opsRows.size() > 0)
+	{
+		opsId = opsRows.get(0).get("id");
+		opsUpdate = Map();
+		opsUpdate.put("Funeral_Home_Name",funeralHomeName);
+		opsUpdate.put("Receiving_Attendant",receivingAttendant);
+		opsUpdate.put("Pickup_Items_for_Return",pickupItems);
+		zoho.crm.updateRecord("Operations",opsId.toLong(),opsUpdate);
+	}
+	else
+	{
+		response.put("status","error");
+		response.put("message","No Operations record linked to this trip (Related_Trip) -- could not save drop-off details.");
+		return response;
+	}
+	tripUpdate = Map();
+	tripUpdate.put("Trip_Status","Completed");
+	tripUpdate.put("Completion_Time",completionTime);
+	zoho.crm.updateRecord("Trips",tripId.toLong(),tripUpdate,{"trigger":{"workflow"}});
+	response.put("status","success");
 	return response;
 }
-
-opsRows = zoho.crm.searchRecords("Operations","(Related_Trip:equals:" + tripId + ")");
-
-if(opsRows != null && opsRows.size() > 0)
-{
-	opsId = opsRows.get(0).get("id");
-	opsUpdate = Map();
-	opsUpdate.put("Funeral_Home_Name",funeralHomeName);
-	opsUpdate.put("Receiving_Attendant",receivingAttendant);
-	opsUpdate.put("Pickup_Items_for_Return",pickupItems);
-	zoho.crm.updateRecord("Operations",opsId,opsUpdate);
-}
-else
-{
-	response.put("status","error");
-	response.put("message","No Operations record linked to this trip (Related_Trip) -- could not save drop-off details.");
-	return response;
-}
-
-tripUpdate = Map();
-tripUpdate.put("Trip_Status","Completed");
-tripUpdate.put("Completion_Time",completionTime);
-zoho.crm.updateRecord("Trips",tripId,tripUpdate);
-
-response.put("status","success");
-return response;
 ```
 
 **Found and fixed while testing:** a fresh Crematory Dropoff test trip had no Operations record
@@ -204,6 +200,4 @@ directly in CRM, confirmed via the live workflow rule). `Complete_Crematory_Drop
 convention (one dedicated Operations record per trip, not per Deal) was confirmed correct by
 reading `automation.createOperationsRecordOnTripCreation`'s source directly.
 
-Pending: re-test end-to-end now that new Crematory Dropoff trips get their Operations record —
-create a fresh test trip, confirm Operations record auto-creates, then walk the Driver App flow
-(checklist → complete → verify the 3 fields land on that Operations record).
+Confirmed deployed and tested by Andrea, passed.
