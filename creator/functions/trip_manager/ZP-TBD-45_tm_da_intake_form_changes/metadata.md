@@ -239,23 +239,28 @@ Traced across three layers:
     `RULES` entries: `"First Call"`, `"Wholesale_Local"`, `"Wholesale_Airport"` — this is what
     scopes the field to only those types; `"Police"`/`"Hospital"` were left untouched.
   - New helper `vDateTime(id)` next to `vDate(id)` — converts the `datetime-local` input's
-    `YYYY-MM-DDTHH:mm` into `dd-MMM-yyyy HH:mm:ss` (same shape `vDate` already produces for
-    dates, reusing the `MON` array). Returns `""` when empty — field is optional.
+    `YYYY-MM-DDTHH:mm` into a full ISO 8601 string with the Jamaica offset, e.g.
+    `2026-08-30T10:00:00-05:00` (same convention as `jamaicaNowIso()` in
+    `driverApp/app/app.js`). Returns `""` when empty — field is optional.
+    **Corrected after deployment:** the Creator field turned out to be a single-line text field,
+    not a real `datetime` field, so `vDateTime()` was changed to emit a full ISO string (parseable
+    downstream) instead of the original `dd-MMM-yyyy HH:mm:ss` shape, which only made sense for a
+    genuine Creator datetime field.
   - Added `"Schedule_Date_and_Time": vDateTime("Schedule_Date_and_Time")` to `buildData()`.
 
 **CRM change needed (guideline):** add one new field to **Deals**: `Schedule_Date_and_Time` —
-DateTime.
+Single Line (text), storing the ISO string as submitted (e.g. `2026-08-30T10:00:00-05:00`).
 
 **Creator form guideline — `Intake_Form.ds`** (apply directly in Creator, not edited here):
-new field definition, matching the shape of the form's existing `type = datetime` fields (e.g.
-`Date_and_Time_of_Departure`):
+new field definition — **single line text**, matching what the user actually created on the
+form (not a `type = datetime` field, since the value stored is an ISO string, not a native
+Creator datetime value):
 ```
 Schedule_Date_and_Time
 (
-	type = datetime
+	type = singleline
 	displayname = "Schedule Date and Time"
-	timedisplayoptions = "hh:mm"
-	alloweddays = 0,1,2,3,4,5,6
+	maxchar = 30
 	row = 1
 	column = 1
 	width = medium
@@ -275,7 +280,11 @@ snippet above is for reference, not a verbatim live excerpt.
 
 **Deluge guideline — update both trip-creation functions** to prefer the new field over their
 current defaults, falling back to today's behavior when it's blank (so deals that don't set it
-keep working exactly as now):
+keep working exactly as now). No parsing needed on the Deluge side — `Schedule_Date_and_Time`
+is a plain string (`2026-08-30T10:00:00-05:00`) in the exact same ISO shape as the `iso_format`
+variable `createTripForWholesale` already builds for its own Local-pickup default and passes
+straight into `tripMap.put("Scheduled_Date", ...)`, so passing `recordInfo.get("Schedule_Date_and_Time")`
+through unparsed the same way is correct and consistent with the existing code:
 - `createTripsFromDealsForFirstCall` — after building `tripMap`, add:
   ```
   if(!isNull(recordInfo.get("Schedule_Date_and_Time")) && recordInfo.get("Schedule_Date_and_Time") != "")
