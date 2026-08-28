@@ -520,8 +520,4 @@ both fields.
 and Hospital explicitly excluded per Andrea's correction — v1's Police/Hospital-only mechanism
 is fully reverted, not left running alongside the new one.
 
-Not yet applied — pending the user reverting the v1 `.ds`/`onDeceasedPickupCheckIn` code and
-pasting the new block into `createTripsFromDealsForFirstCall` and `createTripForWholesale`, then
-testing: (1) First Call/Wholesale Local/Wholesale Airport with Case Location ≠ Destination →
-expect a Transport record; (2) same with them equal → expect none; (3) a Police or Hospital case
-with a mismatch → expect **no** Transport record (confirms the revert actually took).
+Confirmed deployed and tested by Andrea, passed.
