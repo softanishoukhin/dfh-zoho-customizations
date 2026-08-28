@@ -137,9 +137,11 @@ map Update_Plot_Number_And_Notify_Vendor(string crmid, string plotNo)
 	for each formRec in formRecords
 	{
 		alreadySentForThisPlot = (formRec.Plot_No == plotNo);
-		formRecUpdate = Map();
-		formRecUpdate.put("Plot_No",plotNo);
-		update Headstone_Request_Form[ID == formRec.ID] set formRecUpdate;
+		update Headstone_Request_Form[ID == formRec.ID]
+		set
+		[
+			Plot_No = plotNo
+		];
 		updatedCount = updatedCount + 1;
 		if(!alreadySentForThisPlot)
 		{
@@ -169,6 +171,13 @@ map Update_Plot_Number_And_Notify_Vendor(string crmid, string plotNo)
 Publish this as a **public** Custom API (same visibility as `Notify_Headstone_Vendor`, since CRM
 calls it via `getUrl` with a `publickey`, not an authenticated connection). Note the public key
 once published — it goes into Step 5.
+
+**Correction (caught by the user):** the original draft here used
+`formRecUpdate = Map(); ...; update Headstone_Request_Form[ID == formRec.ID] set formRecUpdate;`
+— that's not valid syntax for Creator's native `update` task. It doesn't take a Map variable;
+like `insert into` (already used elsewhere in this same form's script, e.g.
+`createFormRecordAndNotifyVendor`), `set` takes a bracketed list of `field = value` assignments
+directly. Fixed above to `set [ Plot_No = plotNo ];`.
 
 The `alreadySentForThisPlot` check is the idempotency guard: if `Plot_No` on the Deal gets
 re-saved with the *same* value it already had (a re-save that doesn't actually change anything),
