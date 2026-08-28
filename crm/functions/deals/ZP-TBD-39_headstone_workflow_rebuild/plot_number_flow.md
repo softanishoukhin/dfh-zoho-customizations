@@ -132,7 +132,6 @@ map Update_Plot_Number_And_Notify_Vendor(string crmid, string plotNo)
 		response.put("message","Missing crmid or plotNo.");
 		return response;
 	}
-	formRecords = Headstone_Request_Form[deal_id == crmid];
 	// Determine which vendors to notify directly from the CRM Deal's product lines -- NOT from
 	// the Creator record's vendor_id, which is written later and can lag or still be blank at
 	// this point. Unlike createFormRecordAndNotifyVendor, this does NOT restrict to "Hillview 1"
@@ -174,6 +173,7 @@ map Update_Plot_Number_And_Notify_Vendor(string crmid, string plotNo)
 			vendorIds.add(vendorId);
 		}
 	}
+	formRecords = Headstone_Request_Form[deal_id == crmid];
 	// Notification pass FIRST, against the pre-update Plot_No snapshot still held in
 	// formRecords -- must happen before the update pass below, since updating the records
 	// first would make every "already sent" check see the NEW value and permanently look
