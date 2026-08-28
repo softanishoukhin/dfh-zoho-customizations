@@ -54,8 +54,8 @@ are all unaffected. Only the headstone routing/notification logic itself becomes
 **To turn back ON:** delete those few comment lines and the `return "";` line, so the function
 body runs exactly as it did before, unchanged.
 
-- [ ] Turned off (confirm here once done, with the date)
-- [ ] Turned back on (confirm here once done, with the date)
+- [x] Turned off (confirmed by the user, 2026-08-28)
+- [ ] Turned back on
 
 *(Optional extra safety, not required since Switch 1 above already covers it: the workflow
 rule "Trigger Headstone Process on Completion", id `6503357000080581033`, Deals module, can also
@@ -87,8 +87,8 @@ the more robust place for it, same principle as Switch 1.)
 
 **To turn back ON:** delete those comment lines and the `return;` line.
 
-- [ ] Turned off (confirm here once done, with the date)
-- [ ] Turned back on (confirm here once done, with the date)
+- [x] Turned off (confirmed by the user, 2026-08-28)
+- [ ] Turned back on
 
 ## What is deliberately NOT touched
 
