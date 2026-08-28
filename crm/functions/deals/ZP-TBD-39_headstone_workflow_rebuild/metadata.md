@@ -93,6 +93,19 @@ Full guideline — new `Plot_No` field on `Headstone_Request_Form`, a new CRM em
 new Creator functions, and the new dispatcher branch — is in `plot_number_flow.md` in this same
 folder. Not yet applied.
 
+## New task (2026-08-28, Task 3): Hillview App — show headstone info on the record detail page
+
+Andrea wants the Hillview App's record detail page (opened via "View Details" from its list
+widget) to show Plot #, Headstone Product, all headstone information, and Status — whatever the
+current process already collects, not a new status system. Traced the app fully
+(`widgets/hillviewApp/hillviewApp`): the real "record detail page" is the `Hillview_Form`
+Creator form itself (opened per-Deal), which already prefills from a live Deal GET on load —
+extended that same prefill with the new headstone fields (Headstone_Product, Headstone Shape,
+Headstone Epitaph, Headstone Request Status, Headstone Vendor Status), all read-only. Also found
+and fixed a real existing bug along the way: the form's own Plot # field was never prefilled on
+load, so reopening a Deal that already had one showed it blank. Full guideline in
+`hillview_app_headstone_display.md` in this same folder. Not yet applied.
+
 ## Open items for Andrea (not guessed — see `product-mapping.md` for detail)
 
 1. "Phase 3 Traditional" (listed under Hillview 1) has no matching standalone product
