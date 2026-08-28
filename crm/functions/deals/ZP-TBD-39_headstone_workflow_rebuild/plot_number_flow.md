@@ -132,15 +132,7 @@ map Update_Plot_Number_And_Notify_Vendor(string crmid, string plotNo)
 		response.put("message","Missing crmid or plotNo.");
 		return response;
 	}
-	// Update every Headstone_Request_Form record tied to this Deal, regardless of vendor.
 	formRecords = Headstone_Request_Form[deal_id == crmid];
-	updatedCount = 0;
-	for each formRec in formRecords
-	{
-		theRecord = Headstone_Request_Form[ID == formRec.ID];
-		theRecord.Plot_No = plotNo;
-		updatedCount = updatedCount + 1;
-	}
 	// Determine which vendors to notify directly from the CRM Deal's product lines -- NOT from
 	// the Creator record's vendor_id, which is written later and can lag or still be blank at
 	// this point. Unlike createFormRecordAndNotifyVendor, this does NOT restrict to "Hillview 1"
@@ -182,6 +174,10 @@ map Update_Plot_Number_And_Notify_Vendor(string crmid, string plotNo)
 			vendorIds.add(vendorId);
 		}
 	}
+	// Notification pass FIRST, against the pre-update Plot_No snapshot still held in
+	// formRecords -- must happen before the update pass below, since updating the records
+	// first would make every "already sent" check see the NEW value and permanently look
+	// like it was already sent, silently killing all future notifications.
 	notifiedCount = 0;
 	for each vendorId in vendorIds
 	{
@@ -196,6 +192,7 @@ map Update_Plot_Number_And_Notify_Vendor(string crmid, string plotNo)
 				alreadySentForThisPlot = true;
 			}
 		}
+		info alreadySentForThisPlot;
 		if(!alreadySentForThisPlot)
 		{
 			try
@@ -212,6 +209,15 @@ map Update_Plot_Number_And_Notify_Vendor(string crmid, string plotNo)
 			{
 			}
 		}
+	}
+	// Update pass SECOND -- every Headstone_Request_Form record tied to this Deal gets the new
+	// Plot_No, regardless of vendor, now that the notification decisions above are locked in.
+	updatedCount = 0;
+	for each formRec in formRecords
+	{
+		theRecord = Headstone_Request_Form[ID == formRec.ID];
+		theRecord.Plot_No = plotNo;
+		updatedCount = updatedCount + 1;
 	}
 	response.put("status","success");
 	response.put("updated",updatedCount);
@@ -230,6 +236,13 @@ unreliable — the Creator record's `vendor_id` is written by `createFormRecordA
 function runs. Fixed to derive the vendor list straight from the CRM Deal's Hillview-1 product
 lines instead (the same source of truth `createFormRecordAndNotifyVendor` itself uses), and only
 uses `formRec.vendor_id` for the idempotency match, not for deciding who gets emailed.
+
+**Second improvement (from the user, after re-deployment):** the notify and update passes were
+originally in the opposite order (update the records, then check idempotency). Reordered so the
+notify pass runs **first**, against the still-unmodified `formRecords` snapshot, and the update
+pass runs after. Doing it the other way round risks the idempotency check reading the value this
+same run just wrote, permanently reading as "already sent" and killing all future notifications
+for that record.
 
 **Correction history (both from the user, testing live):** the first draft used
 `formRecUpdate = Map(); ...; update Headstone_Request_Form[ID == formRec.ID] set formRecUpdate;`
