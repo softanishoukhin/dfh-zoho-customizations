@@ -83,6 +83,16 @@ vendor notification. See `fd_manual_entry_trigger.md` in this same folder for th
 (new wrapper function + new field-update workflow rule) and the FD step-by-step instructions.
 Confirmed deployed and tested by Andrea, passed.
 
+## New task (2026-08-28, Task 2): Plot # flow — Deal → Headstone Form → Vendor
+
+Andrea wants the Plot # to flow from the Deal onto the Headstone Form (read-only) as soon as
+it's assigned, with an automatic vendor email ("Plot # has been assigned") containing a View
+Form button. Per her explicit instruction, the CRM-side trigger goes through
+`handleWorkflowTriggerAndActionByTimelineProcess` (the same generic dispatcher from Task 1).
+Full guideline — new `Plot_No` field on `Headstone_Request_Form`, a new CRM email template, two
+new Creator functions, and the new dispatcher branch — is in `plot_number_flow.md` in this same
+folder. Not yet applied.
+
 ## Open items for Andrea (not guessed — see `product-mapping.md` for detail)
 
 1. "Phase 3 Traditional" (listed under Hillview 1) has no matching standalone product
