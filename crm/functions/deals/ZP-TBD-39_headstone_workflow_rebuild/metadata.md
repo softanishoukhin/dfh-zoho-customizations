@@ -104,7 +104,8 @@ extended that same prefill with the new headstone fields (Headstone_Product, Hea
 Headstone Epitaph, Headstone Request Status, Headstone Vendor Status), all read-only. Also found
 and fixed a real existing bug along the way: the form's own Plot # field was never prefilled on
 load, so reopening a Deal that already had one showed it blank. Full guideline in
-`hillview_app_headstone_display.md` in this same folder. Not yet applied.
+`hillview_app_headstone_display.md` in this same folder. Confirmed deployed and tested by
+Andrea, passed.
 
 ## Open items for Andrea (not guessed — see `product-mapping.md` for detail)
 

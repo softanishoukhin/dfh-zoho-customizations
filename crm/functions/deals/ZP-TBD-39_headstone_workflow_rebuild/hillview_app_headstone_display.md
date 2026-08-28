@@ -153,11 +153,4 @@ nothing is invented or reinterpreted — exactly "whatever the current process a
 
 ## Status
 
-Not yet applied — pending: the 5 new fields added to `Hillview_Form`, the on-load script
-extended as above. Test: (1) open the detail page (via "View Details" from the list) for a Deal
-that already has `Plot_No` set (e.g. from the earlier Plot # task) → confirm the Plot # field
-now shows the real value instead of blank; (2) open a Deal with a headstone product tagged
-`Hillview_Group` and check `Headstone_Product`, `Headstone_Shape_Display`,
-`Headstone_Epitaph_Display`, and both status fields all show the correct current values; (3)
-confirm none of the 5 new fields are editable; (4) open a Deal with no headstone process started
-at all → confirm the new fields show blank/empty rather than erroring.
+Confirmed deployed and tested by Andrea, passed.
