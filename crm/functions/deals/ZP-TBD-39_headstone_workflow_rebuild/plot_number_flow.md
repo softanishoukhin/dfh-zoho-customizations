@@ -143,7 +143,11 @@ map Update_Plot_Number_And_Notify_Vendor(string crmid, string plotNo)
 	}
 	// Determine which vendors to notify directly from the CRM Deal's product lines -- NOT from
 	// the Creator record's vendor_id, which is written later and can lag or still be blank at
-	// this point. Mirrors createFormRecordAndNotifyVendor's own vendor-discovery logic exactly.
+	// this point. Unlike createFormRecordAndNotifyVendor, this does NOT restrict to "Hillview 1"
+	// -- that filter only makes sense for that function's specific job (deciding the immediate-
+	// to-vendor routing at intake). By the time a Plot # exists, a Hillview 2/3 Deal may already
+	// be at the vendor stage too (after family approval), so any Hillview-tagged product with a
+	// vendor counts here.
 	dealInfo = zoho.crm.getRecordById("Deals",crmid.toLong());
 	existingProducts = ifnull(dealInfo.get("Product_Selection"),list());
 	vendorIds = list();
@@ -160,7 +164,7 @@ map Update_Plot_Number_And_Notify_Vendor(string crmid, string plotNo)
 		}
 		productInfo = zoho.crm.getRecordById("Products",childID.toLong());
 		hillviewGroup = ifnull(productInfo.get("Hillview_Group"),"");
-		if(hillviewGroup != "Hillview 1")
+		if(hillviewGroup == "" || hillviewGroup == "-None-")
 		{
 			continue;
 		}
