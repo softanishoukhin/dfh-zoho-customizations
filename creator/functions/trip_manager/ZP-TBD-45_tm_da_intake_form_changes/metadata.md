@@ -393,120 +393,88 @@ Confirmed deployed and tested by Andrea, passed.
 
 ### Task 6 — Transportation Module: trigger on Case Location vs Destination
 Andrea's brief (`projectDocuments/Transportation Module.txt`): when a deceased's Case Location
-differs from the Destination, a Transportation record should be created in CRM — e.g. Case
-Location = Kingston, Destination = Mobay → create one; Case Location = Mobay, Destination =
-Mobay → no record needed. She said an existing function already does something similar and
-should be modified rather than rebuilt.
+differs from the Destination, a Transportation record should be created in CRM. She said an
+existing function already does something similar and should be modified rather than rebuilt.
 
-Found it via [[project_autopsy_sprint]] (the earlier Transport Module build) and confirmed live:
-**`onDeceasedPickupCheckIn`** (CRM automation function, id `6503357000069144520`, fires from the
-Driver App's police/hospital morgue check-in flow on `Deceased_Pickups` records). It already has
-a "Transport auto-create" block near the end — but it currently compares the wrong two things:
-the **physical check-in location** (`Deceased_Pickups.Location`) against `Deal.Case_Location`.
+**v1 (built, deployed, tested, passed — then reversed by Andrea, see below):** found
+`onDeceasedPickupCheckIn` (CRM automation, id `6503357000069144520`, fires from the Driver App's
+Police/Hospital morgue check-in flow) already had a "Transport auto-create" block. After three
+rounds of correction (each documented in earlier revisions of this ticket — the short version:
+the Deal linked from a Police/Hospital pickup never carries `Case_Location`/`DFH_Destination` at
+all, since `Intake_Form.ds` posts those trips/pickups straight from raw form input, bypassing
+Deal creation entirely), the working v1 design added a `Destination` field to `Deceased_Pickups`,
+captured `Location`/`Destination` directly from the intake form's `input.*` in `Intake_Form.ds`'s
+Hospital/Police blocks, and compared `Location` vs `Destination` in `onDeceasedPickupCheckIn`.
+This was deployed and confirmed working.
 
-**Correction caught during review (important — changes the whole approach):** the first draft of
-this fix assumed `dealRec` (the Deal linked from `dp.get("Deal")`) would have both
-`Case_Location` and `DFH_Destination` set. It doesn't. Traced why via `onDeceasedPickupCreate`
-(id `6503357000068702919`, the function that runs when a `Deceased_Pickups` record is first
-created): for Police/Hospital multi-deceased cases, **each individual deceased gets a brand-new,
-separate Deal auto-created** by this function (`isHospital`/`isPolice` branches build a fresh
-`dealDataMap` from `tripInfo` alone and call `zoho.crm.createRecord("Deals", ...)`) — and that
-`dealDataMap` never includes `Case_Location` or `DFH_Destination`. Those two fields only exist on
-the **original case-level Deal** created at intake (the one NOKIntake wrote `Case_Location`/
-`DFH_Destination` onto per Task 5), which is reachable only via
-`Deceased_Pickups.Trip → Trip.Deal` — not via `Deceased_Pickups.Deal`, which points at the new
-per-deceased Deal instead. So `dealRec.get("Case_Location")` in `onDeceasedPickupCheckIn` would
-almost always come back blank for Police/Hospital pickups, and the Transport record would never
-fire.
+**Reversed by Andrea (this revision):** she came back and said the Transportation check is
+**not supposed to apply to Police or Hospital cases at all** — v1's scope was backwards. It
+should instead apply to **First Call, Wholesale Local, and Wholesale Airport** (not Police, not
+Hospital). Confirmed with the user: fully revert the v1 Police/Hospital code, and build the real
+version against the trip-creation functions for the three correct types instead.
 
-**Second correction (from the user):** `Deceased_Pickups` already has a `Location` field
-(picklist, values exactly `Kingston`/`Montego Bay` — confirmed live) — this is the physical
-check-in location the old code already used as `checkinLoc`. It's functionally identical to what
-"current location of the deceased" means for this rule, so there's no need for a separate new
-`Case_Location` field at all. Only **one** new field is actually needed: `Destination`.
+**Step 1 — revert `Intake_Form.ds`:** remove the two capture blocks added in v1 (the
+`caseLocRaw`/`childMap.put("Location"...)`/`childMap.put("Destination"...)` lines) from both the
+Hospital intake block (~line 7278) and the Police intake block (~line 7570). Restore
+`childMap.put("Trip",tlk);` to being followed directly by whatever came after it before v1 (the
+NOK-fields handling).
 
-**Third correction (from the user — this is the one that actually matters):** copying
-`Destination` from a Deal in `onDeceasedPickupCreate` (as drafted above) still doesn't work,
-because **no Deal ever gets `DFH_Destination`/`Case_Location` written to it for Police/Hospital
-cases at all** — confirmed by reading `Intake_Form.ds` directly. For these two deal types, the
-on-submit workflow never builds a `dealDataMap` at intake time; it builds a `tripMap` straight
-from `input.*` (the raw form fields) and POSTs it directly to `/crm/v8/Trips`, then — if a
-deceased name was entered — builds a `childMap` and POSTs it directly to
-`/crm/v8/Deceased_Pickups` (two near-identical blocks, one for Hospital around line 7278, one for
-Police around line 7570 — each already computes `dfhDest` locally from `input.DFH_Destination`
-to set the Trip's `Destination_City`, right before building `childMap`). So the correct place to
-capture Destination (and Location, since the same is true for it) is **directly in that intake
-code, using the raw form values already in scope** — not a lookup added later in a completely
-different CRM function.
+**Step 2 — revert `onDeceasedPickupCheckIn`:** remove the entire "Transport auto-create
+(ZP-TBD-45 Task 6)" block (the `caseLoc`/`destLoc` comparison and everything inside its `if`),
+restoring the function to having no Transport-creation logic at all, right before
+`if(!childUpd.isEmpty())`.
 
-**Fix (guideline — apply directly in Creator; can't be done here per the `.ds` guideline-only
-rule):** in *both* of those `.ds` blocks, add two lines right after `childMap.put("Trip",tlk);`:
+**Step 3 — optional cleanup:** the `Destination` field added to `Deceased_Pickups` in v1 is now
+unused and can be deleted from that module whenever convenient — not urgent, just noise.
+
+**Step 4 — the real fix: add the check to `createTripsFromDealsForFirstCall` and
+`createTripForWholesale`.** Both already `GET` the full Deal (`recordInfo`, via
+`https://www.zohoapis.com/crm/v7/Deals/` + crmid) at the top, which for these types **does**
+carry `Case_Location` and `DFH_Destination` — collected directly at intake for First Call and
+Wholesale Airport (Task 5), and now also for Wholesale Local (see the widget change below). Both
+functions already build `tripCreationResult` via `zoho.crm.createRecord("Trips", tripMap,
+{"trigger":{"workflow"}})` inside their `if(tripAvailable == false)` branch — add this right
+after that line (after the existing `info tripCreationResult;`), in both functions:
 
 ```
-// ZP-TBD-45 Task 6: capture Location and Destination straight from the intake form onto this
-// Deceased_Pickups record -- no Deal ever carries these two fields for Police/Hospital cases,
-// so this is the only correct place to set them. dfhDest is already computed just above for
-// the Trip; Case_Location comes straight from input the same way.
-caseLocRaw = "";
-try
+// ZP-TBD-45 Task 6 (revised scope -- First Call / Wholesale Local / Wholesale Airport only):
+// if the deceased's Case Location differs from the Destination, a Transportation record is
+// needed. Idempotency keyed on Related_Trip (not Operations), since Operations record creation
+// is a separate async workflow and may not exist yet at this exact moment.
+caseLocRaw = ifnull(recordInfo.get("Case_Location"),"");
+caseLoc = "";
+if(caseLocRaw.contains("Kingston") || caseLocRaw.contains("Kings House"))
 {
-	caseLocRaw = ifnull(input.Case_Location,"");
+	caseLoc = "Kingston";
 }
-catch (e)
+else if(caseLocRaw.contains("Montego") || caseLocRaw.contains("Union"))
 {
-	caseLocRaw = "";
+	caseLoc = "Montego Bay";
 }
-if(caseLocRaw.contains("Kingston"))
+destRaw = ifnull(recordInfo.get("DFH_Destination"),"");
+destLoc = "";
+if(destRaw.contains("Kingston"))
 {
-	childMap.put("Location","Kingston");
+	destLoc = "Kingston";
 }
-else if(caseLocRaw.contains("Montego"))
+else if(destRaw.contains("Montego") || destRaw.contains("Mobay") || destRaw.contains("Union"))
 {
-	childMap.put("Location","Montego Bay");
+	destLoc = "Montego Bay";
 }
-if(dfhDest == "20A Kingston")
-{
-	childMap.put("Destination","Kingston");
-}
-else
-{
-	childMap.put("Destination","Montego Bay");
-}
-```
-
-This makes `onDeceasedPickupCreate` entirely unnecessary for this task — no CRM automation
-function needs to change at all, only the two `.ds` blocks. (`Location` set here is a same-day
-best guess from intake; the Driver App's real morgue check-in still overwrites it later with the
-actual confirmed location before `onDeceasedPickupCheckIn` runs, so the eventual comparison
-always uses the true value, not the intake guess.)
-
-**Step 1 — one new field on `Deceased_Pickups`:**
-| API Name | Type | Notes |
-|---|---|---|
-| `Destination` | Picklist | Values: `Kingston`, `Montego Bay` — matches the existing `Location` field's values exactly |
-
-**Step 2 — `onDeceasedPickupCheckIn`:** replace the existing "Transport auto-create" block (near
-the end, right before `if(!childUpd.isEmpty())`) with:
-```
-// Transport auto-create (ZP-TBD-45 Task 6): Location already holds where the deceased currently
-// is (set at check-in, overwriting the intake guess); Destination was captured straight from
-// the intake form onto this Deceased_Pickups record (see the Intake_Form.ds change above).
-// Compare the two directly -- no Deal lookup needed.
-caseLoc = ifnull(dp.get("Location"),"");
-destLoc = ifnull(dp.get("Destination"),"");
-if(caseLoc != "" && caseLoc != "-None-" && destLoc != "" && caseLoc != destLoc)
+if(caseLoc != "" && destLoc != "" && caseLoc != destLoc)
 {
 	existingTransport = false;
 	try
 	{
 		tQuery = Map();
-		tQuery.put("select_query","select id from Transport where Operations = '" + opsId + "' and Category = 'Deceased' limit 1");
+		tQuery.put("select_query","select id from Transport where Related_Trip = '" + tripCreationResult.get("id") + "' and Category = 'Deceased' limit 1");
 		tResp = invokeurl
 		[
 			url :"https://www.zohoapis.com/crm/v7/coql"
 			type :POST
 			parameters:tQuery.toString()
 			headers:{"Content-Type":"application/json"}
+			connection:"zohooauth"
 		];
 		if(tResp.containKey("data") && tResp.get("data").size() > 0)
 		{
@@ -519,16 +487,13 @@ if(caseLoc != "" && caseLoc != "-None-" && destLoc != "" && caseLoc != destLoc)
 	if(!existingTransport)
 	{
 		transportMap = Map();
-		transportMap.put("Name","Deceased Transport: " + fullName);
+		transportMap.put("Name","Deceased Transport: " + recordInfo.get("Account_Name").get("name"));
 		transportMap.put("Category","Deceased");
 		transportMap.put("Transport_Status","Requested");
 		transportMap.put("Current_Location",caseLoc);
-		if(opsId != "")
-		{
-			opsLkT = Map();
-			opsLkT.put("id",opsId);
-			transportMap.put("Operations",opsLkT);
-		}
+		tripLkT = Map();
+		tripLkT.put("id",tripCreationResult.get("id"));
+		transportMap.put("Related_Trip",tripLkT);
 		try
 		{
 			zoho.crm.createRecord("Transport",transportMap);
@@ -539,18 +504,24 @@ if(caseLoc != "" && caseLoc != "-None-" && destLoc != "" && caseLoc != destLoc)
 	}
 }
 ```
-`caseLoc` here is just `Location` (renamed in the variable name for continuity with the rest of
-the function, but reads the existing field — no Deal lookup, no new field for it). This drops
-the old `dealRec.get("Case_Location")` lookup entirely; the only genuinely new piece of data is
-`Destination`, captured directly from the intake form (see the `.ds` change above) — this
-function itself needs no changes beyond this comparison block.
 
-**Scope decision (confirmed with the user):** Police/Hospital-only for now. Case Location is
-also collected at intake for First Call/Ship In/Wholesale Airport (Task 5), but those deal types
-never create a `Deceased_Pickups` record, so neither function above ever runs for them —
-deliberately left that way. **Still needs a question back to Andrea:** should Case Location ≠
-Destination also auto-create a Transport record for those 3 deal types? If yes, that's a
-separate follow-up task (a different trigger point entirely, since there's no Deceased_Pickups
-record to hang it on for those types).
+This block is identical in both functions. In `createTripForWholesale` it goes once, after the
+shared `tripCreationResult` line (applies to both the Airport and Local branches, since both
+converge on that same trip-creation call).
 
-Confirmed deployed and tested by Andrea, passed.
+**Step 5 — widget change (done, direct-edited):** Wholesale Local's intake form previously
+showed neither Case Location nor Destination at all (it never displayed `wrap_DFH_Destination`),
+so there was nothing to compare for that type. Added both `wrap_Case_Location` and
+`wrap_DFH_Destination` to the `"Wholesale_Local"` `RULES` entry in
+`widgets/NOKIntake/NOKIntake/app/app.js`, matching how every other in-scope type already shows
+both fields.
+
+**Scope (confirmed with the user):** First Call, Wholesale Local, Wholesale Airport only. Police
+and Hospital explicitly excluded per Andrea's correction — v1's Police/Hospital-only mechanism
+is fully reverted, not left running alongside the new one.
+
+Not yet applied — pending the user reverting the v1 `.ds`/`onDeceasedPickupCheckIn` code and
+pasting the new block into `createTripsFromDealsForFirstCall` and `createTripForWholesale`, then
+testing: (1) First Call/Wholesale Local/Wholesale Airport with Case Location ≠ Destination →
+expect a Transport record; (2) same with them equal → expect none; (3) a Police or Hospital case
+with a mismatch → expect **no** Transport record (confirms the revert actually took).
