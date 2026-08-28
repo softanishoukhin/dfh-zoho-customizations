@@ -1,11 +1,11 @@
 # ZP-TBD-39 — Headstone Approval Workflow rebuild
 
-## ⚠ VENDOR-SENDING PROCESS TEMPORARILY DISABLED (2026-08-28)
+## ⚠ ENTIRE HILLVIEW GROUP HEADSTONE PROCESS TEMPORARILY DISABLED (2026-08-28)
 
-Andrea asked the process to be paused for a few days (vendor/product config person unavailable).
-**See `TEMPORARILY_DISABLED_2026-08-28.md` in this same folder before touching anything else in
-this ticket** — it has the exact 2 switches that were flipped off and exactly how to flip them
-back on when she's ready.
+Andrea asked the whole process (not just the Plot Number piece) to be paused for a few days
+(vendor/product config person unavailable). **See `TEMPORARILY_DISABLED_2026-08-28.md` in this
+same folder before touching anything else in this ticket** — it has the exact 2 switches that
+were flipped off, exactly how to flip them back on, and a plain-English guideline for Andrea.
 
 Source: `D:\Office\Andrea_Projects\DFH\projectDocuments\DEV_BRIEF.md` (full rework spec),
 `D:\Office\Andrea_Projects\DFH\projectDocuments\HeadstoneRequestTasks.txt` (Andrea's

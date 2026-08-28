@@ -1,9 +1,18 @@
-# Headstone vendor-sending process — TEMPORARILY DISABLED (2026-08-28)
+# Entire Hillview Group headstone process — TEMPORARILY DISABLED (2026-08-28)
 
-**Why:** Andrea asked to pause anything that sends information to a vendor for a few days —
-the person who configures products/vendors is unavailable, and she doesn't want the process
-actively contacting vendors while that setup isn't ready. Everything built in this ticket
-(Tasks 1–3) is already tested and confirmed passing; this is a temporary pause, not a rollback.
+**Scope, clarified:** this is not just "today's" Plot Number piece — Andrea means the **entire
+process built around Hillview Group** should be off: the whole automatic routing/notification
+pipeline (`manageZeroRatedHeadstoneProduct`'s Hillview 1/2/3 routing, and the Plot Number vendor
+notification, since that also depends on Hillview Group product/vendor tagging). Both switches
+below together achieve that full scope — Switch 1 alone already stops the entire routing
+pipeline (it's the only trigger anywhere for `manageZeroRatedHeadstoneProduct`), and Switch 2
+stops the separate Plot Number path that also reads Hillview Group data.
+
+**Why:** Andrea asked to pause the process for a few days — the person who configures
+products/vendors is unavailable, and she doesn't want the process actively running (routing,
+notifying family, or contacting vendors) while that setup isn't ready. Everything built in this
+ticket (Tasks 1–3) is already tested and confirmed passing; this is a temporary pause, not a
+rollback.
 
 **Read this whole file before doing anything else in this ticket** — it records exactly what
 was turned off and exactly how to turn it back on. Update the checkboxes below as each step is
@@ -84,3 +93,20 @@ Once the vendor/product configuration person is back and ready: flip Switch 1 ba
 Switch 2's two lines, then do one quick live smoke test (one Deal through each path — a fresh
 Hillview 1 product, and a Plot # assignment) to confirm both switches actually took effect
 before considering it fully back in production use.
+
+## Guideline for Andrea — how to turn it back on
+
+**The part you can do yourself, in CRM:**
+1. Go to **Setup → Automation → Workflow Rules**.
+2. Switch the module to **Deals**.
+3. Find the rule named **"Trigger Headstone Process on Completion."**
+4. Toggle it back to **Active**.
+
+That one switch turns the whole automatic routing back on — a Hillview 1 headstone product
+goes straight to the vendor again, Hillview 2/3 goes to the family first, exactly as before.
+
+**The part that needs us:** there's a second, smaller switch inside the code for the Plot
+Number → vendor email feature specifically. That one isn't something you'd flip yourself in
+CRM — just let us know when you're ready and we'll turn it back on and confirm it's working
+with a quick test.
+
