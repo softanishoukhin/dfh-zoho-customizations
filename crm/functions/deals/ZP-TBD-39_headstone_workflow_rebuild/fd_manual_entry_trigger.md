@@ -95,8 +95,4 @@ which order actually happens in practice before we decide whether it's worth the
 
 ## Status
 
-Not yet applied — pending the user creating the wrapper function and the workflow rule from this
-guideline, then testing: (1) a Deal with a Hillview-tagged product, fill in the 3 fields
-manually as an FD would, save → confirm the vendor gets notified / family gets the form,
-whichever routing applies; (2) confirm a Deal missing one of the 3 fields does **not** fire
-anything yet, and the FD popup still nags about what's missing, unchanged from today.
+Confirmed deployed and tested by Andrea, passed.

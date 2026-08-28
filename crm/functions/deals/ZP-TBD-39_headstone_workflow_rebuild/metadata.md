@@ -81,7 +81,7 @@ is not called from anywhere at all** — the rebuild's trigger wiring was appare
 finished. This isn't FD-specific: today, *nothing's* edits (FD or family) actually fire the
 vendor notification. See `fd_manual_entry_trigger.md` in this same folder for the full guideline
 (new wrapper function + new field-update workflow rule) and the FD step-by-step instructions.
-Not yet applied.
+Confirmed deployed and tested by Andrea, passed.
 
 ## Open items for Andrea (not guessed — see `product-mapping.md` for detail)
 
