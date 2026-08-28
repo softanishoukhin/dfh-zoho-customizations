@@ -132,42 +132,100 @@ map Update_Plot_Number_And_Notify_Vendor(string crmid, string plotNo)
 		response.put("message","Missing crmid or plotNo.");
 		return response;
 	}
+	// Update every Headstone_Request_Form record tied to this Deal, regardless of vendor.
 	formRecords = Headstone_Request_Form[deal_id == crmid];
 	updatedCount = 0;
 	for each formRec in formRecords
 	{
-		alreadySentForThisPlot = (formRec.Plot_No == plotNo);
 		theRecord = Headstone_Request_Form[ID == formRec.ID];
 		theRecord.Plot_No = plotNo;
 		updatedCount = updatedCount + 1;
+	}
+	// Determine which vendors to notify directly from the CRM Deal's product lines -- NOT from
+	// the Creator record's vendor_id, which is written later and can lag or still be blank at
+	// this point. Mirrors createFormRecordAndNotifyVendor's own vendor-discovery logic exactly.
+	dealInfo = zoho.crm.getRecordById("Deals",crmid.toLong());
+	existingProducts = ifnull(dealInfo.get("Product_Selection"),list());
+	vendorIds = list();
+	for each item in existingProducts
+	{
+		childID = "";
+		if(item.contains("Child_Product") && item.get("Child_Product") != null && item.get("Child_Product").contains("id"))
+		{
+			childID = item.get("Child_Product").get("id");
+		}
+		if(childID == "")
+		{
+			continue;
+		}
+		productInfo = zoho.crm.getRecordById("Products",childID.toLong());
+		hillviewGroup = ifnull(productInfo.get("Hillview_Group"),"");
+		if(hillviewGroup != "Hillview 1")
+		{
+			continue;
+		}
+		vendorId = "";
+		try
+		{
+			vendorId = ifnull(productInfo.get("Vendor_Name").get("id"),"");
+		}
+		catch (eVendor)
+		{
+			vendorId = "";
+		}
+		if(vendorId != "" && !vendorIds.contains(vendorId))
+		{
+			vendorIds.add(vendorId);
+		}
+	}
+	notifiedCount = 0;
+	for each vendorId in vendorIds
+	{
+		// Idempotency: check the matching form record's stored Plot_No, keyed by vendor_id --
+		// still fine to read vendor_id here for matching purposes, just not as the source of
+		// truth for who to notify.
+		alreadySentForThisPlot = false;
+		for each formRec in formRecords
+		{
+			if(ifnull(formRec.vendor_id,"") == vendorId && ifnull(formRec.Plot_No,"") == plotNo)
+			{
+				alreadySentForThisPlot = true;
+			}
+		}
 		if(!alreadySentForThisPlot)
 		{
-			vendorId = ifnull(formRec.vendor_id,"");
-			if(vendorId != "")
+			try
 			{
-				try
+				vendorInfo = zoho.crm.getRecordById("Vendors",vendorId.toLong());
+				vendorEmail = ifnull(vendorInfo.get("Email"),"");
+				if(vendorEmail != "")
 				{
-					vendorInfo = zoho.crm.getRecordById("Vendors",vendorId.toLong());
-					vendorEmail = ifnull(vendorInfo.get("Email"),"");
-					if(vendorEmail != "")
-					{
-						thisapp.notifyVendorPlotNumberAssigned(vendorEmail,vendorId,crmid,plotNo);
-					}
+					thisapp.notifyVendorPlotNumberAssigned(vendorEmail,vendorId,crmid,plotNo);
+					notifiedCount = notifiedCount + 1;
 				}
-				catch (eVendorNotify)
-				{
-				}
+			}
+			catch (eVendorNotify)
+			{
 			}
 		}
 	}
 	response.put("status","success");
 	response.put("updated",updatedCount);
+	response.put("notified",notifiedCount);
 	return response;
 }
 ```
 Publish this as a **public** Custom API (same visibility as `Notify_Headstone_Vendor`, since CRM
 calls it via `getUrl` with a `publickey`, not an authenticated connection). Note the public key
 once published — it goes into Step 5.
+
+**Improvement (from the user, after initial deployment):** the first working version determined
+which vendor to notify from `formRec.vendor_id` (the Creator record's own field). That's
+unreliable — the Creator record's `vendor_id` is written by `createFormRecordAndNotifyVendor`
+*after* the record is created, so depending on timing it can still be blank or stale when this
+function runs. Fixed to derive the vendor list straight from the CRM Deal's Hillview-1 product
+lines instead (the same source of truth `createFormRecordAndNotifyVendor` itself uses), and only
+uses `formRec.vendor_id` for the idempotency match, not for deciding who gets emailed.
 
 **Correction history (both from the user, testing live):** the first draft used
 `formRecUpdate = Map(); ...; update Headstone_Request_Form[ID == formRec.ID] set formRecUpdate;`
