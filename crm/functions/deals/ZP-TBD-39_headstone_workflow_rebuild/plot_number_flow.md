@@ -137,11 +137,8 @@ map Update_Plot_Number_And_Notify_Vendor(string crmid, string plotNo)
 	for each formRec in formRecords
 	{
 		alreadySentForThisPlot = (formRec.Plot_No == plotNo);
-		update Headstone_Request_Form[ID == formRec.ID]
-		set
-		[
-			Plot_No = plotNo
-		];
+		theRecord = Headstone_Request_Form[ID == formRec.ID];
+		theRecord.Plot_No = plotNo;
 		updatedCount = updatedCount + 1;
 		if(!alreadySentForThisPlot)
 		{
@@ -172,12 +169,18 @@ Publish this as a **public** Custom API (same visibility as `Notify_Headstone_Ve
 calls it via `getUrl` with a `publickey`, not an authenticated connection). Note the public key
 once published — it goes into Step 5.
 
-**Correction (caught by the user):** the original draft here used
+**Correction history (both from the user, testing live):** the first draft used
 `formRecUpdate = Map(); ...; update Headstone_Request_Form[ID == formRec.ID] set formRecUpdate;`
-— that's not valid syntax for Creator's native `update` task. It doesn't take a Map variable;
-like `insert into` (already used elsewhere in this same form's script, e.g.
-`createFormRecordAndNotifyVendor`), `set` takes a bracketed list of `field = value` assignments
-directly. Fixed above to `set [ Plot_No = plotNo ];`.
+— not valid, `update ... set` doesn't take a Map variable. The second attempt,
+`update Headstone_Request_Form[ID == formRec.ID] set [ Plot_No = plotNo ];`, **also did not
+work**. **What actually works, confirmed live:** fetch the record as a variable, then assign the
+field directly —
+```
+theRecord = Headstone_Request_Form[ID == formRec.ID];
+theRecord.Plot_No = plotNo;
+```
+This is the pattern shown above and the one to use for any future single-field Creator form
+record update in this codebase.
 
 The `alreadySentForThisPlot` check is the idempotency guard: if `Plot_No` on the Deal gets
 re-saved with the *same* value it already had (a re-save that doesn't actually change anything),
