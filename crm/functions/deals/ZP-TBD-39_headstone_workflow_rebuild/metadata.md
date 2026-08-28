@@ -71,6 +71,18 @@ Creator side (`creator/functions/headstone_request/ZP-TBD-39_headstone_workflow_
   not the originally-drafted `getRows()`/`getField()` guess. See this folder's
   `guideline.md` §3.
 
+## New task (2026-08-28): FD manual entry — trigger was never actually wired up
+
+Andrea asked whether an FD can manually fill in the Deal fields (instead of the family
+completing the online form) and have that trigger the same headstone process. Investigated
+exhaustively (every Deals workflow rule of every trigger type, the FD completeness-check client
+script, and the org's generic any-field-update dispatcher) and found **`manageZeroRatedHeadstoneProduct`
+is not called from anywhere at all** — the rebuild's trigger wiring was apparently never
+finished. This isn't FD-specific: today, *nothing's* edits (FD or family) actually fire the
+vendor notification. See `fd_manual_entry_trigger.md` in this same folder for the full guideline
+(new wrapper function + new field-update workflow rule) and the FD step-by-step instructions.
+Not yet applied.
+
 ## Open items for Andrea (not guessed — see `product-mapping.md` for detail)
 
 1. "Phase 3 Traditional" (listed under Hillview 1) has no matching standalone product
