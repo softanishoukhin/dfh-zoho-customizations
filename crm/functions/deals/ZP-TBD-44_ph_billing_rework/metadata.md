@@ -94,6 +94,58 @@ if(!isNull(recordInfo.get("Autopsy_Date_Time")) && alId != "")
 Any future autopsy location just needs `Autopsy_Fixed_KM` populated on its Account record — no
 code change needed again. Confirmed live, matches exactly.
 
+**Correction found in review (2026-08-29), then self-corrected again (2026-08-29): the original
+$180 finding was itself a misdiagnosis — it inspected the wrong one of two same-named
+products.** First pass claimed the billed DOLLAR amount was never live-verified, only the KM
+lookup, and pointed at "IFSLM Autopsy Trip Police Case" id `6503357000024281102` with
+`Unit_Price = 180`. That record is real, but it has **`Product_Category = null`** — it does NOT
+match the billing query's `and Product_Category = 'Autopsy Trip'` clause, so it is never actually
+selected by `CreateSalesOrderforPoliceCase`. It turned out to be a duplicate/orphan product (see
+"Duplicate product" note below, found separately by the user) that happened to share the exact
+same name and a coincidentally-plausible $180 price, which is what made the misdiagnosis
+convincing.
+
+**The real billing product is a different record: id `6503357000019249155`**, same name, `Parent_Product = IFSLM`, **`Product_Category = "Autopsy Trip"`** (matches the query), and its
+live `Unit_Price` is **already `1`** (a separate `Sales_Unit_Price` field on the same record
+reads `180`, which is what likely got eyeballed by mistake during manual review — the Deluge code
+reads `Unit_Price`, not `Sales_Unit_Price`). So `Quantity(167) × List_Price(1) = 167` — the
+billing math is already correct as configured. **No price fix is actually needed here.** Correcting the record here rather than leaving the earlier wrong guidance standing.
+
+**Still worth one live spot-check, not because a bug is expected now, but because — per the
+original "V1" note — nobody has actually confirmed a real Sales Order total end-to-end:** advance
+one police autopsy case through Sales Order creation for a fixed-KM location (e.g. Archer's) and
+confirm the total reads ~$167, then do the same for a Kingston/Ops Center case (real driven KM).
+
+**Same concern flagged for Initial Police Case Pickup — not yet confirmed either way.** The
+pickup-fee line item in the same function uses the identical shape:
+```deluge
+productMap.put("Quantity",ifnull(tripInfo.get("Number_of_distance_in_km"),1));
+productMap.put("List_Price",productDetails.get("Unit_Price"));
+```
+Whichever Product backs this line (under IFSLM, Product_Category "Pickup") needs the same
+check: open it in Setup → Products and confirm its Unit Price is $1/km, not a flat figure. Not
+yet independently confirmed live which way this one currently is — check it the same way as
+above before assuming it's fine or assuming it's broken.
+
+### Duplicate product — "IFSLM Autopsy Trip Police Case" exists twice, found by the user 2026-08-29
+Two Products share the exact name **"IFSLM Autopsy Trip Police Case"**, both under Parent Product
+IFSLM, both showing $180 somewhere on the record (one on `Unit_Price`, the other on
+`Sales_Unit_Price`) — which is exactly what caused the KM-billing misdiagnosis directly above.
+- id `6503357000024281102` — **`Product_Category = null`**. Never matched by
+  `CreateSalesOrderforPoliceCase`'s COQL query (`and Product_Category = 'Autopsy Trip'`). Does
+  nothing. This is the orphan/duplicate.
+- id `6503357000019249155` — **`Product_Category = "Autopsy Trip"`**, `Unit_Price = 1`. This is
+  the one actually used for billing.
+
+**Risk (the user's framing, correct):** anyone manually tagging/selecting this product elsewhere
+(a Sales Order line, a report filter, future config work) could easily grab the wrong one by
+name alone, since nothing distinguishes them visually except the category field.
+
+**Recommendation: deactivate rather than delete `6503357000024281102`**, unless it's confirmed to
+have zero historical Sales Order/Invoice line items referencing it (Zoho may block outright
+deletion of a Product with existing usage anyway, and deactivating is the reversible option).
+**Done — deactivated 2026-08-29.**
+
 ### Items 1-4 — autopsy reschedule no-show billing (family vs officer vs institution)
 Confirmed via live code that none of this existed before tonight: every reschedule, regardless
 of cause, billed the same IFSL Sales Order with just a trip fee. Andrea confirmed the design:
@@ -181,11 +233,236 @@ cross-function call failed live with "Not able to find 'groupAutopsyTrips' funct
 pattern matches how `sendheadstonerequest`/`Notify_Headstone_Vendor` are already called
 elsewhere in this codebase and is confirmed working.)
 
-**Known residual gap, not fixed today:** the *old* parent batch trip's cached
-`Deceased_Names_Summary` text isn't refreshed when a child leaves it — only the *new* parent's
-summary gets rebuilt inside `groupAutopsyTrips`. So the old batch trip can keep showing a
-deceased who's no longer actually scheduled for that date until something else happens to touch
-it. Display-only, not a billing issue — low priority.
+**Fix required (Andrea, 2026-08-29): the old parent's `Deceased_Names_Summary` must drop the
+deceased's name when a reschedule moves them to a different parent.** Previously logged as a
+"known residual gap, not fixed" — now scoped as a real requirement, not just low-priority
+polish: when `Autopsy_Date_Time` changes and the child re-groups onto a different Multi Deceased
+Autopsy Trip, the *old* parent's cached `Deceased_Names_Summary` text is never refreshed — only
+the *new* parent's summary gets rebuilt inside `groupAutopsyTrips`. So the old batch trip keeps
+showing a deceased who's no longer actually scheduled for that date.
+
+**Guideline — apply directly in `automation.groupAutopsyTrips` (CRM function, guideline only):**
+
+1. Capture the child's *current* `Parent_Trip` **before** it gets overwritten — add this near
+   the top of the function, right after `childTrip` is fetched (alongside the existing
+   `tripType`/`locId` reads):
+   ```deluge
+   oldParentId = "";
+   try
+   {
+   	oldParentLk = childTrip.get("Parent_Trip");
+   	oldParentId = ifnull(oldParentLk.get("id"),"");
+   }
+   catch (eOldParent)
+   {
+   	oldParentId = "";
+   }
+   ```
+2. After the existing block that rebuilds the *new* parent's `Deceased_Names_Summary` (the one
+   ending in `zoho.crm.updateRecord("Trips",parentId.toLong(),summaryMap);`), add a matching
+   rebuild for the *old* parent — only when the child actually moved to a different parent:
+   ```deluge
+   // Rebuild the old parent's summary too, since the child just left it
+   if(oldParentId != "" && oldParentId != parentId)
+   {
+   	try
+   	{
+   		oldChildCriteria = "(Parent_Trip:equals:" + oldParentId + ")";
+   		oldChildren = zoho.crm.searchRecords("Trips",oldChildCriteria,1,200);
+   		oldNames = List();
+   		for each  och in oldChildren
+   		{
+   			ochDealId = "";
+   			try { ochDealLk = och.get("Deal"); ochDealId = ifnull(ochDealLk.get("id"),""); } catch (eOchDeal) { ochDealId = ""; }
+   			if(ochDealId != "")
+   			{
+   				try { ochDealRec = zoho.crm.getRecordById("Deals",ochDealId.toLong()); ochName = ifnull(ochDealRec.get("Name_of_Deceased"),""); if(ochName != "") { oldNames.add(ochName); } } catch (eOchDealRead) {}
+   			}
+   		}
+   		oldSummaryMap = Map();
+   		oldSummaryMap.put("Deceased_Names_Summary",oldNames.toString());
+   		zoho.crm.updateRecord("Trips",oldParentId.toLong(),oldSummaryMap);
+   	}
+   	catch (eOldSummary)
+   	{
+   	}
+   }
+   ```
+   This mirrors the existing new-parent rebuild exactly, just scoped to whoever remains on the
+   *old* parent after this child has already been re-stamped onto the new one — so the child
+   itself is correctly excluded from the old parent's list (its `Parent_Trip` was already updated
+   to the new id in the step above, before this runs).
+
+**Applied 2026-08-29, still failed live: old parent kept the moved deceased's name.**
+Misdiagnosed at first as `zoho.crm.searchRecords()` index lag (searchRecords does lag behind
+real writes, and that theory was plausible) — **the actual root cause, found by the user
+testing live, was simpler and upstream of that entirely:** `childTrip.get("Parent_Trip")`
+returns as a plain ID value here, not a `{"id":..., "name":...}` lookup object, so the original
+`oldParentLk.get("id")` call was throwing on every run, silently caught by
+`catch (eOldParent)`, and resetting `oldParentId` back to `""` every single time. With
+`oldParentId` always empty, the `if(oldParentId != "" && oldParentId != parentId)` guard was
+never true, so the entire old-parent-rebuild block never ran at all — nothing to do with
+`searchRecords` staleness. **Fix (applied by the user):** read the value directly instead of
+calling `.get("id")` on it:
+```deluge
+oldParentId = "";
+try
+{
+	oldParentLk = childTrip.get("Parent_Trip");
+	oldParentId = ifnull(oldParentLk,"");
+}
+catch (eOldParent)
+{
+	oldParentId = "";
+}
+```
+
+The COQL-vs-searchRecords swap below is kept anyway as a genuine reliability improvement (COQL
+does still avoid a real, separate staleness risk on the summary-rebuild reads themselves), but
+it was not what actually fixed this bug — the `oldParentId` read was. Replace the entire tail of
+the function, from the line
+`// NEW-2 (c): Rebuild the deceased-name summary on the parent every time a child groups onto it`
+down to (but not including) the function's very last `}`, with:
+```deluge
+// NEW-2 (c): Rebuild the deceased-name summary on the parent every time a child groups onto it
+// (COQL used instead of zoho.crm.searchRecords -- searchRecords reads from Zoho's search index,
+// which lags a few seconds behind real writes, so a rebuild run immediately after the
+// Parent_Trip stamp above could still see stale results. COQL reads live data.)
+if(parentId != "")
+{
+	try
+	{
+		newChildQuery = "select id, Deal from Trips where Parent_Trip = '" + parentId + "'";
+		newChildResults = standalone.COQLQuery(newChildQuery);
+		newDealIds = List();
+		for each  nch in newChildResults
+		{
+			try { nchDealLk = nch.get("Deal"); nchDealId = ifnull(nchDealLk.get("id"),""); if(nchDealId != "") { newDealIds.add(nchDealId); } } catch (eNchDeal) {}
+		}
+		names = List();
+		if(newDealIds.size() > 0)
+		{
+			newIdCsv = "";
+			for each  nid in newDealIds
+			{
+				if(newIdCsv != "") { newIdCsv = newIdCsv + ","; }
+				newIdCsv = newIdCsv + "'" + nid + "'";
+			}
+			nameQuery = "select id, Name_of_Deceased from Deals where id in (" + newIdCsv + ")";
+			nameResults = standalone.COQLQuery(nameQuery);
+			for each  nr in nameResults
+			{
+				nm = ifnull(nr.get("Name_of_Deceased"),"");
+				if(nm != "") { names.add(nm); }
+			}
+		}
+		summaryStr = names.toString();
+		summaryMap = Map();
+		summaryMap.put("Deceased_Names_Summary",summaryStr);
+		zoho.crm.updateRecord("Trips",parentId.toLong(),summaryMap);
+	}
+	catch (eSummary)
+	{
+	}
+	// Rebuild the old parent's summary too, since the child just left it
+	if(oldParentId != "" && oldParentId != parentId)
+	{
+		try
+		{
+			oldChildQuery = "select id, Deal from Trips where Parent_Trip = '" + oldParentId + "'";
+			oldChildResults = standalone.COQLQuery(oldChildQuery);
+			oldDealIds = List();
+			for each  och in oldChildResults
+			{
+				try { ochDealLk = och.get("Deal"); ochDealId = ifnull(ochDealLk.get("id"),""); if(ochDealId != "") { oldDealIds.add(ochDealId); } } catch (eOchDeal) {}
+			}
+			oldNames = List();
+			if(oldDealIds.size() > 0)
+			{
+				oldIdCsv = "";
+				for each  oid in oldDealIds
+				{
+					if(oldIdCsv != "") { oldIdCsv = oldIdCsv + ","; }
+					oldIdCsv = oldIdCsv + "'" + oid + "'";
+				}
+				oldNameQuery = "select id, Name_of_Deceased from Deals where id in (" + oldIdCsv + ")";
+				oldNameResults = standalone.COQLQuery(oldNameQuery);
+				for each  onr in oldNameResults
+				{
+					onm = ifnull(onr.get("Name_of_Deceased"),"");
+					if(onm != "") { oldNames.add(onm); }
+				}
+			}
+			oldSummaryMap = Map();
+			oldSummaryMap.put("Deceased_Names_Summary",oldNames.toString());
+			zoho.crm.updateRecord("Trips",oldParentId.toLong(),oldSummaryMap);
+		}
+		catch (eOldSummary)
+		{
+		}
+	}
+}
+```
+The `oldParentId` capture near the top of the function (from the earlier guideline entry) stays
+exactly as already applied — only this tail section changes.
+
+**Confirmed working live (2026-08-29).** Old parent's `Deceased_Names_Summary` now correctly
+drops the moved deceased's name while keeping any deceased who remain on it, and the new
+parent's summary correctly includes the moved deceased.
+
+**Second gap found during live testing (TC-12, "Advance reschedule"), not yet fixed:** tested
+the specific case where a "Multi Deceased Autopsy Trip" for the new location + date **already
+exists** (the other branch of `groupAutopsyTrips` — the "create a new parent" branch already
+sets `Scheduled_Date` correctly at creation time, so that half was fine). Result: the child
+correctly re-groups onto the existing parent (`Parent_Trip` gets stamped), but that parent's own
+`Scheduled_Date` is never touched — so if the parent's existing time-of-day differs from the
+specific new time just set on the child, the parent keeps showing its old, stale time even
+though the child (and the day-level date) are correct. `groupAutopsyTrips`'s COQL search only
+matches by whole calendar day (`Scheduled_Date >= dayStart and <= dayEnd`), so a parent that
+already exists for that day is found and reused regardless of its exact time — and nothing ever
+syncs that time afterward.
+
+**Fix (guideline — apply directly in the CRM function; no write-capable MCP tool exists for
+this):** in `automation.groupAutopsyTrips`, right after `parentId` is set from the COQL search
+result (before the "create parent if none found" block), add:
+```deluge
+if(parentId != "")
+{
+	try
+	{
+		syncMap = Map();
+		syncMap.put("Scheduled_Date",childTrip.get("Scheduled_Date"));
+		zoho.crm.updateRecord("Trips",parentId.toLong(),syncMap);
+	}
+	catch (eSync)
+	{
+	}
+}
+```
+This keeps the parent trip's date/time in sync with whichever child most recently triggered a
+regroup for that day/location — the reschedule that just happened is the authoritative new
+schedule for the whole group. **Design assumption worth confirming with Andrea:** this
+overwrites the parent's time on every regroup, so if two deceased going to the same
+location/day get entered with two different specific times, the parent's displayed time will
+reflect whichever one was rescheduled/grouped most recently. If she wants different behavior
+(e.g., the group's time should never change once other deceased are already attached, or all
+children going to the same day+location should be forced to the same time at entry), that needs
+a separate decision — not guessed here.
+
+**Confirmed deployed and tested — TC-12 now passes.** Applied live in `groupAutopsyTrips` and
+re-tested for the "parent already existed" case: editing a Deal's `Autopsy_Date_Time` to a new
+date/time that matches an existing Multi Deceased Autopsy Trip's day but not its exact time now
+correctly updates that parent's `Scheduled_Date` to the new time, not just the child's.
+
+**Still needs a live spot-check (found in review, 2026-08-29): the "brand-new parent" branch has
+never actually been tested live, only read in code.** TC-12 only covers rescheduling onto a day/
+location where a Multi Deceased Autopsy Trip **already exists**. The other branch — rescheduling
+onto a day/location with **no** existing batch trip yet, so `createTripOnTheDayOfAutopsyDateWithTask`
+creates a brand-new parent from scratch — looks correct by inspection but has no click-through
+confirmation behind it. No code change is expected here unless this test actually turns up a
+problem. **Test:** reschedule an autopsy `Autopsy_Date_Time` to a date/location combination that
+has no existing Multi Deceased Autopsy Trip, and confirm a new parent trip is created with the
+correct date, time, and location.
 
 ### Item 11 — hospital reschedules billed nothing (and worse: wrong Sales Order type risk)
 Confirmed root cause is worse than the source doc's framing: the `Handle Autopsy Reschedule`
@@ -205,17 +482,75 @@ to the existing `Hospital Cases` Sales Order and return early -- no family/MNSJ 
 Sales Order type. Police Cases fall through to the existing items-1-4 logic unchanged.
 
 ### Items 13-14 — registration number placement (Driver App)
-Confirmed both check-in screens live in `app.js`: `autopsyCheckinHtml` (police/regular morgue
-check-in, inside the Autopsy Batch flow) already had the Registration Number field; a second,
-separate screen `hospMorgueCard` (hospital multi-deceased check-in) also had one.
+**Original diagnosis was wrong, caused a real regression (TC-15/TC-16), found and fixed
+2026-08-29.** The original write-up claimed `hospMorgueCard` (the morgue check-in card) was
+hospital-exclusive and `autopsyCheckinHtml` was the "police/regular" screen — never actually
+traced which Trip_Types route to which render function. They don't split that way:
+```js
+if ((trip.Trip_Type || '') === 'Hospital Storage'){ hideHangTagPrint(); renderHospitalCheckin(trip); return; }
+if ((trip.Trip_Type || '') === 'Police Case Pickup'){ hideHangTagPrint(); renderHospitalCheckin(trip); return; }
+```
+**Both "Hospital Storage" and "Police Case Pickup" (the multi-deceased police pickup trip type)
+route to the same `renderHospitalCheckin` screen and the same `hospMorgueCard()` card.**
+`autopsyCheckinHtml` is a completely different, *later*-stage screen — it only appears inside the
+Multi Deceased Autopsy Trip batch flow, once an autopsy has actually been scheduled. So removing
+Registration Number from `hospMorgueCard` "for hospital only" actually removed it from Police
+Case Pickup too, at the moment it matters (the initial multi-deceased pickup), not just from
+hospital. TC-15/16 caught this directly: a Police Case Pickup deal (`Trips = "Police Case Pickup
+- ..."`, `Autopsy_Date_Time` still blank — no autopsy trip exists yet) was missing the field
+entirely.
 
-**Fix applied, edited directly (widget JS, not a `.ds` file):**
-- Item 13: removed the Registration Number field entirely from `hospMorgueCard` (hospital
-  screen). Left untouched on the police/regular screen (`autopsyCheckinHtml`).
+(Also spent time investigating a *different*, real but unrelated issue first: Task 8 flips
+`Deals.Is_Deceased_In_Our_Care` to "Yes" on completion of any initial pickup trip — including
+Police Case Pickup/Initial Police Case Pickup — well before an autopsy ever happens, so
+`autopsyCheckinHtml`'s own `d.inCare === 'Yes'` gate would later incorrectly hide the check-in
+section for these deceased *if and when* they do reach the Multi Deceased Autopsy Trip stage.
+Attempted fix: a new `checkinDone` signal, computed server-side in `getAutopsyChildren` from
+`Operations.Location` instead of the Deal flag, applied to `autopsyCheckinHtml`,
+`autopsySaveFamilyAndCheckin`, and the chip/gate calc in `renderAutopsyBatchInner`. This was not
+what TC-15/16 were actually testing — this ticket's "Police/regular" wording refers to the
+*initial pickup* screen, not the autopsy-stage one.
+
+**That `checkinDone` attempt itself caused a real, confirmed regression — found and reverted the
+same night, 2026-08-29.** Each check-in field saves immediately on change
+(`setAutopsyCheckinField` → `saveAutopsyCheckinFields` on every keystroke/select), so the moment
+a driver picked a Location (before ever typing Registration Number), `Operations.Location` on
+that trip stopped being blank. On the next render/reload, `checkinDone` read `true` from that
+alone, hiding the **entire** Morgue check-in sub-box — Registration Number included, even though
+it was never actually entered — and the Complete Trip gate (`regOk = bd.checkinDone || ...`)
+treated the Registration Number requirement as already satisfied. That is a silent
+data-integrity failure, not a display bug: a Police/regular autopsy trip could complete without
+ever capturing Registration Number, defeating Item 14. **Reverted:** `autopsyCheckinHtml` no
+longer hides the section at all; `renderAutopsyBatchInner`'s `regOk` now checks only the actual
+`checkinRegistrationNumber` value; `autopsySaveFamilyAndCheckin`'s save block is unconditional
+(each field already independently gates on having a value, so this was always safe to run every
+time). Net effect: the morgue check-in section, Registration Number included, now always shows
+and is always genuinely required at the autopsy stage for everyone — no attempt to auto-skip it
+for hospital-sourced deceased anymore. `getAutopsyChildren`'s server-side `checkinDone`
+computation is now dead code (harmless, just unused) — not reverted server-side yet, low
+priority cleanup. If a real "skip re-asking for hospital-sourced deceased" behavior is wanted
+later, it needs a properly-traced signal — the deceased's *original* pickup Trip_Type, not
+anything on the autopsy trip's own fresh Operations record — not guessed at again under time
+pressure.)
+
+**Actual fix — `hospMorgueCard`, conditional on Trip_Type (edited directly, widget JS):**
+```js
++ (((state.hosp && state.hosp.trip && (state.hosp.trip.Trip_Type || '')) === 'Police Case Pickup')
+    ? ('<label class="field-lbl">Registration Number</label>'
+      + '<input type="text" class="van-select"' + ro + ' value="' + jsAttr(b.Registration_Number || '') + '" oninput="hospSetField(' + u + ',\'Registration_Number\',this.value)" placeholder="Pre-printed registration #">')
+    : '')
+```
+Placed where the field used to sit unconditionally (right after Row/Drawer, before the notes
+box). No server-side change needed — `saveDeceasedPickup`'s `supportedKeys` already includes
+`Registration_Number` from the original D-1 work, and `hospSetField` is a generic setter, so
+re-adding the input alone reconnects the existing save path. **Confirmed working live
+2026-08-29** — TC-15/TC-16 re-tested and passed.
+
 - Item 14: `renderAutopsyBatchInner`'s "Complete Trip" gate (`allSet`/`done` calculation) now
-  also requires a non-blank Registration Number for every deceased not already in DFH's care
-  (`d.inCare !== 'Yes'`), not just an outcome selection. Bottom helper text updated to say so
-  when that's what's blocking completion.
+  also requires a non-blank Registration Number for every deceased not already in DFH's care,
+  not just an outcome selection. Bottom helper text updated to say so when that's what's blocking
+  completion. This part was correctly scoped to the autopsy-batch stage from the start — Item 14
+  is unaffected by the Item 13 misdiagnosis above.
 
 ### Item 15 — registration number on the Hospital Invoicing Report
 Confirmed the report exists (`Hospital Invoicing Report`, Zoho Analytics Pivot view, id
