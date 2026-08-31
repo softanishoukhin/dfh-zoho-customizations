@@ -646,11 +646,11 @@ master `Unit_Price` reads `1`. So:
   already-created, and still wrong** — they were built before the price was corrected, and
   nothing retroactively fixes them. These need manual correction (credit note + reissue, or a
   direct edit if unpaid/unsent) — this is a live-data cleanup task, not a code fix.
-- **`IFSLM Initial Police Case Pickup` (`6503357000002869122`) is a real, separate, still-open
-  gap** — confirmed its master `Unit_Price` is still `180` today, and it genuinely can get billed
-  by driven KM (`CreateSalesOrderforPoliceCase`'s `Created_on_This_Field_Update == "Initial_Trip"`
-  branch uses `Quantity = Number_of_distance_in_km`). Same $1/km reprice decision needed here,
-  not yet applied.
+- **`IFSLM Initial Police Case Pickup` (`6503357000002869122`) was a real, separate gap** —
+  confirmed its master `Unit_Price` was still `180`, and it genuinely can get billed by driven KM
+  (`CreateSalesOrderforPoliceCase`'s `Created_on_This_Field_Update == "Initial_Trip"` branch uses
+  `Quantity = Number_of_distance_in_km`). **Fixed 2026-08-31** — repriced to `1.00`, confirmed
+  live.
 - Recommend a live sweep of every Sales_Orders/Invoices line item referencing either product to
   find any other pre-fix invoices carrying the wrong frozen price, not just the three the audit
   happened to surface.
@@ -669,9 +669,29 @@ Invoice from the Deal's "Police Cases" Sales Order — never checking whether a 
 already exists — and it never sets `Invoice_For` on the new invoice, so it always lands with no
 payer. If a Deal's Stage ever passes through "DFH Selected" or "Embalming Authorization" more
 than once (a correction, a re-save, stepping back and re-forward), this creates another
-untagged duplicate. Not yet fixed — needs a guard added (check for an existing untouched Police
-invoice/Sales-Order-Approved state before creating another) — flagging for a decision on exactly
-what "already invoiced" should mean before writing the guard, rather than guessing.
+untagged duplicate.
+
+**Fix identified — the function already carries its own "already invoiced" signal, just never
+checks it.** At the end of a successful run it sets the Sales Order's own `Status` to
+`"Approved"`:
+```deluge
+salesOrderMap = Map();
+salesOrderMap.put("Status","Approved");
+zoho.crm.updateRecord("Sales_Orders",salesOrders.toList().get(0).get("id"),salesOrderMap);
+```
+Nothing at the top of the function checks that before running again. **Guideline — add this
+check immediately after `salesOrderInfo` is fetched, before building `invoiceMap`:**
+```deluge
+if(ifnull(salesOrderInfo.get("Status"),"") == "Approved")
+{
+	return;
+}
+```
+This stops a second invoice from ever being created once the Sales Order has already been
+successfully invoiced once — matching the exact "already invoiced" signal the function itself
+already produces, no new field needed. Not yet applied — pending confirmation this is the
+intended meaning of "already invoiced" (as opposed to, say, allowing a new invoice if the first
+was voided/cancelled — Sales_Orders.Status would need to reflect that separately if so).
 
 ### Tier 3, item 6 — decomposed cases missing the autopsy line: confirmed NOT a code branch
 
@@ -703,10 +723,40 @@ Both `Post Mortem (Decomposed)` (`6503357000026737326`, `Product_Category` blank
 whether either belongs in the automated flow; not fixed, since we don't know the intended
 category/hospital to tag them with.
 
+### Tier 2, item 3 — institution Sales Order gap: root cause found (Andrew Williams / Daniel Robinson)
+
+Pulled both Deals live. Both show **`Create_Sales_Order = null`** — the Hospital billing
+function never ran at all for either, not "ran and failed." Both sit at Stage
+**"DFH Not Selected"** with `Initial_Trip_Completed_At` correctly populated (the pickup really
+did complete).
+
+**Root cause:** the Hospital Sales Order trigger ("Create Sales Order for Hospital Case," inside
+workflow "Action based on Different Stage Update") only fires on Stage transitioning **to
+"Trip Completed" specifically**. If a Deal's Stage is ever changed directly from an earlier
+stage straight to a later one (e.g. straight to "DFH Not Selected" in one save, skipping "Trip
+Completed" as an intermediate value on that save), the field-update trigger never sees "Trip
+Completed" happen and institution billing is silently skipped — while the separate "DFH Not
+Selected" family-invoice cascade fires regardless of what stage history led there. This exactly
+explains Andrew Williams: family billed $5,750, hospital billed nothing.
+
+**Fix direction, not yet built:** the institution-billing safety net shouldn't depend solely on
+catching the exact "Trip Completed" transition. The "DFH Not Selected" cascade
+(`CreateInvoiceonSelectingDFHNotSelected`) is the natural place to add a check — before invoicing
+the family, confirm a "Hospital Cases" Sales Order already exists for the Deal; if
+`Initial_Trip_Completed_At` is set and none exists, create it there first via the same logic
+`createSalesOrderForHospitalCase` uses, so institution billing can never be silently skipped just
+because the stage history skipped a step. Needs a decision on whether this same safety net
+belongs on the Police side too (`generateDelayedLONIInvoice`/`CreateSalesOrderforPoliceCase`),
+not just Hospital — not yet checked whether Police cases can hit the same stage-skip gap.
+
+**The two live cases still need manual correction:** Andrew Williams and Daniel Robinson both
+need their Hospital Cases Sales Order created retroactively (re-running
+`createSalesOrderForHospitalCase` for each, or momentarily setting Stage through "Trip Completed"
+to let the existing trigger fire) — not yet applied.
+
 ### Not independently re-verified this pass (trusted as reported, well-evidenced with record ids)
 
-Tier 2 item 3 (missing institution Sales Orders on ~28% of not-selected cases — the Andrew
-Williams/Daniel Robinson code gap specifically still needs tracing), and Tier 3 items 4/5/7
-(Condition misspelling data pattern, the exact string compared, and the un-run decomposed daily
-rate) — the audit's own live-data evidence for these is thorough and specific; nothing found
-during this pass contradicts them. Flagging as still open rather than closed.
+Tier 3 items 4/5/7 (Condition misspelling data pattern, the exact string compared, and the
+un-run decomposed daily rate) — the audit's own live-data evidence for these is thorough and
+specific; nothing found during this pass contradicts them. Flagging as still open rather than
+closed.
