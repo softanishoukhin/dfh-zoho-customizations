@@ -642,10 +642,11 @@ Pulled Denton Brown's actual invoice (`6503357000078984080`) live: the line item
 master `Unit_Price` reads `1`. So:
 - **The config is correct going forward** — any Sales Order/Invoice created from now on will
   correctly price at $1/km.
-- **The three invoices the audit found (Denton Brown, Alfred Clarke, Cassiena Anglin) are real,
-  already-created, and still wrong** — they were built before the price was corrected, and
-  nothing retroactively fixes them. These need manual correction (credit note + reissue, or a
-  direct edit if unpaid/unsent) — this is a live-data cleanup task, not a code fix.
+- **The three invoices the audit found (Denton Brown, Alfred Clarke, Cassiena Anglin) were real,
+  already-created, and wrong** — they were built before the price was corrected, and nothing
+  retroactively fixes them automatically. **Corrected by the user 2026-08-31, confirmed live:**
+  Denton Brown (`6503357000078984080`) now $1,860; Alfred Clarke (`6503357000078706258`) now
+  $1,847; Cassiena Anglin (`6503357000073434012`) now $1,847.
 - **`IFSLM Initial Police Case Pickup` (`6503357000002869122`) was a real, separate gap** —
   confirmed its master `Unit_Price` was still `180`, and it genuinely can get billed by driven KM
   (`CreateSalesOrderforPoliceCase`'s `Created_on_This_Field_Update == "Initial_Trip"` branch uses
