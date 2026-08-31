@@ -623,3 +623,90 @@ logic, LONI/Release rules, family storage invoices, autopsy trips incl. reschedu
 disposition flow, X-rays, deceased renaming, reports, Books invoice creation/sending) requested
 by Andrea — not started, to be written incrementally as each piece above is confirmed rather
 than as one final pass.
+
+## Second independent audit — `PH_BILLING_FIXES_FOR_DEV_20260828.md`, response 2026-08-31
+
+A second, very thorough live-data audit (workflow rules, products, real Sales Orders/Invoices —
+explicitly could not read Deluge source, flagged that as a gap for us to close). Responding item
+by item; only the ones needing correction or new findings are detailed below — the rest were
+independently reconfirmed and match.
+
+### Tier 1.1 — KM billed as quantity: NOT still live, but real historical invoices are wrong
+
+**Reconciles a contradiction with what we told the user 2026-08-29.** The master Product
+"IFSLM Autopsy Trip Police Case" (`6503357000019249155`) has `Unit_Price = 1` right now —
+confirmed again. But that's not the whole picture: **Invoice/Sales Order line items snapshot
+`List_Price` at creation time and never re-sync when the master product's price changes later.**
+Pulled Denton Brown's actual invoice (`6503357000078984080`) live: the line item's own
+`List_Price` is still `180` (Quantity 180 → $32,400), even though the same product's current
+master `Unit_Price` reads `1`. So:
+- **The config is correct going forward** — any Sales Order/Invoice created from now on will
+  correctly price at $1/km.
+- **The three invoices the audit found (Denton Brown, Alfred Clarke, Cassiena Anglin) are real,
+  already-created, and still wrong** — they were built before the price was corrected, and
+  nothing retroactively fixes them. These need manual correction (credit note + reissue, or a
+  direct edit if unpaid/unsent) — this is a live-data cleanup task, not a code fix.
+- **`IFSLM Initial Police Case Pickup` (`6503357000002869122`) is a real, separate, still-open
+  gap** — confirmed its master `Unit_Price` is still `180` today, and it genuinely can get billed
+  by driven KM (`CreateSalesOrderforPoliceCase`'s `Created_on_This_Field_Update == "Initial_Trip"`
+  branch uses `Quantity = Number_of_distance_in_km`). Same $1/km reprice decision needed here,
+  not yet applied.
+- Recommend a live sweep of every Sales_Orders/Invoices line item referencing either product to
+  find any other pre-fix invoices carrying the wrong frozen price, not just the three the audit
+  happened to surface.
+
+### Tier 1.2 — duplicate untagged Police invoice: real root cause found (not the one guessed)
+
+The audit guessed the workflow rule "Create Invoice from SO on Changing Deal Stage to DFH
+Selected or Embalming Authorization" (id `6503357000003234291`) was missing a Stage condition.
+**Checked live — it isn't:** its trigger criteria correctly requires
+`Stage in (DFH Selected, Embalming Authorization)`, and its one action-condition requires
+`Pipeline = Police Cases`. Both are enforced.
+
+**The real bug is in the function it calls, `automation.CreateInvoicefromSOonChangingDealStageChange`:
+it has no idempotency check at all.** Every time it fires, it unconditionally clones a brand-new
+Invoice from the Deal's "Police Cases" Sales Order — never checking whether a Police invoice
+already exists — and it never sets `Invoice_For` on the new invoice, so it always lands with no
+payer. If a Deal's Stage ever passes through "DFH Selected" or "Embalming Authorization" more
+than once (a correction, a re-save, stepping back and re-forward), this creates another
+untagged duplicate. Not yet fixed — needs a guard added (check for an existing untouched Police
+invoice/Sales-Order-Approved state before creating another) — flagging for a decision on exactly
+what "already invoiced" should mean before writing the guard, rather than guessing.
+
+### Tier 3, item 6 — decomposed cases missing the autopsy line: confirmed NOT a code branch
+
+Read `CreateSalesOrderforPoliceCase` fresh, in full. The autopsy-trip line item is added under
+`if(recordInfo.get("Autopsy_Required") == "Yes")` — this check is completely independent of the
+decomposed/non-decomposed branch above it (which only decides which *storage* product to use).
+**There is no code path that skips the autopsy line because a case is decomposed.** The far more
+likely explanation: `Autopsy_Required` was probably not "Yes" on the specific decomposed Deals
+the audit found (Dwayne Thomas, the Unidentified Female) — plausible on its face, since a body
+too decomposed for a standard autopsy is a real medical/procedural scenario, not just a
+guess. Recommend checking `Autopsy_Required` on those two Deals directly to confirm; no code
+change indicated by this so far.
+
+### Tier 4, item 11 — repo drift claim is itself incorrect
+
+The audit says `createInvoiceBasedOnSalesOrderForPolice` doesn't exist live. **It does** —
+confirmed it's directly called, live, inside `CreateSalesOrderforPoliceCase`
+(`standalone.createInvoiceBasedOnSalesOrderForPolice(crmid);`), and real Police invoices with
+correct `Invoice_For = "Police"` exist as proof it runs successfully. This was very likely a
+false negative from however the audit searched the function list (metadata search, not a direct
+name lookup) — not a real repo/live drift. No reconciliation needed for this specific function;
+if the repo is stale in other ways that's a separate check.
+
+### Tier 4, item 9 — confirmed exactly as reported
+
+Both `Post Mortem (Decomposed)` (`6503357000026737326`, `Product_Category` blank) and
+`City Hospital Decompose` (`6503357000027236090`, `Product_of_This_Hospital` blank) checked live
+— neither can be found by any category-based lookup as currently tagged. Andrea's call on
+whether either belongs in the automated flow; not fixed, since we don't know the intended
+category/hospital to tag them with.
+
+### Not independently re-verified this pass (trusted as reported, well-evidenced with record ids)
+
+Tier 2 item 3 (missing institution Sales Orders on ~28% of not-selected cases — the Andrew
+Williams/Daniel Robinson code gap specifically still needs tracing), and Tier 3 items 4/5/7
+(Condition misspelling data pattern, the exact string compared, and the un-run decomposed daily
+rate) — the audit's own live-data evidence for these is thorough and specific; nothing found
+during this pass contradicts them. Flagging as still open rather than closed.
