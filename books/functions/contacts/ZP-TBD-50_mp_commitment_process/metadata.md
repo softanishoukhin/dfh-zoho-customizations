@@ -111,3 +111,18 @@ Confirmed live 2026-09-01, verified directly:
 
 Cashier SOP (part B) delivered to the developer as a step-by-step document,
 not yet formally handed to staff.
+
+## Addendum 2026-09-01 — Outstanding MP Invoices Dashboard (ZP-TBD-51)
+
+Andrea's follow-up ask: a dashboard showing all unpaid MP invoices (Deceased
+Name, Funeral Date, MP Commitment Amount, MP Commitment Letter Date). See
+`analytics/reports/ZP-TBD-51_outstanding_mp_invoices_dashboard/metadata.md`
+for the full design.
+
+**SOP update (Step 5, creating the MP's own invoice):** the cashier must also
+fill in the **"DECEASED NAME"** custom field on the MP invoice (this field
+already exists on every invoice in this org — it's the same one used for the
+Funeral GCT Report). This is what lets the dashboard match "this MP invoice"
+back to "this deceased's commitment info" reliably, since Andrea's rule keeps
+the commitment fields off the invoice itself — no new field needed, just an
+extra fill-in step using something that was already there.
