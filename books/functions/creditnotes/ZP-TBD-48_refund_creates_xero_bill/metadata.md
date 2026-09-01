@@ -51,21 +51,32 @@ Xero automatically — no new Xero-side code needed at all.
 
 ## Decisions confirmed with the developer (2026-09-01)
 
-1. **Vendor on the new Bill = the customer's own Books contact** (e.g. Howard
-   Morgan's own `customer_id`), not a separate Vendor record for the actual
-   money recipient. The real payee's bank details still travel through as
-   free text on the Bill's line item description, same as they do today on
-   the refund itself.
+1. **Vendor on the new Bill = paired with the customer** — see the revision
+   below; the original plan (bill the customer's own contact directly) turned
+   out to be impossible in current Zoho Books and was superseded.
 2. **Line item account = the same CONTRA ACCOUNT** (`5830143000000594545`)
    already used by the credit note flow, for consistency.
 
-**Open risk to verify on first live test:** Zoho Books' Bills API expects
-`vendor_id` to reference a Vendor-type (or "Both"-type) contact. Howard
-Morgan's contact is a Customer-type contact today. If the API rejects a
-Customer-type `contact_id` as `vendor_id`, the fix is a one-time Books
-setting: change the customer's Contact Type to "Both" in Zoho Books (Contacts
-→ Howard Morgan → Edit → Contact Type). Flagging this now so it isn't a
-surprise on the first real test.
+## Revision — "Both" contact type does not exist in Zoho Books
+
+First attempt used `creditNoteInfo.get("customer_id")` directly as the Bill's
+`vendor_id`. Live test failed: `{"code":118138,"message":"Please enter a
+valid vendor ID"}` — Howard Morgan's contact is `contact_type: "customer"`,
+and Books' Bills API requires a Vendor-type contact.
+
+Tried a follow-up fix (PUT the contact's `contact_type` to `"both"`) — same
+error persisted. Confirmed via Zoho's own community docs: **Zoho Books
+removed the "Both" contact type entirely.** A contact is either a Customer or
+a Vendor; the supported pattern for a contact who is sometimes billed as a
+payee is a **separate, linked Vendor contact** with the same name (Books'
+"Link to Customer/Vendor" UI feature) — there is no single "both" record.
+
+**Resolved with the developer:** the function auto-creates a paired Vendor
+contact (same name as the customer) the first time it's needed, and reuses it
+on future refunds via a name search — no manual per-customer setup step.
+Books' "Link to Customer/Vendor" display association is UI-only as far as
+could be confirmed (no documented public API for it), so it's left as an
+optional manual cosmetic step, not required for the Bill/Xero flow to work.
 
 ## New function — `createBillOnCreditNoteRefund`
 
@@ -79,15 +90,46 @@ gets its own Bill, keyed by a unique bill number so re-runs don't duplicate.
 
 ```deluge
 /*
-Creates a Books Bill (vendor = the customer's own contact) for every refund
-recorded on this Credit Note that doesn't already have a Bill. The existing
-"Create Bill in Xero" function/workflow then pushes that Bill to Xero
-automatically as an Accounts Payable bill -- no direct Xero call needed here.
+Creates a Books Bill (vendor = an auto-created/reused Vendor contact paired
+with the customer by name) for every refund recorded on this Credit Note that
+doesn't already have a Bill. The existing "Create Bill in Xero"
+function/workflow then pushes that Bill to Xero automatically as an Accounts
+Payable bill -- no direct Xero call needed here.
 */
 creditnoteID = creditnote.get("creditnote_id");
 organizationID = organization.get("organization_id");
 creditNoteDetails = zoho.books.getRecordsByID("creditnotes",organizationID,creditnoteID,"zohobooksconnection");
 creditNoteInfo = creditNoteDetails.get("creditnote");
+customerName = creditNoteInfo.get("customer_name");
+vendorSearch = invokeurl
+[
+	url :"https://www.zohoapis.com/books/v3/contacts?search_text=" + customerName.replace(" ","%20") + "&organization_id=" + organizationID
+	type :GET
+	connection:"zohobooksconnection"
+];
+vendorId = "";
+for each  foundContact in vendorSearch.get("contacts")
+{
+	if(foundContact.get("contact_type") == "vendor" && foundContact.get("contact_name") == customerName)
+	{
+		vendorId = foundContact.get("contact_id");
+		break;
+	}
+}
+if(vendorId == "")
+{
+	newVendorMap = Map();
+	newVendorMap.put("contact_name",customerName);
+	newVendorMap.put("contact_type","vendor");
+	createVendorResponse = invokeurl
+	[
+		url :"https://www.zohoapis.com/books/v3/contacts?organization_id=" + organizationID
+		type :POST
+		parameters:newVendorMap.toString()
+		connection:"zohobooksconnection"
+	];
+	vendorId = createVendorResponse.get("contact").get("contact_id");
+}
 refundList = ifnull(creditNoteInfo.get("creditnote_refunds"),list());
 for each  refundEntry in refundList
 {
@@ -117,7 +159,7 @@ for each  refundEntry in refundList
 	lineItemList = list();
 	lineItemList.add(lineItemMap);
 	billMap = Map();
-	billMap.put("vendor_id",creditNoteInfo.get("customer_id"));
+	billMap.put("vendor_id",vendorId);
 	billMap.put("bill_number",billNumber);
 	billMap.put("date",refundEntry.get("date"));
 	billMap.put("line_items",lineItemList);
@@ -142,8 +184,10 @@ note). Action: execute `createBillOnCreditNoteRefund`.
 
 ## Status
 
-Guideline delivered 2026-09-01, not yet applied. Once applied: create a real
-test refund (or re-save Howard Morgan's existing credit note, if that
-re-triggers the workflow) and confirm (a) a Bill appears in Books numbered
-`REFUND-5830143000034707671` for Howard Morgan, and (b) it shows up in Xero as
-an ACCPAY bill shortly after, via the existing `createbillinxero` pipeline.
+Guideline delivered 2026-09-01, currently mid-iteration on the live test
+(Howard Morgan's refund) — two rounds of the `vendor_id` error worked through
+above, current version (auto-create/reuse a paired Vendor contact) not yet
+confirmed working live. Once it passes: confirm (a) a Bill appears in Books
+numbered `REFUND-5830143000034707671` billed to a Vendor contact named
+"Howard Morgan", and (b) it shows up in Xero as an ACCPAY bill shortly after,
+via the existing `createbillinxero` pipeline.
