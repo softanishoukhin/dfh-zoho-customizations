@@ -1,0 +1,428 @@
+try
+{
+	getUrl("https://www.zohoapis.com/creator/custom/delapenhafuneralhome/Sleep_API?publickey=●●●REDACTED●●●&seconds=7");
+}
+catch (e)
+{
+	info e;
+}
+//This is a sample function. Uncomment to execute or make changes to this function.
+invoiceID = invoice.get("invoice_id");
+organizationID = organization.get("organization_id");
+/*invoicedate = invoice.get("date").toDate();*/
+response = invokeurl
+[
+	url :"https://www.zohoapis.com/books/v3/invoices/" + invoiceID + "?organization_id=" + organizationID
+	type :GET
+	connection:"zohobooksconnection"
+];
+invoiceInfo = response.get("invoice");
+dealId = null;
+isThisTiedToADeceased = false;
+try
+{
+	dealId = invoiceInfo.get("custom_field_hash").get("cf_select_the_deceased_unformatted");
+	isThisTiedToADeceased = invoiceInfo.get("custom_field_hash").get("cf_is_this_tied_to_a_deceased");
+}
+catch (e)
+{
+	dealId = null;
+	isThisTiedToADeceased = false;
+}
+// Populate cf_related_crm_deal_id immediately from Books' own data, before
+// attempting the CRM Deal lookup below -- so the Funeral GCT Report can
+// still identify this invoice even if the CRM call fails.
+if(!isNull(dealId) && dealId != "")
+{
+	earlyDealIdMap = Map();
+	earlyCustomFieldsList = list();
+	earlyFieldMap = Map();
+	earlyFieldMap.put("api_name","cf_related_crm_deal_id");
+	earlyFieldMap.put("value",dealId);
+	earlyCustomFieldsList.add(earlyFieldMap);
+	earlyDealIdMap.put("custom_fields",earlyCustomFieldsList);
+	earlyDealIdMap.put("reason","Populate related deal id early (before CRM lookup)");
+	try
+	{
+		zoho.books.updateRecord("Invoices",organizationID,invoiceID,earlyDealIdMap,"zohobooksconnection");
+	}
+	catch (e)
+	{
+		info e;
+	}
+}
+try
+{
+	crmDealInfo = zoho.crm.getRecordById("Deals",dealId);
+}
+catch (e)
+{
+	crmDealInfo = null;
+}
+if(!isNull(dealId) && isThisTiedToADeceased == true && !isNull(crmDealInfo))
+{
+	contactInfo = zoho.books.getRecordsByID("contacts",organizationID,invoiceInfo.get("customer_id"),"zohobooksconnection");
+	info contactInfo;
+	invoiceMap = Map();
+	invoiceMap.put("Invoice_For","Walk In");
+	try
+	{
+		crmContactId = contactInfo.get("contact").get("zcrm_contact_id");
+		if(crmContactId != "")
+		{
+			invoiceMap.put("Contact_Name",contactInfo.get("contact").get("zcrm_contact_id"));
+			invoiceMap.put("Deal_Name__s",dealId);
+			crmContactDetails = zoho.crm.getRecordById("Contacts",contactInfo.get("contact").get("zcrm_contact_id"));
+			try
+			{
+				invoiceMap.put("Account_Name",crmContactDetails.get("Account_Name").get("id"));
+				updateContactWithAccountMap = Map();
+				updateContactWithAccountMap.put("Has_Walk_in_Invoice",true);
+				zoho.crm.updateRecord("Contacts",contactInfo.get("contact").get("zcrm_contact_id"),updateContactWithAccountMap);
+			}
+			catch (e)
+			{
+				try
+				{
+					updateContactWithAccountMap = Map();
+					updateContactWithAccountMap.put("Account_Name",crmDealInfo.get("Account_Name").get("id"));
+					updateContactWithAccountMap.put("Has_Walk_in_Invoice",true);
+					zoho.crm.updateRecord("Contacts",contactInfo.get("contact").get("zcrm_contact_id"),updateContactWithAccountMap);
+					invoiceMap.put("Account_Name",crmDealInfo.get("Account_Name").get("id"));
+				}
+				catch (e)
+				{
+					info e;
+				}
+			}
+		}
+		else
+		{
+			invoiceMap.put("Account_Name",crmDealInfo.get("Account_Name").get("id"));
+		}
+	}
+	catch (e)
+	{
+		info e;
+	}
+	customFields = invoiceInfo.get("custom_field_hash");
+	isEcommerce = false;
+	if(customFields.containKey("cf_is_ecommerce"))
+	{
+		isEcommerceValue = customFields.get("cf_is_ecommerce");
+		isEcommerce = isEcommerceValue.toString().equalsIgnoreCase("true");
+	}
+	invoiceMap.put("Due_Date",invoiceInfo.get("due_date"));
+	invoiceMap.put("Invoice_Date",invoiceInfo.get("date"));
+	invoiceMap.put("Books_Invoice_ID",invoiceInfo.get("invoice_id"));
+	invoiceMap.put("Is_walk_in_Invoice",true);
+	lineItemList = list();
+	if(isEcommerce == true)
+	{
+		// Keywords that indicate this product belongs to Flowers category
+		keywords = {"Wreath","Floral","Spray","Basket","Heart","Circle","Cross"};
+		// Cache the Flowers parent product ID so we don't search repeatedly
+		flowersParentProductId = "";
+		flowersSearchResp = zoho.crm.searchRecords("Products","(Product_Name:equals:Flowers)");
+		if(!isNull(flowersSearchResp) && flowersSearchResp.size() > 0)
+		{
+			flowersParentProductId = flowersSearchResp.get(0).get("id");
+		}
+		for each  lineItem in invoiceInfo.get("line_items")
+		{
+			itemInfo = zoho.books.getRecordsByID("items",organizationID,lineItem.get("item_id"),"zohobooksconnection");
+			itemMap = Map();
+			itemName = lineItem.get("name");
+			// Check if this item name matches flower keywords
+			isFlowerItem = false;
+			for each  key in keywords
+			{
+				if(itemName.containsIgnoreCase(key))
+				{
+					isFlowerItem = true;
+					break;
+				}
+			}
+			if(isNull(itemInfo) || isNull(itemInfo.get("item")) || itemInfo.get("item").get("zcrm_product_id") == "")
+			{
+				searchCriteria = "(Product_Name:equals:" + itemName + ")";
+				searchResponse = zoho.crm.searchRecords("Products",searchCriteria);
+				zcrmProductId = "";
+				if(!isNull(searchResponse) && searchResponse.size() > 0)
+				{
+					zcrmProductId = searchResponse.get(0).get("id");
+					// Product exists in CRM - update Parent_Product if it's a flower item and not already set
+					if(isFlowerItem == true && flowersParentProductId != "")
+					{
+						existingParent = searchResponse.get(0).get("Parent_Product");
+						if(isNull(existingParent))
+						{
+							updateBody = Map();
+							updateBody.put("Parent_Product",flowersParentProductId);
+							zoho.crm.updateRecord("Products",zcrmProductId,updateBody);
+						}
+					}
+				}
+				else
+				{
+					createBody = Map();
+					createBody.put("Product_Name",itemName);
+					createBody.put("Unit_Price",0);
+					// New product - set Parent_Product at creation if it's a flower item
+					if(isFlowerItem == true && flowersParentProductId != "")
+					{
+						createBody.put("Parent_Product",flowersParentProductId);
+					}
+					createResponse = zoho.crm.createRecord("Products",createBody);
+					zcrmProductId = createResponse.get("id");
+				}
+				headers = Map();
+				headers.put("X-com-zoho-invoice-organizationid",organizationID);
+				itemImportURL = "https://books.zoho.com/api/v3/crm/item/" + zcrmProductId.toLong() + "/import";
+				item_response = invokeurl
+				[
+					url :itemImportURL
+					type :POST
+					headers:headers
+					connection:"zohobooksconnection"
+				];
+				info item_response;
+				getItemByZcrmIdURL = "https://books.zoho.com/api/v3/items?zcrm_product_id=" + zcrmProductId + "&organization_id=" + organizationID;
+				getItemByZcrmIdResponse = invokeurl
+				[
+					url :getItemByZcrmIdURL
+					type :GET
+					connection:"zohobooksconnection"
+				];
+				info getItemByZcrmIdResponse;
+				newItemId = "";
+				if(!isNull(getItemByZcrmIdResponse) && !isNull(getItemByZcrmIdResponse.get("items")) && getItemByZcrmIdResponse.get("items").size() > 0)
+				{
+					newItemId = getItemByZcrmIdResponse.get("items").get(0).get("item_id");
+				}
+				if(newItemId != "")
+				{
+					itemInfo = zoho.books.getRecordsByID("items",organizationID,newItemId,"zohobooksconnection");
+				}
+			}
+			else
+			{
+				// itemInfo already had zcrm_product_id - check/update Parent_Product too if flower item
+				if(isFlowerItem == true && flowersParentProductId != "")
+				{
+					existingZcrmId = itemInfo.get("item").get("zcrm_product_id");
+					crmCheckInfo = zoho.crm.getRecordById("Products",existingZcrmId,"zohocrmconnection");
+					if(isNull(crmCheckInfo.get("Parent_Product")))
+					{
+						updateBody = Map();
+						updateBody.put("Parent_Product",flowersParentProductId);
+						zoho.crm.updateRecord("Products",existingZcrmId,updateBody);
+					}
+				}
+			}
+			info itemInfo.get("item").get("zcrm_product_id");
+			if(!isNull(itemInfo) && !isNull(itemInfo.get("item")) && itemInfo.get("item").get("zcrm_product_id") != "")
+			{
+				zcrmProductId = itemInfo.get("item").get("zcrm_product_id");
+				crmProductInfo = zoho.crm.getRecordById("Products",zcrmProductId,"zohocrmconnection");
+				itemMap.put("Product_Name",zcrmProductId);
+				if(!isNull(crmProductInfo.get("Parent_Product")))
+				{
+					itemMap.put("Parent_Product",crmProductInfo.get("Parent_Product").get("id"));
+				}
+				itemMap.put("Quantity",lineItem.get("quantity"));
+				itemMap.put("Discount",lineItem.get("discount"));
+				itemMap.put("List_Price",lineItem.get("rate"));
+				lineItemList.add(itemMap);
+			}
+		}
+	}
+	else
+	{
+		for each  lineItem in invoiceInfo.get("line_items")
+		{
+			itemInfo = zoho.books.getRecordsByID("items",organizationID,lineItem.get("item_id"),"zohobooksconnection");
+			itemMap = Map();
+			if(itemInfo.get("item").get("zcrm_product_id") != "")
+			{
+				crmProductInfo = zoho.crm.getRecordById("Products",itemInfo.get("item").get("zcrm_product_id"),"zohocrmconnection");
+				itemMap.put("Product_Name",itemInfo.get("item").get("zcrm_product_id"));
+				if(!isNull(crmProductInfo.get("Parent_Product")))
+				{
+					itemMap.put("Parent_Product",crmProductInfo.get("Parent_Product").get("id"));
+				}
+				itemMap.put("Quantity",lineItem.get("quantity"));
+				itemMap.put("Discount",lineItem.get("discount"));
+				itemMap.put("List_Price",lineItem.get("rate"));
+				lineItemList.add(itemMap);
+			}
+		}
+	}
+	invoiceMap.put("Invoiced_Items",lineItemList);
+	// Subject updated
+	funeralDateTime = crmDealInfo.get("Funeral_Time");
+	// Extract date only from ISO datetime string (yyyy-MM-dd)
+	funeralDate = "";
+	if(funeralDateTime != null)
+	{
+		funeralDateStr = funeralDateTime.toString();
+		if(funeralDateStr.length() >= 10)
+		{
+			funeralDate = funeralDateStr.subString(0,10);
+		}
+	}
+	invoiceDateStr = invoiceInfo.get("date");
+	invoiceDateFormatted = invoiceDateStr;
+	if(invoiceDateStr != null && invoiceDateStr.length() > 0)
+	{
+		invoiceDateFormatted = invoiceDateStr.toDate("yyyy-MM-dd").toString("dd-MMM-yyyy");
+	}
+	if(customFields.containKey("cf_is_ecommerce"))
+	{
+		isEcommerceValue = customFields.get("cf_is_ecommerce");
+		isEcommerce = isEcommerceValue.toString().equalsIgnoreCase("true");
+	}
+	if(isEcommerce == true)
+	{
+		invoiceMap.put("Subject","Flower Order" + " - " + invoiceDateFormatted + " - " + funeralDate + " - " + crmDealInfo.get("Deal_Name"));
+		invoiceMap.put("Status","Paid");
+	}
+	else
+	{
+		invoiceMap.put("Subject","Walk in Invoice - " + invoiceInfo.get("invoice_number"));
+		invoiceMap.put("Status","Draft");
+	}
+	invoiceMap.put("Is_Ecommerce",isEcommerce);
+	info "Invoice map with isecommerce";
+	info invoiceMap;
+	invoiceMap.put("Books_Invoice_Number",invoiceInfo.get("invoice_number"));
+	recordList = list();
+	recordList.add(invoiceMap);
+	dataMap = Map();
+	dataMap.put("data",recordList);
+	dataMap.put("trigger",{"workflow"});
+	info dataMap;
+	if(invoiceInfo.containKey("custom_field_hash") && invoiceInfo.get("custom_field_hash").containKey("cf_crm_invoice_id"))
+	{
+		crmInvoiceResult = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v2.1/Invoices/" + invoiceInfo.get("custom_field_hash").get("cf_crm_invoice_id")
+			type :PUT
+			parameters:dataMap.toString()
+			connection:"zohocrmconnection"
+		];
+	}
+	else
+	{
+		crmInvoiceResult = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v8/Invoices"
+			type :POST
+			parameters:dataMap.toString()
+			connection:"zohocrmconnection"
+		];
+	}
+	info "crmInvoiceResult";
+	info crmInvoiceResult;
+	try
+	{
+		crmInvoiceId = crmInvoiceResult.get("data").get(0).get("details").get("id");
+	}
+	catch (e)
+	{
+		crmInvoiceId = null;
+	}
+	if(!isNull(crmInvoiceId))
+	{
+		try
+		{
+			accountID = invoiceMap.get("Account_Name");
+			relatedContacts = zoho.crm.getRelatedRecords("Contacts","Accounts",accountID);
+		}
+		catch (e)
+		{
+			relatedContacts = list();
+		}
+		crmPayerID = '';
+		for each  contact in relatedContacts
+		{
+			potentialPayers = Map();
+			potentialPayers.put("Name",ifnull(contact.get("First_Name"),"") + " " + contact.get("Last_Name"));
+			potentialPayers.put("Account",accountID);
+			potentialPayers.put("Invoice",crmInvoiceId);
+			potentialPayers.put("Contact",contact.get("id"));
+			createPotentialPayerResult = zoho.crm.createRecord("Potential_Payers",potentialPayers);
+			info createPotentialPayerResult;
+			if(contactInfo.get("contact").get("zcrm_contact_id") == contact.get("id"))
+			{
+				crmPayerID = createPotentialPayerResult.get("id");
+			}
+		}
+		try
+		{
+			booksInvoiceDetails = invoiceInfo;
+			// Get USD ↔ JMD exchange rate
+			usdRateResp = invokeurl
+			[
+				url :"https://www.zohoapis.com/books/v3/settings/currencies/5830143000000000097/exchangerates?organization_id=" + organizationID
+				type :GET
+				connection:"zohobooksconnection"
+			];
+			usdRate = usdRateResp.get("exchange_rates").get(0).get("rate");
+			// Check invoice currency
+			if(booksInvoiceDetails.get("currency_code") == "JMD")
+			{
+				// Invoice amount in JMD
+				amountDueInJMD = booksInvoiceDetails.get("total");
+				// Convert JMD → USD
+				amountDueInUSD = amountDueInJMD / usdRate;
+			}
+			else
+			{
+				// Invoice amount in USD
+				amountDueInUSD = booksInvoiceDetails.get("total");
+				// Convert USD → JMD
+				amountDueInJMD = amountDueInUSD * usdRate;
+			}
+		}
+		catch (e)
+		{
+			amountDueInUSD = booksInvoiceDetails.get("total");
+			amountDueInJMD = booksInvoiceDetails.get("total");
+			info e;
+		}
+		m = Map();
+		customFieldsList = list();
+		fieldMap = Map();
+		fieldMap.put("api_name","cf_crm_invoice_id");
+		fieldMap.put("value",crmInvoiceId);
+		customFieldsList.add(fieldMap);
+		fieldMap2 = Map();
+		fieldMap2.put("api_name","cf_crm_payer_id");
+		fieldMap2.put("value",crmPayerID);
+		customFieldsList.add(fieldMap2);
+		fieldMap1 = Map();
+		fieldMap1.put("api_name","cf_amount_due_in_jmd");
+		fieldMap1.put("value",amountDueInJMD.round(2));
+		customFieldsList.add(fieldMap1);
+		fieldMap2 = Map();
+		fieldMap2.put("api_name","cf_amount_due_in_usd");
+		fieldMap2.put("value",amountDueInUSD.round(2));
+		customFieldsList.add(fieldMap2);
+		fieldMap4 = Map();
+		fieldMap4.put("api_name","cf_updated_from_crm");
+		fieldMap4.put("value",true);
+		customFieldsList.add(fieldMap4);
+		fieldMap5 = Map();
+		fieldMap5.put("api_name","cf_related_crm_deal_id");
+		fieldMap5.put("value",dealId);
+		customFieldsList.add(fieldMap5);
+		m.put("custom_fields",customFieldsList);
+		m.put("zcrm_potential_id",dealId);
+		m.put("reason","Updated as Walk in Invoice");
+		info m;
+		responseBooksInvoice = zoho.books.updateRecord("Invoices",organizationID,invoiceID,m,"zohobooksconnection");
+		info "responseBooksInvoice";
+		info responseBooksInvoice;
+	}
+}
