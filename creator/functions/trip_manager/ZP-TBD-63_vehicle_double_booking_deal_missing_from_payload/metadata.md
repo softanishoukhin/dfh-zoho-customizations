@@ -78,3 +78,61 @@ This fix prevents the situation going forward -- it does not retroactively resol
 "DFH White Escalade 2015 CQ 9776" conflict already on the two existing Sept 19 funerals.
 Andrea (or Trip Manager staff) will still need to manually decide which funeral keeps that
 vehicle and reassign the other to a different one.
+
+## UPDATE 2026-09-09 -- v1 (above) reported still not working; superseded by v2
+
+After deploying v1, the user reported it still wasn't blocking double-bookings, and asked
+for three specific behaviors instead: (1) validate on save the same way the CRM function
+would, with a clear rejection message if the vehicle is already booked that day; (2) make
+departure time mandatory whenever any vehicle is selected; (3) the vehicle dropdown should
+only ever list genuinely available vehicles.
+
+Rather than keep debugging why `preventeditvehicle` firing via the REST PUT wasn't
+producing the expected result, `saveAssignment` was rewritten (`saveAssignment_FIX_v2.deluge`,
+this folder) to be fully self-contained -- it no longer depends on that CRM validation rule
+at all for this logic:
+- Departure time is now mandatory whenever any vehicle (hearse, removal, or rental) is
+  selected -- previously only a soft "not yet scheduled" warning.
+- Before saving, if the Hearse is a specific `Availability_Based` fleet vehicle, it directly
+  queries `Vehicle_Bookings` for a same-day conflict (same query shape as the already-
+  correct `getAvailableHearses` function) and rejects with "This vehicle is already booked
+  on this day." if found, before ever attempting the save.
+- On success, it creates/updates the `Vehicle_Bookings` record itself and stamps
+  `Vehicle_Booking_ID` back onto the Trip -- giving `getAvailableHearses` (and therefore the
+  dropdown's existing "hide booked vehicles" logic, which was already correct but had no
+  real data to filter against) real booking data to work with.
+
+**Important:** v2 intentionally does NOT send `Deal` in the PUT payload (unlike v1) --
+doing so would make the CRM validation rule ALSO fire now that it can see Deal, risking a
+SECOND, duplicate `Vehicle_Bookings` record for the same assignment. v2 is the sole owner
+of this logic going forward; deploy v2 in place of v1, not on top of it.
+
+**Known gap, out of scope for this fix:** if a trip's vehicle is changed from one
+Availability_Based vehicle to a different one, the old `Vehicle_Bookings` record for the
+previous vehicle is not actively released/deleted (same gap the original CRM validation
+rule already had). Flag separately if stale bookings become a real problem.
+
+### Deploy (v2)
+1. Open `map saveAssignment(...)` in the Trip Manager Creator app's function editor.
+2. Replace its full contents with `saveAssignment_FIX_v2.deluge` (the whole function, not
+   a diff) -- this REPLACES v1, do not layer them.
+3. **Test 1 (mandatory departure):** try saving with a vehicle selected but no departure
+   time. Confirm it's rejected with "Please set a departure time before saving a vehicle
+   assignment." and nothing is saved.
+4. **Test 2 (booking created):** assign a specific `Availability_Based` vehicle with a
+   departure time, no conflict. Confirm it saves, and a `Vehicle_Bookings` record now
+   exists for it (Vehicle, Deal, Start/End matching the departure time, Status
+   "Confirmed").
+5. **Test 3 (double-booking blocked):** assign that same vehicle to a second funeral the
+   same day. Confirm it's rejected with "This vehicle is already booked on this day." and
+   the second trip's Vehicle field is not changed.
+6. **Test 4 (dropdown filtering):** reopen the first funeral's vehicle dropdown (or a third,
+   unrelated funeral on the same day) -- confirm the now-booked vehicle no longer appears
+   in the "available" list.
+7. **Test 5 (re-saving the same trip, no false conflict):** re-open the trip from Test 2 and
+   save again (e.g. just changing the driver, vehicle/date unchanged). Confirm it does NOT
+   reject itself as a conflict (the existing-booking-id exclusion should handle this).
+8. **Test 6 (generic non-Availability_Based "Hearse" unaffected):** assign the generic
+   "Hearse" line item (not a specific named vehicle) to a trip. Confirm no booking check
+   applies and no `Vehicle_Bookings` record is created -- matches the Ethme Davids /
+   Shemiah Gayle distinction already confirmed and explained to Andrea separately.
