@@ -24,6 +24,11 @@ directly to the live workspace copy of `tripManagerApp/app/widget.html` (per
 [[feedback_widget_js_html_direct_edit]]).
 
 ## 2. Burial Schedule missing manually (TM) assigned vehicles -- guideline provided, not deployed
+## SUPERSEDED -- see ZP-TBD-62. This guideline was deployed on 2026-09-08 but had two bugs
+## of its own (an un-bracketed COQL WHERE clause, and an unreliable isNull() check on an
+## invokeurl-sourced Map) that kept the fallback from ever actually working. The corrected
+## function is `../ZP-TBD-62_dfr_stale_cache_and_burial_schedule_hearse_fix/getBurialSchedule_FIX_v2.deluge`.
+
 Reported: the Burial Schedule report in Trip Manager only shows vehicles booked from the
 invoice; it should also show vehicles Trip Manager staff assigned manually, matching the
 old CRM report.
