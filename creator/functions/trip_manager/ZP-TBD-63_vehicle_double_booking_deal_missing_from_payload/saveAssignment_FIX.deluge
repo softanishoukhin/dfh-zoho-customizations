@@ -1,0 +1,217 @@
+// Task: ZP-TBD-63 -- same hearse booked to two overlapping/same-day funerals when assigned
+// via Trip Manager (e.g. "DFH White Escalade 2015 CQ 9776" on two Sept 19 funerals).
+// Zoho App: Creator (Trip_Manager.ds)
+// Function Name: map saveAssignment(...) -- EXISTING (already carries the ZP-TBD-25 REST
+// PUT fix so the "Prevent Edit Vehicle" validation rule actually runs). This is a further
+// fix on top of that, not a new function.
+//
+// ROOT CAUSE (confirmed via the live preventeditvehicle validation rule source, pulled
+// directly): that function does
+//   dealId = entityMap.get("Deal").get("id");   // wrapped in try/catch -> null on failure
+//   if(!isNull(dealId)) { ...ALL booking-lock-check + double-booking-check + Vehicle_
+//   Bookings create/update logic lives in here... } else { response.put('status',
+//   'success'); }
+// Zoho only populates entityMap with the fields actually present in the incoming update
+// payload, not the full stored record. saveAssignment's REST PUT only ever sends the
+// fields being changed (Vehicle, Driver, Departure_Time, etc.) -- Deal was never included,
+// since it isn't being edited. So entityMap.get("Deal") comes back empty, dealId resolves
+// to null, and the validation rule's entire body (both the package-lock check AND the
+// same-day double-booking check that creates/looks up Vehicle_Bookings) is skipped
+// silently, returning success with nothing done. A direct CRM UI edit doesn't hit this,
+// because the standard edit form submits the whole record including Deal.
+//
+// FIX: fetch the Trip's current Deal id whenever a vehicle is actually being assigned
+// (hearseId != "") and include it explicitly in the PUT payload, so the validation rule
+// can see it and its booking logic actually runs. This also required broadening the
+// existing currentTrip fetch (previously only fetched when isSchedulable, for
+// currentStatus) to also fire whenever hearseId != "".
+
+map saveAssignment(string tripId, string hearseId, string removalId, string rentalId, string driverId, string attendantId, string departureTime)
+{
+	result = Map();
+	result.put("success",false);
+	result.put("message","");
+	result.put("scheduled",false);
+	result.put("missing",List());
+	try
+	{
+		updMap = Map();
+		if(hearseId != "")
+		{
+			updMap.put("Vehicle",hearseId.toLong());
+		}
+		if(removalId != "")
+		{
+			updMap.put("Amber_Vehicle",removalId.toLong());
+		}
+		if(rentalId != "")
+		{
+			updMap.put("Rental_Vehicles",rentalId.toLong());
+		}
+		if(driverId != "")
+		{
+			updMap.put("Driver",driverId.toLong());
+		}
+		if(attendantId != "")
+		{
+			updMap.put("Attendant_NEW",attendantId.toLong());
+		}
+		if(departureTime != "")
+		{
+			depClean = departureTime.trim();
+			depFormatted = "";
+			try
+			{
+				depDt = depClean.toDateTime("yyyy-MM-dd HH:mm");
+				depFormatted = depDt.toString("yyyy-MM-dd'T'HH:mm:ss");
+			}			catch (e2)
+			{
+				depFormatted = "";
+			}
+			if(depFormatted != "")
+			{
+				updMap.put("Departure_Time",depFormatted);
+				updMap.put("Scheduled_Date",depFormatted);
+				updMap.put("Funeral_Time_Change_Alert",false);
+				updMap.put("Grave_Type_Change_Alert",false);
+			}
+			else
+			{
+				result.put("message","Invalid departure date/time format");
+				return result;
+			}
+		}
+		hasVehicle = hearseId != "" || removalId != "" || rentalId != "";
+		hasDriver = driverId != "";
+		hasDeparture = departureTime != "";
+		isSchedulable = hasVehicle && hasDriver && hasDeparture;
+		missingItems = List();
+		if(!hasVehicle)
+		{
+			missingItems.add("a vehicle");
+		}
+		if(!hasDriver)
+		{
+			missingItems.add("a driver");
+		}
+		if(!hasDeparture)
+		{
+			missingItems.add("a departure time");
+		}
+		result.put("missing",missingItems);
+		// Fetch the current Trip whenever we need its Trip_Status (isSchedulable, as
+		// before) OR its Deal id (whenever a vehicle is being assigned -- NEW, see below).
+		// One fetch covers both needs instead of two separate ones.
+		currentTrip = Map();
+		if(isSchedulable || hearseId != "")
+		{
+			try
+			{
+				currentTrip = zoho.crm.getRecordById("Trips",tripId.toLong(),{"connection":"zohocrm_connection"});
+			}			catch (eCur)
+			{
+				currentTrip = Map();
+			}
+		}
+		currentStatus = "";
+		if(isSchedulable && currentTrip.containKey("id"))
+		{
+			tsRaw = currentTrip.get("Trip_Status");
+			if(!isNull(tsRaw))
+			{
+				currentStatus = "" + tsRaw;
+			}
+		}
+		// NEW: include Deal in the PUT payload whenever a vehicle is being assigned, so the
+		// "Prevent Edit Vehicle" validation rule (which reads entityMap.get("Deal") from the
+		// incoming payload, not the stored record) can actually run its booking-lock and
+		// same-day double-booking checks instead of silently no-op'ing (ZP-TBD-63).
+		if(hearseId != "" && currentTrip.containKey("id"))
+		{
+			try
+			{
+				dealLk = currentTrip.get("Deal");
+				dealIdForVR = "" + dealLk.get("id");
+				if(dealIdForVR != "" && dealIdForVR != "null")
+				{
+					updMap.put("Deal",dealIdForVR.toLong());
+				}
+			}			catch (eDealLk)
+			{
+			}
+		}
+		willSetScheduled = false;
+		if(isSchedulable && currentStatus != "Started" && currentStatus != "Completed")
+		{
+			updMap.put("Trip_Status","Scheduled");
+			willSetScheduled = true;
+		}
+		if(updMap.isEmpty())
+		{
+			result.put("message","No fields to update");
+			return result;
+		}
+		// ===== REST PUT (was: zoho.crm.updateRecord) — goes through the real API save
+		// pipeline so the "Prevent Edit Vehicle" Validation Rule (and any other validation
+		// rule on Trips) actually runs, same as a direct CRM UI edit. =====
+		putDataList = List();
+		putDataList.add(updMap);
+		putTrigger = List();
+		putTrigger.add("workflow");
+		putBody = Map();
+		putBody.put("data",putDataList);
+		putBody.put("trigger",putTrigger);
+		exceptionMessage = "";
+		putCode = "";
+		putMessage = "";
+		try
+		{
+			putResp = invokeurl
+			[
+				url :"https://www.zohoapis.com/crm/v7/Trips/" + tripId
+				type :PUT
+				parameters:putBody.toString()
+				headers:{"Content-Type":"application/json"}
+				connection:"zohocrm_connection"
+			];
+			try
+			{
+				putData = putResp.get("data");
+				putFirst = putData.get(0);
+				putCode = ifnull(putFirst.get("code"),"");
+				putMessage = ifnull(putFirst.get("message"),"");
+			}			catch (ePutParse)
+			{
+			}
+			if(putCode != "SUCCESS")
+			{
+				if(putMessage != "")
+				{
+					exceptionMessage = putMessage;
+				}
+				else
+				{
+					exceptionMessage = "Trip update did not return SUCCESS: " + putResp.toString();
+				}
+			}
+		}		catch (e)
+		{
+			exceptionMessage = e.toString();
+		}
+		if(exceptionMessage != "")
+		{
+			// Surface the real rejection reason (e.g. a Validation Rule block) to the UI
+			// instead of a generic failure -- this is new: previously the validation rule
+			// never ran from here, so this branch was unreachable for that case.
+			result.put("message",exceptionMessage);
+			return result;
+		}
+		result.put("success",true);
+		result.put("message","Assignment saved");
+		result.put("scheduled",willSetScheduled);
+	}	catch (e)
+	{
+		result.put("message","Exception: " + e);
+	}
+	return result;
+}
