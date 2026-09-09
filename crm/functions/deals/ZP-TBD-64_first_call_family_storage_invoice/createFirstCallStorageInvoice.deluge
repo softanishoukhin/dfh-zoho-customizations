@@ -70,13 +70,19 @@ void automation.createFirstCallStorageInvoice(Int crmid)
 	{
 		return;
 	}
-	storageDays = 0;
+	// Guard: some First Call Deals reach "DFH Not Selected" without DFH ever actually
+	// picking up the deceased (family chose another home before pickup happened) --
+	// confirmed live, e.g. Deals "Raissa Nifantiva" and "Winifred Rainor", both at this
+	// exact stage with Is_Deceased_In_Our_Care = "No" and Initial_Trip_Completed_At
+	// blank. There's nothing to storage-bill for in that case (DFH never had custody),
+	// so skip invoice creation entirely rather than generate a zero-quantity charge.
 	initialPickupRaw = recordInfo.get("Initial_Trip_Completed_At");
-	if(!isNull(initialPickupRaw))
+	if(isNull(initialPickupRaw))
 	{
-		initialPickupDate = initialPickupRaw.toString("yyyy-MM-dd").toDate();
-		storageDays = initialPickupDate.days360(zoho.currentdate);
+		return;
 	}
+	initialPickupDate = initialPickupRaw.toString("yyyy-MM-dd").toDate();
+	storageDays = initialPickupDate.days360(zoho.currentdate);
 	if(storageDays < 0)
 	{
 		storageDays = 0;

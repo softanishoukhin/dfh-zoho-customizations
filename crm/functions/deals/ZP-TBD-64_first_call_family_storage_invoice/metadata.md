@@ -37,7 +37,22 @@ and in the .deluge file's own header comments, for Andrea to confirm or correct.
 - **Initial Pickup date field**: `Deals.Initial_Trip_Completed_At` (datetime) -- this
   org's own existing `generateFamilyNoShowStorageInvoice` automation already uses this
   exact field for an equivalent day-count calculation, so it's the established
-  precedent, not a guess.
+  precedent, not a guess. **Confirmed reliably populated for First Call specifically**
+  (27 of 31 real First Call Deals sampled have it set) via the CRM workflow "Update Deal
+  Stage to Initial Trip Completed" (Trips module, fires on Trip_Status -> "Completed",
+  function `updateDealStagetoInitialTripCompleted`) -- applies uniformly across
+  pipelines, not scenario-restricted to Hospital/Police as an earlier check of
+  `Driver_App.ds` alone had suggested (that file only writes this field for Hospital/
+  Police child deals; the real, pipeline-agnostic write site is this separate CRM
+  workflow, not the Driver App).
+- **Edge case guarded against**: the 4 unpopulated First Call Deals found while
+  confirming the above were not random -- two of them ("Raissa Nifantiva",
+  "Winifred Rainor") are already at Stage "DFH Not Selected" with
+  `Is_Deceased_In_Our_Care = "No"` and `Initial_Trip_Completed_At` blank, meaning the
+  family chose another funeral home before DFH ever actually picked up the deceased.
+  There's nothing to storage-bill for in that case. The function now returns early
+  (no invoice created at all) when `Initial_Trip_Completed_At` is blank, instead of
+  generating a nonsensical zero-quantity storage line.
 - **Products** (all confirmed live, none named exactly "Storage and Removal" anywhere in
   the catalog):
   - Quantity-based daily storage -> **"Storage Fee"** (id `6503357000029739051`, $1500,
@@ -110,6 +125,9 @@ and in the .deluge file's own header comments, for Andrea to confirm or correct.
    with Status != "Completed" (or no Operations record) -- confirm it does NOT appear.
 4. **Day count**: verify against Andrea's own example (Initial Pickup Sep 1, DFH Not
    Selected Sep 5 -> Quantity 4) using two test dates set accordingly.
+4b. **No-pickup edge case**: move a First Call Deal straight to "DFH Not Selected"
+   without ever completing its initial pickup trip (Initial_Trip_Completed_At blank).
+   Confirm NO invoice is created at all.
 5. **Transfer Trip fix (ZP-TBD-61 stage bug)**: on a Montego Bay First Call Deal now at
    Stage "DFH Not Selected" with an UNPAID Family Storage Invoice, click "Create Transfer
    Trip" -- confirm it's now rejected with "The family storage invoice isn't paid yet."
