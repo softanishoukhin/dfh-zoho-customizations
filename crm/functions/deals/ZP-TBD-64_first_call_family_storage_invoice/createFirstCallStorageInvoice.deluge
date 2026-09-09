@@ -76,16 +76,23 @@ void automation.createFirstCallStorageInvoice(Int crmid)
 	// exact stage with Is_Deceased_In_Our_Care = "No" and Initial_Trip_Completed_At
 	// blank. There's nothing to storage-bill for in that case (DFH never had custody),
 	// so skip invoice creation entirely rather than generate a zero-quantity charge.
+	// NOTE: deliberately NOT using isNull() here -- confirmed twice already in this same
+	// engagement (COQL/getBurialSchedule work) that isNull() is unreliable on values
+	// read from an invokeurl response (recordInfo here comes from one). Using the
+	// string-conversion null check this codebase already uses everywhere else for
+	// invokeurl-sourced values instead.
 	initialPickupRaw = recordInfo.get("Initial_Trip_Completed_At");
-	if(isNull(initialPickupRaw))
+	initialPickupCheckStr = "" + initialPickupRaw;
+	if(initialPickupCheckStr == "" || initialPickupCheckStr == "null")
 	{
 		return;
 	}
 	initialPickupDate = initialPickupRaw.toString("yyyy-MM-dd").toDate();
 	storageDays = initialPickupDate.days360(zoho.currentdate);
-	if(storageDays < 0)
+	// Andrea: same-day pickup and DFH Not Selected should still bill as 1 day, not 0.
+	if(storageDays < 1)
 	{
-		storageDays = 0;
+		storageDays = 1;
 	}
 	embalmingComplete = false;
 	try

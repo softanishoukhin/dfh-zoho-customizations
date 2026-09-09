@@ -53,6 +53,22 @@ and in the .deluge file's own header comments, for Andrea to confirm or correct.
   There's nothing to storage-bill for in that case. The function now returns early
   (no invoice created at all) when `Initial_Trip_Completed_At` is blank, instead of
   generating a nonsensical zero-quantity storage line.
+
+## UPDATE 2026-09-09 -- two fixes from live test feedback (TC03 failed; quantity request)
+1. **TC03 (no-pickup, no-invoice edge case) failed live -- invoice was still created.**
+   Root cause: the guard used `isNull(initialPickupRaw)`, and `recordInfo` (the source of
+   that value) comes from an `invokeurl` GET response -- the exact same class of value
+   already confirmed twice this engagement (see
+   [[feedback_creator_customapi_method_and_coql_brackets]]) where `isNull()` does not
+   reliably return a real boolean. Fixed by switching to the string-conversion null
+   check (`"" + initialPickupRaw` compared against `""`/`"null"`) that this codebase
+   already uses everywhere else for invokeurl-sourced values, instead of `isNull()`.
+2. **Same-day pickup + DFH Not Selected should bill as 1 day, not 0** (Andrea's explicit
+   request). Changed the floor from `if(storageDays < 0){ storageDays = 0; }` to
+   `if(storageDays < 1){ storageDays = 1; }`.
+
+Both fixes are in the current `createFirstCallStorageInvoice.deluge` in this folder --
+redeploy before retesting TC02 and TC03.
 - **Products** (all confirmed live, none named exactly "Storage and Removal" anywhere in
   the catalog):
   - Quantity-based daily storage -> **"Storage Fee"** (id `6503357000029739051`, $1500,
