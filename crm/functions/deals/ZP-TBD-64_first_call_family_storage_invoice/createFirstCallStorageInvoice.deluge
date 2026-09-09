@@ -46,6 +46,15 @@
 // "Completed"). If this turns out to be the wrong signal, Embalming_Report_Uploaded
 // (boolean) is the other candidate -- flagged to Andrea as an assumption to confirm.
 //
+// DUPLICATE HANDLING: if a Family Storage Invoice already exists on the Deal (matched by
+// Subject containing "Family Storage Invoice" -- the one marker unique to this
+// automation), this function UPDATES that invoice's line items in place instead of
+// creating a second one. OPEN QUESTION for Andrea: this will still overwrite an
+// invoice's line items even if it has already been paid (no payment-status guard is
+// applied here) -- flag if that needs protecting against; not added yet since the exact
+// CRM Invoices.Status value for "paid" wasn't confirmed and guessing at it risked being
+// wrong in either direction (silently allowing or silently blocking).
+//
 // BOOKS SYNC: no explicit sync step is needed in this function. Confirmed live: an
 // existing, already-active Workflow Rule "Create Invoice in Books" (id
 // 6503357000009264079) fires on EVERY Invoices-module record creation regardless of
@@ -107,6 +116,29 @@ void automation.createFirstCallStorageInvoice(Int crmid)
 	catch (e)
 	{
 		embalmingComplete = false;
+	}
+	// Find-or-update: this workflow can fire more than once for the same Deal (e.g. the
+	// Stage is moved away and back, or a re-test during setup) -- confirmed live this was
+	// creating a brand new duplicate invoice every time instead of updating the one
+	// already there. Look for an existing invoice this same automation already created
+	// for this Deal (matched by Subject, since that's the one marker unique to this
+	// automation) and update it in place instead of creating a second one.
+	existingInvoiceId = "";
+	try
+	{
+		existingInvoices = zoho.crm.getRelatedRecords("Invoices","Deals",crmid);
+		for each  existInv in existingInvoices
+		{
+			existSubj = ifnull(existInv.get("Subject"),"");
+			if(existSubj.contains("Family Storage Invoice") && existingInvoiceId == "")
+			{
+				existingInvoiceId = "" + existInv.get("id");
+			}
+		}
+	}
+	catch (e)
+	{
+		existingInvoiceId = "";
 	}
 	taxFieldResponse = invokeurl
 	[
@@ -219,6 +251,21 @@ void automation.createFirstCallStorageInvoice(Int crmid)
 	recordList.add(invoiceMap);
 	dataMap = Map();
 	dataMap.put("data",recordList);
+	if(existingInvoiceId != "")
+	{
+		// UPDATE the existing Family Storage Invoice's line items in place (e.g. Embalming
+		// became complete after the invoice was first created) instead of creating a
+		// duplicate. Does not touch Potential_Payers -- those were already created the
+		// first time this invoice was made.
+		invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v2.1/Invoices/" + existingInvoiceId
+			type :PUT
+			parameters:dataMap.toString()
+			connection:"zohooauth"
+		];
+		return;
+	}
 	createInvoice = invokeurl
 	[
 		url :"https://www.zohoapis.com/crm/v2.1/Invoices"

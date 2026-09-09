@@ -69,6 +69,26 @@ and in the .deluge file's own header comments, for Andrea to confirm or correct.
 
 Both fixes are in the current `createFirstCallStorageInvoice.deluge` in this folder --
 redeploy before retesting TC02 and TC03.
+
+## UPDATE 2026-09-09 -- TC05 failed live: created a duplicate invoice instead of updating
+
+Live test (TC05, adding the Embalming line to a Deal that already had a Family Storage
+Invoice from an earlier trigger) created a second, duplicate invoice instead of updating
+the existing one. Root cause: the function had no duplicate check at all -- every workflow
+firing unconditionally created a brand new invoice.
+
+**Fix:** before creating, the function now looks up the Deal's related Invoices for one
+whose Subject contains "Family Storage Invoice" (the one marker unique to this
+automation). If found, it PUTs the freshly recomputed line items onto that existing
+invoice instead of POSTing a new one. If not found, it creates as before.
+
+**Open question for Andrea:** this update path does not check whether the existing
+invoice has already been paid -- it will still overwrite its line items either way. Not
+guarded yet since the exact CRM Invoices.Status value for "paid" wasn't confirmed and a
+wrong guess could either fail to protect or wrongly block a legitimate re-run. Let us know
+if this needs a payment-status guard added.
+
+Redeploy before retesting TC05.
 - **Products** (all confirmed live, none named exactly "Storage and Removal" anywhere in
   the catalog):
   - Quantity-based daily storage -> **"Storage Fee"** (id `6503357000029739051`, $1500,
