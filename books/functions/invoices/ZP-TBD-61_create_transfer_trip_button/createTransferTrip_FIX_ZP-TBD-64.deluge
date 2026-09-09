@@ -1,0 +1,230 @@
+// Task: ZP-TBD-64 -- corrects the existing ZP-TBD-61 "Create Transfer Trip" Books
+// function. Two changes, both scoped to the First Call branches only:
+//
+// FIX (pre-existing bug, unrelated to this task but found while working on it): the
+// First Call branches compared stage == "Closed Lost" -- but the First Call pipeline
+// has NO stage literally named "Closed Lost" (confirmed live via getPipelines). Its
+// closed-lost-equivalent stage is actually named "DFH Not Selected" (forecast_type
+// "Closed Lost" is just the internal category, not the stored Stage value). This means
+// the First Call branch of this button has never matched a real Deal since it was
+// built. Fixed to compare against "DFH Not Selected".
+//
+// NEW: now that a Family Storage Invoice exists for First Call cases (ZP-TBD-64's new
+// createFirstCallStorageInvoice automation), the Montego Bay First Call branch now
+// requires that invoice to be paid before creating the Transfer Trip -- mirroring the
+// Hospital/Police branch's existing pattern exactly (isFamilyInvoice check, then a
+// paid-status check). The Kingston branch is unaffected -- it never creates a trip
+// (Kingston First Call cases don't need a Transfer Trip), so no payment gate applies
+// there, only the same stage-value fix.
+//
+// Everything else in this function -- the Hospital/Police branch, duplicate-check,
+// Trip creation, Owner logic -- is byte-for-byte unchanged from the version documented
+// in this folder's metadata.md (deployed and verified live 2026-09-07).
+
+invoiceID = invoice.get("invoice_id");
+organizationID = organization.get("organization_id");
+response = invokeurl
+[
+	url :"https://www.zohoapis.com/books/v3/invoices/" + invoiceID + "?organization_id=" + organizationID
+	type :GET
+	connection:"zohobooksconnection"
+];
+invoiceInfo = response.get("invoice");
+dealId = "";
+crmInvoiceId = "";
+try
+{
+	dealId = ifnull(invoiceInfo.get("custom_field_hash").get("cf_related_crm_deal_id"),"");
+	crmInvoiceId = ifnull(invoiceInfo.get("custom_field_hash").get("cf_crm_invoice_id"),"");
+}
+catch (e)
+{
+	dealId = "";
+	crmInvoiceId = "";
+}
+resultMap = Map();
+if(dealId == "")
+{
+	resultMap.put("message","This invoice isn't linked to a case yet.");
+	resultMap.put("code",1);
+	return resultMap;
+}
+dealDetails = invokeurl
+[
+	url :"https://www.zohoapis.com/crm/v7/Deals/" + dealId
+	type :GET
+	connection:"zohocrmconnection"
+];
+recordInfo = dealDetails.get("data").get(0);
+pipeline = ifnull(recordInfo.get("Pipeline"),"");
+caseLocation = ifnull(recordInfo.get("Case_Location"),"");
+stage = ifnull(recordInfo.get("Stage"),"");
+hospitalReleaseDate = ifnull(recordInfo.get("Hospital_Release_Date"),"");
+noInterestDate = ifnull(recordInfo.get("Receiving_Letter_of_No_Interest_Date"),"");
+pickupStreet = "";
+pickupCity = "";
+pickupZip = "";
+destinationStreet = "";
+destinationStreet2 = "";
+destinationCity = "";
+if(pipeline == "Hospital Cases" || pipeline == "Police Cases")
+{
+	// Confirm this invoice is actually the family invoice before checking anything else --
+	// Books buttons can't be hidden conditionally, so this button appears on every
+	// invoice regardless of type.
+	isFamilyInvoice = false;
+	if(crmInvoiceId != "")
+	{
+		try
+		{
+			crmInvoiceDetails = zoho.crm.getRecordById("Invoices",crmInvoiceId);
+			invoiceFor = ifnull(crmInvoiceDetails.get("Invoice_For"),"");
+			if(invoiceFor == "Family" || invoiceFor == "")
+			{
+				isFamilyInvoice = true;
+			}
+		}
+		catch (e)
+		{
+			isFamilyInvoice = false;
+		}
+	}
+	if(isFamilyInvoice == false)
+	{
+		resultMap.put("message","This isn't the family invoice -- open the family invoice to trigger the Transfer Trip.");
+		resultMap.put("code",1);
+		return resultMap;
+	}
+	letterReceived = false;
+	if(pipeline == "Hospital Cases" && hospitalReleaseDate != "")
+	{
+		letterReceived = true;
+	}
+	if(pipeline == "Police Cases" && noInterestDate != "")
+	{
+		letterReceived = true;
+	}
+	if(letterReceived == false)
+	{
+		if(pipeline == "Hospital Cases")
+		{
+			resultMap.put("message","The Hospital Release Letter hasn't been received yet.");
+		}
+		else
+		{
+			resultMap.put("message","The No Interest Letter hasn't been received yet.");
+		}
+		resultMap.put("code",1);
+		return resultMap;
+	}
+	if(invoiceInfo.get("status") != "paid")
+	{
+		resultMap.put("message","The family invoice isn't paid yet.");
+		resultMap.put("code",1);
+		return resultMap;
+	}
+	// Both conditions met -- Transfer Trip to Ops (Mobay Ops Center),
+	// pickup = wherever the deceased currently is on the Deal.
+	pickupStreet = ifnull(recordInfo.get("Location_Street_1"),"");
+	pickupCity = ifnull(recordInfo.get("Location_City"),"");
+	pickupZip = ifnull(recordInfo.get("Location_Zip"),"");
+	destinationStreet = "Mobay Ops Center";
+	destinationStreet2 = "";
+	destinationCity = "Montego Bay";
+}
+else if(pipeline == "First Call" && stage == "DFH Not Selected" && caseLocation.contains("Montego Bay"))
+{
+	// NEW (ZP-TBD-64): same isFamilyInvoice + paid-status discipline as the
+	// Hospital/Police branch above, now that a Family Storage Invoice exists to check.
+	isFamilyInvoice = false;
+	if(crmInvoiceId != "")
+	{
+		try
+		{
+			crmInvoiceDetails = zoho.crm.getRecordById("Invoices",crmInvoiceId);
+			invoiceFor = ifnull(crmInvoiceDetails.get("Invoice_For"),"");
+			if(invoiceFor == "Family" || invoiceFor == "")
+			{
+				isFamilyInvoice = true;
+			}
+		}
+		catch (e)
+		{
+			isFamilyInvoice = false;
+		}
+	}
+	if(isFamilyInvoice == false)
+	{
+		resultMap.put("message","This isn't the family invoice -- open the family invoice to trigger the Transfer Trip.");
+		resultMap.put("code",1);
+		return resultMap;
+	}
+	if(invoiceInfo.get("status") != "paid")
+	{
+		resultMap.put("message","The family storage invoice isn't paid yet.");
+		resultMap.put("code",1);
+		return resultMap;
+	}
+	pickupStreet = "Mobay Ops Center";
+	pickupCity = "Montego Bay";
+	pickupZip = "";
+	destinationStreet = "Delapenha Funeral Home (Montego Bay)";
+	destinationStreet2 = "45 Union Street";
+	destinationCity = "Montego Bay";
+}
+else if(pipeline == "First Call" && stage == "DFH Not Selected" && caseLocation.contains("Kingston"))
+{
+	resultMap.put("message","Kingston First Call cases don't need a Transfer Trip.");
+	resultMap.put("code",0);
+	return resultMap;
+}
+else
+{
+	resultMap.put("message","Transfer Trip isn't applicable for this case.");
+	resultMap.put("code",1);
+	return resultMap;
+}
+// Duplicate check -- one Transfer Trip per Deal.
+existingTrips = zoho.crm.getRelatedRecords("Trips","Deals",dealId);
+for each  trip in existingTrips
+{
+	if(trip.get("Trip_Type") == "Transfer to Other Funeral Home")
+	{
+		resultMap.put("message","A Transfer Trip already exists for this case.");
+		resultMap.put("code",0);
+		return resultMap;
+	}
+}
+tripMap = Map();
+tripMap.put("Name","Transfer Trip for " + recordInfo.get("Account_Name").get("name"));
+tripMap.put("Trip_Type","Transfer to Other Funeral Home");
+tripMap.put("Trip_Status","Requested");
+tripMap.put("Deal",dealId);
+tripMap.put("Pickup_Street_Address",pickupStreet);
+tripMap.put("Pickup_City",pickupCity);
+tripMap.put("Pickup_Sector_Code",pickupZip);
+tripMap.put("Destination_Street_Address",destinationStreet);
+tripMap.put("Destination_Street_Address_2",destinationStreet2);
+tripMap.put("Destination_City",destinationCity);
+current_time = zoho.currenttime.toTime();
+start_time = (zoho.currentdate + " 09:00:00").toTime();
+end_time = (zoho.currentdate + " 17:00:00").toTime();
+if(current_time >= start_time && current_time <= end_time)
+{
+	tripMap.put("Owner",zoho.crm.getOrgVariable("tripOwnerID"));
+}
+else
+{
+	tripMap.put("Owner",recordInfo.get("Owner").get("id"));
+}
+tripCreationResult = zoho.crm.createRecord("Trips",tripMap,{"trigger":{"workflow"}});
+tripAccountRelation = Map();
+tripAccountRelation.put("Trips",tripCreationResult.get("id"));
+tripAccountRelation.put("Related_Account_Record",recordInfo.get("Account_Name").get("id"));
+zoho.crm.createRecord("Trips_Accounts_Relation",tripAccountRelation);
+dealMap = Map();
+dealMap.put("Trips",tripCreationResult.get("id"));
+zoho.crm.updateRecord("Deals",dealId,dealMap);
+resultMap.put("message","Transfer Trip created and available for drivers to pick up.");
+resultMap.put("code",0);
+return resultMap;

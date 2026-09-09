@@ -266,3 +266,24 @@ substitution noted above). **Not yet tested against real Hospital/Police/
 Mobay-First-Call scenarios** — see the plan's verification checklist
 (`transient-booping-cupcake.md`) for the specific test cases to run before
 considering this fully proven in production.
+
+## UPDATE 2026-09-09 (ZP-TBD-64) — First Call stage bug found + payment gate added
+
+While building ZP-TBD-64 (the new First Call Family Storage Invoice automation),
+confirmed live via `getPipelines` that the First Call pipeline has **no stage literally
+named "Closed Lost"** — its closed-lost-equivalent stage is actually named
+**"DFH Not Selected"** (`forecast_type: Closed Lost` is only the internal category, not
+the stored Stage value). This function's First Call branches compared
+`stage == "Closed Lost"`, which means **the First Call branch of this button has never
+matched a real Deal since it was built** — every First Call click has always fallen
+through to "Transfer Trip isn't applicable for this case."
+
+Fixed as part of ZP-TBD-64, along with adding the payment gate that ticket's brief
+required: the Montego Bay First Call branch now checks `stage == "DFH Not Selected"` and
+requires the new Family Storage Invoice to be paid (same `isFamilyInvoice` + paid-status
+pattern already used by the Hospital/Police branch) before creating the Transfer Trip.
+Kingston is unaffected — it never creates a trip either way, just the stage-value fix.
+
+Full corrected function: `createTransferTrip_FIX_ZP-TBD-64.deluge`, this folder. See
+`../../../crm/functions/deals/ZP-TBD-64_first_call_family_storage_invoice/metadata.md`
+for the full context and deploy/test steps.

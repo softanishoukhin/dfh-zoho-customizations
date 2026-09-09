@@ -1,0 +1,236 @@
+// Task: ZP-TBD-64 -- new automation. First Call cases currently have no process to
+// generate a family invoice at all (open question from Andrea's Comment Note on
+// ZP-TBD-61). This closes that gap for the specific "DFH Not Selected" scenario.
+// Zoho App: CRM automation function, triggered by a new Workflow Rule (see metadata.md
+// for the exact workflow setup -- this is guideline-only, no write access to CRM).
+//
+// TRIGGER: Deals, Stage changes to "DFH Not Selected" on the "First Call" pipeline.
+// Confirmed live: "DFH Not Selected" (actual_value, not a display label) is a genuine
+// Stage option on the First Call pipeline (id 6503357000021094078), forecast_type
+// "Closed Lost". Not related to LONI or Hospital Release Date -- those are Hospital/
+// Police Cases concepts, irrelevant to First Call.
+//
+// PRODUCT PICKS -- Andrea's screenshot didn't come through, so these were chosen
+// directly from the live Products catalog rather than blocking on it. Told to Andrea
+// separately; CC can swap any of these once given the correct ones:
+//   - Quantity-based daily storage: "Storage Fee" (id 6503357000029739051, $1500,
+//     Parent_Product "IFSLM", Category "Storage - Family"). Reused because
+//     generateFamilyNoShowStorageInvoice (an existing, already-live automation) already
+//     uses this exact product this exact way (quantity = day count) for the same
+//     Parent_Product/Category combination -- the established precedent in this org for
+//     "the daily/quantity-based storage product."
+//   - Flat "Storage and Removal" line: "Daily Storage For Removal" (id
+//     6503357000025502352, $6521.74, Parent_Product "Additional Services"). This is the
+//     closest name match anywhere in the Products catalog -- no product literally named
+//     "Storage and Removal" exists. Used here as a flat qty-1 line despite its own name
+//     saying "Daily" -- please confirm this is the right one.
+//   - Embalming placeholder: "Embalming Only" (id 6503357000031408198, $80000,
+//     Parent_Product "Additional Services") -- generic placeholder per Andrea's explicit
+//     instruction ("for now, don't worry about finding the final correct product").
+//
+// STORAGE DAYS: Deals.Initial_Trip_Completed_At (datetime) is the field this org's own
+// code already treats as "when the initial pickup/trip finished" (confirmed live usage
+// in generateFamilyNoShowStorageInvoice's own day-count calc). "DFH Not Selected Date"
+// is taken as zoho.currentdate -- the day this stage change is actually happening, since
+// there's no separate dedicated field for it and the workflow fires in real time at the
+// moment of the change. Andrea's own worked example (Sep 1 -> Sep 5 = 4 days) is plain
+// subtraction, NO +1 adjustment -- do not copy the "+1" from generateDelayedLONIInvoice,
+// that's specific to that function's own unrelated LONI-delay scenario.
+//
+// EMBALMING COMPLETE: read from the Operations module (NOT any Deal field, per Andrea's
+// explicit instruction: "don't check a Deal field for this"). Operations has a direct
+// Related_Deal lookup to Deals (confirmed live, populated independent of any Trip
+// lookup). There's no field literally named "Embalming Complete" -- the closest and most
+// direct signal is Operations.Status == "Completed" (confirmed real records use this
+// picklist, e.g. an Operations record named "... to be Embalmed" with Status:
+// "Completed"). If this turns out to be the wrong signal, Embalming_Report_Uploaded
+// (boolean) is the other candidate -- flagged to Andrea as an assumption to confirm.
+//
+// BOOKS SYNC: no explicit sync step is needed in this function. Confirmed live: an
+// existing, already-active Workflow Rule "Create Invoice in Books" (id
+// 6503357000009264079) fires on EVERY Invoices-module record creation regardless of
+// type, and calls a function that pushes it to Zoho Books (confirmed via real records --
+// every CRM Invoice has a populated Books_Invoice_ID). This new invoice rides on that
+// same existing mechanism automatically.
+
+void automation.createFirstCallStorageInvoice(Int crmid)
+{
+	dealDetails = invokeurl
+	[
+		url :"https://www.zohoapis.com/crm/v7/Deals/" + crmid
+		type :GET
+		connection:"zohooauth"
+	];
+	recordInfo = dealDetails.get("data").get(0);
+	pipeline = ifnull(recordInfo.get("Pipeline"),"");
+	stage = ifnull(recordInfo.get("Stage"),"");
+	// Defensive guard -- the workflow criteria should already ensure this, but this
+	// function creates a real invoice, so it's worth confirming before proceeding.
+	if(pipeline != "First Call" || stage != "DFH Not Selected")
+	{
+		return;
+	}
+	storageDays = 0;
+	initialPickupRaw = recordInfo.get("Initial_Trip_Completed_At");
+	if(!isNull(initialPickupRaw))
+	{
+		initialPickupDate = initialPickupRaw.toString("yyyy-MM-dd").toDate();
+		storageDays = initialPickupDate.days360(zoho.currentdate);
+	}
+	if(storageDays < 0)
+	{
+		storageDays = 0;
+	}
+	embalmingComplete = false;
+	try
+	{
+		opsQuery = "select id, Status from Operations where (Related_Deal.id = '" + crmid + "' and Status = 'Completed')";
+		opsResults = standalone.COQLQuery(opsQuery);
+		if(opsResults.size() > 0)
+		{
+			embalmingComplete = true;
+		}
+	}
+	catch (e)
+	{
+		embalmingComplete = false;
+	}
+	taxFieldResponse = invokeurl
+	[
+		url :"https://www.zohoapis.com/crm/v8/settings/fields/6503357000000002797?module=Products"
+		type :GET
+		connection:"zohooauth"
+	];
+	taxFieldMap = Map();
+	fieldsList = taxFieldResponse.get("fields");
+	if(fieldsList != null && fieldsList.size() > 0)
+	{
+		pickListValues = fieldsList.get(0).get("pick_list_values");
+		for each  pickVal in pickListValues
+		{
+			actualValue = pickVal.get("actual_value");
+			valParts = actualValue.toList(" - ");
+			taxName = valParts.get(0);
+			pctPart = valParts.get(1).replaceAll(" %","").trim();
+			pctNum = pctPart.toDecimal();
+			entry = Map();
+			entry.put("id",pickVal.get("id"));
+			entry.put("percentage",pctNum);
+			entry.put("name",taxName);
+			taxFieldMap.put(actualValue,entry);
+		}
+	}
+	invoiceMap = Map();
+	if(!isNull(recordInfo.get("Contact_Name")))
+	{
+		invoiceMap.put("Contact_Name",recordInfo.get("Contact_Name").get("id"));
+		contactInfo = zoho.crm.getRecordById("Contacts",recordInfo.get("Contact_Name").get("id"));
+		invoiceMap.put("Billing_City",ifnull(contactInfo.get("Mailing_City"),""));
+		invoiceMap.put("Billing_Code",ifnull(contactInfo.get("Mailing_Zip"),""));
+		invoiceMap.put("Billing_Country",ifnull(contactInfo.get("Mailing_Country"),""));
+		invoiceMap.put("Billing_State",ifnull(contactInfo.get("Mailing_State"),""));
+		invoiceMap.put("Billing_Street",ifnull(contactInfo.get("Mailing_Street"),""));
+	}
+	else if(!isNull(recordInfo.get("Account_Name")))
+	{
+		invoiceMap.put("Account_Name",recordInfo.get("Account_Name").get("id"));
+		accountInfo = zoho.crm.getRecordById("Accounts",recordInfo.get("Account_Name").get("id"));
+		invoiceMap.put("Billing_City",ifnull(accountInfo.get("Mailing_City"),""));
+		invoiceMap.put("Billing_Code",ifnull(accountInfo.get("Mailing_Zip"),""));
+		invoiceMap.put("Billing_Country",ifnull(accountInfo.get("Mailing_Country"),""));
+		invoiceMap.put("Billing_State",ifnull(accountInfo.get("Mailing_State"),""));
+		invoiceMap.put("Billing_Street",ifnull(accountInfo.get("Mailing_Street"),""));
+	}
+	invoiceMap.put("Deal_Name__s",crmid);
+	invoiceMap.put("Due_Date",zoho.currentdate.toString("yyyy-MM-dd"));
+	invoiceMap.put("Invoice_Date",zoho.currentdate.toString("yyyy-MM-dd"));
+	invoiceMap.put("Status","Created");
+	invoiceMap.put("Invoice_For","Family");
+	invoiceMap.put("Subject","Family Storage Invoice - " + ifnull(recordInfo.get("Name_of_Deceased"),""));
+	lineSpecs = List();
+	storageLine = Map();
+	storageLine.put("productId","6503357000029739051");
+	storageLine.put("qty",storageDays);
+	lineSpecs.add(storageLine);
+	removalLine = Map();
+	removalLine.put("productId","6503357000025502352");
+	removalLine.put("qty",1);
+	lineSpecs.add(removalLine);
+	if(embalmingComplete)
+	{
+		embalmingLine = Map();
+		embalmingLine.put("productId","6503357000031408198");
+		embalmingLine.put("qty",1);
+		lineSpecs.add(embalmingLine);
+	}
+	lineItemList = list();
+	for each  spec in lineSpecs
+	{
+		productDetails = zoho.crm.getRecordById("Products",spec.get("productId"));
+		productMap = Map();
+		productMap.put("Product_Name",productDetails.get("id"));
+		productMap.put("Quantity",spec.get("qty"));
+		productMap.put("List_Price",productDetails.get("Unit_Price"));
+		lineAmount = productMap.get("Quantity") * productMap.get("List_Price");
+		taxList = productDetails.get("Tax");
+		if(taxList != null && taxList.size() > 0)
+		{
+			taxInfo = taxFieldMap.get(taxList.get(0));
+			if(taxInfo != null)
+			{
+				taxPct = taxInfo.get("percentage");
+				taxValue = (lineAmount * taxPct / 100).round(2);
+				taxEntry = Map();
+				taxEntry.put("id",taxInfo.get("id"));
+				taxEntry.put("name",taxInfo.get("name"));
+				taxEntry.put("percentage",taxPct);
+				taxEntry.put("value",taxValue);
+				productMap.put("Line_Tax",{taxEntry});
+				productMap.put("Tax",taxValue);
+			}
+			else
+			{
+				productMap.put("Line_Tax",list());
+				productMap.put("Tax",0);
+			}
+		}
+		else
+		{
+			productMap.put("Line_Tax",list());
+			productMap.put("Tax",0);
+		}
+		lineItemList.add(productMap);
+	}
+	invoiceMap.put("Invoiced_Items",lineItemList);
+	recordList = list();
+	recordList.add(invoiceMap);
+	dataMap = Map();
+	dataMap.put("data",recordList);
+	createInvoice = invokeurl
+	[
+		url :"https://www.zohoapis.com/crm/v2.1/Invoices"
+		type :POST
+		parameters:dataMap.toString()
+		connection:"zohooauth"
+	];
+	if(createInvoice.get("data").get(0).get("code") == "SUCCESS")
+	{
+		createdInvoiceId = createInvoice.get("data").get(0).get("details").get("id");
+		createdInvoiceDetails = zoho.crm.getRecordById("Invoices",createdInvoiceId);
+		accountLk = createdInvoiceDetails.get("Account_Name");
+		if(!isNull(accountLk))
+		{
+			accountID = accountLk.get("id");
+			relatedContacts = zoho.crm.getRelatedRecords("Contacts","Accounts",accountID);
+			for each  contact in relatedContacts
+			{
+				potentialPayers = Map();
+				potentialPayers.put("Name",ifnull(contact.get("First_Name"),"") + " " + contact.get("Last_Name"));
+				potentialPayers.put("Account",accountID);
+				potentialPayers.put("Invoice",createdInvoiceId);
+				potentialPayers.put("Contact",contact.get("id"));
+				zoho.crm.createRecord("Potential_Payers",potentialPayers);
+			}
+		}
+	}
+}
