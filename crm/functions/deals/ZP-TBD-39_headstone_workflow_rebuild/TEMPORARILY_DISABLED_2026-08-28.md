@@ -116,8 +116,23 @@ time around.
 
 ## Guideline for Andrea — how to turn it back on
 
-Both switches here are inside Deluge function code, not a CRM Setup toggle — so unlike the
-first version of this plan, there isn't a simple checkbox Andrea can flip herself this time.
-**When she's ready, just let us know and we'll remove both guards and confirm with a live test**
-(including the Sales-Order-triggered path specifically, since that's the one that was easy to
-miss). This should take only a few minutes once we're asked.
+Both switches here live inside Deluge function code (one in the CRM function
+`manageZeroRatedHeadstoneProduct`, one in the Creator function `notifyVendorPlotNumberAssigned`
+inside `Headstone_Request.ds`) — not a CRM Setup toggle, so there isn't a checkbox Andrea can
+flip herself. Re-enabling is a two-step request on her end:
+
+1. **Confirm the vendor/product configuration is ready** — this is the one thing that has to be
+   true before flipping either switch back on, since that readiness was the whole reason for the
+   pause in the first place.
+2. **Tell us to turn it back on.** Once she does, here's exactly what happens on our side:
+   - We remove the early-return guard from `manageZeroRatedHeadstoneProduct` (restores Hillview
+     1 → straight-to-vendor and Hillview 2/3 → family-first routing).
+   - We remove the early-return guard from `notifyVendorPlotNumberAssigned` (restores the Plot #
+     assigned vendor email).
+   - We run a live smoke test before calling it done: a fresh Hillview 1 product on a Deal, a
+     Plot # assignment on a Deal with an existing Headstone Request Form, and specifically the
+     `createSalesOrderForShipInsV2` path (edit `Casket_Type`/`Primary_Color`/etc. on a Deal that
+     already has a Hillview 1 product) — that last one is the path that was missed the first time
+     we tried to disable this, so we re-check it deliberately on the way back on too.
+
+This is a few-minutes job once both are true — no waiting on anything beyond her go-ahead.
