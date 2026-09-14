@@ -1,0 +1,327 @@
+// Task: ZP-TBD-63 v4 -- supersedes saveAssignment_FIX_v3.deluge in this same folder.
+// Zoho App: Creator (Trip_Manager.ds)
+// Function Name: map saveAssignment(...) -- EXISTING, fix only.
+//
+// CHANGE FROM v3 (per explicit direction: use this exact query shape, nothing extra):
+// the double-booking COQL query now mirrors, field-for-field, the query already used in
+// the live "Prevent Edit Vehicle" validation rule (preventeditvehicle) --
+//   select Name, Deal, Vehicle from Vehicle_Bookings where (Deal.id != '<dealId>' and
+//   Start between '<date>T00:00:00<offset>' and '<date>T23:59:59<offset>') and
+//   Vehicle.id ='<vehicleId>'
+// -- with only the variable names substituted for this context (dealIdForBooking,
+// depDatePrefix, "-05:00" in place of that function's dynamically-fetched timeZoneOffset
+// -- this file already hardcodes "-05:00" everywhere else, e.g. getBurialSchedule,
+// getDailyFuneralRollup). This also simplifies the conflict check: exclusion is now by
+// "a DIFFERENT deal already has this vehicle booked that day" (Deal.id != dealIdForBooking)
+// rather than comparing booking ids, so existingBookingId is no longer needed for the
+// conflict check itself (still used, unchanged, to decide create vs. update when saving
+// this trip's own Vehicle_Bookings record afterward).
+//
+// Everything else is unchanged from v3 -- see that file's header, and v2's header before
+// it, for the full v1->v2->v3 rationale.
+
+map saveAssignment(string tripId, string hearseId, string removalId, string rentalId, string driverId, string attendantId, string departureTime)
+{
+	result = Map();
+	result.put("success",false);
+	result.put("message","");
+	result.put("scheduled",false);
+	result.put("missing",List());
+	try
+	{
+		anyVehicleSelected = (hearseId != "" || removalId != "" || rentalId != "");
+		if(anyVehicleSelected && departureTime == "")
+		{
+			result.put("message","Please set a departure time before saving a vehicle assignment.");
+			return result;
+		}
+		updMap = Map();
+		if(hearseId != "")
+		{
+			updMap.put("Vehicle",hearseId.toLong());
+		}
+		if(removalId != "")
+		{
+			updMap.put("Amber_Vehicle",removalId.toLong());
+		}
+		if(rentalId != "")
+		{
+			updMap.put("Rental_Vehicles",rentalId.toLong());
+		}
+		if(driverId != "")
+		{
+			updMap.put("Driver",driverId.toLong());
+		}
+		if(attendantId != "")
+		{
+			updMap.put("Attendant_NEW",attendantId.toLong());
+		}
+		depFormatted = "";
+		if(departureTime != "")
+		{
+			depClean = departureTime.trim();
+			try
+			{
+				depDt = depClean.toDateTime("yyyy-MM-dd HH:mm");
+				depFormatted = depDt.toString("yyyy-MM-dd'T'HH:mm:ss");
+			}			catch (e2)
+			{
+				depFormatted = "";
+			}
+			if(depFormatted != "")
+			{
+				updMap.put("Departure_Time",depFormatted);
+				updMap.put("Scheduled_Date",depFormatted);
+				updMap.put("Funeral_Time_Change_Alert",false);
+				updMap.put("Grave_Type_Change_Alert",false);
+			}
+			else
+			{
+				result.put("message","Invalid departure date/time format");
+				return result;
+			}
+		}
+		hasVehicle = anyVehicleSelected;
+		hasDriver = driverId != "";
+		hasDeparture = departureTime != "";
+		isSchedulable = hasVehicle && hasDriver && hasDeparture;
+		missingItems = List();
+		if(!hasVehicle)
+		{
+			missingItems.add("a vehicle");
+		}
+		if(!hasDriver)
+		{
+			missingItems.add("a driver");
+		}
+		if(!hasDeparture)
+		{
+			missingItems.add("a departure time");
+		}
+		result.put("missing",missingItems);
+		currentTrip = Map();
+		if(isSchedulable || hearseId != "")
+		{
+			try
+			{
+				currentTrip = zoho.crm.getRecordById("Trips",tripId.toLong(),{"connection":"zohocrm_connection"});
+			}			catch (eCur)
+			{
+				currentTrip = Map();
+			}
+		}
+		currentStatus = "";
+		if(isSchedulable && currentTrip.containKey("id"))
+		{
+			tsRaw = currentTrip.get("Trip_Status");
+			if(!isNull(tsRaw))
+			{
+				currentStatus = "" + tsRaw;
+			}
+		}
+		existingBookingId = "";
+		if(currentTrip.containKey("id"))
+		{
+			ebRaw = currentTrip.get("Vehicle_Booking_ID");
+			if(!isNull(ebRaw))
+			{
+				existingBookingId = "" + ebRaw;
+			}
+		}
+		dealIdForBooking = "";
+		if(currentTrip.containKey("id"))
+		{
+			try
+			{
+				dealLk = currentTrip.get("Deal");
+				didRaw = "" + dealLk.get("id");
+				if(didRaw != "" && didRaw != "null")
+				{
+					dealIdForBooking = didRaw;
+				}
+			}			catch (eDealLk)
+			{
+			}
+		}
+		newBookingVehicleId = "";
+		hearseProduct = Map();
+		if(hearseId != "")
+		{
+			try
+			{
+				hearseProduct = zoho.crm.getRecordById("Products",hearseId.toLong(),{"connection":"zohocrm_connection"});
+				abRaw = hearseProduct.get("Availability_Based");
+				abStr = "" + abRaw;
+				if(abStr == "true")
+				{
+					newBookingVehicleId = hearseId;
+				}
+			}			catch (eProd)
+			{
+			}
+		}
+		// TEMP DEBUG (remove once diagnosed): captures what the booking-conflict check
+		// actually did, surfaced in result.message on both the reject and success paths.
+		bookingDebug = "";
+		if(newBookingVehicleId != "" && dealIdForBooking != "")
+		{
+			depDatePrefix = depFormatted;
+			if(depDatePrefix.length() > 10)
+			{
+				depDatePrefix = depDatePrefix.subString(0,10);
+			}
+			conflictFound = false;
+			// Same query shape as the live preventeditvehicle validation rule's own
+			// queryToFetchAlreadyScheduledVehicle, variables substituted for this context.
+			bqStr = "select Name, Deal, Vehicle from Vehicle_Bookings where (Deal.id != '" + dealIdForBooking + "' and Start between '" + depDatePrefix + "T00:00:00-05:00' and '" + depDatePrefix + "T23:59:59-05:00') and Vehicle.id ='" + newBookingVehicleId + "'";
+			try
+			{
+				bq = Map();
+				bq.put("select_query",bqStr);
+				bresp = invokeurl
+				[
+					url :"https://www.zohoapis.com/crm/v7/coql"
+					type :POST
+					parameters:bq.toString()
+					headers:{"Content-Type":"application/json"}
+					connection:"zoho_oauth_connection"
+				];
+				if(bresp.containKey("data"))
+				{
+					rowsFound = bresp.get("data").size();
+					bookingDebug = "rows=" + rowsFound;
+					if(rowsFound > 0)
+					{
+						conflictFound = true;
+					}
+				}
+				else
+				{
+					bookingDebug = "no-data-key: " + bresp.toString();
+				}
+			}			catch (eBq)
+			{
+				bookingDebug = "EXC: " + eBq.toString();
+			}
+			if(conflictFound)
+			{
+				result.put("message","This vehicle is already booked on this day. [dbg: " + bookingDebug + "]");
+				return result;
+			}
+		}
+		willSetScheduled = false;
+		if(isSchedulable && currentStatus != "Started" && currentStatus != "Completed")
+		{
+			updMap.put("Trip_Status","Scheduled");
+			willSetScheduled = true;
+		}
+		if(updMap.isEmpty())
+		{
+			result.put("message","No fields to update");
+			return result;
+		}
+		putDataList = List();
+		putDataList.add(updMap);
+		putTrigger = List();
+		putTrigger.add("workflow");
+		putBody = Map();
+		putBody.put("data",putDataList);
+		putBody.put("trigger",putTrigger);
+		exceptionMessage = "";
+		putCode = "";
+		putMessage = "";
+		try
+		{
+			putResp = invokeurl
+			[
+				url :"https://www.zohoapis.com/crm/v7/Trips/" + tripId
+				type :PUT
+				parameters:putBody.toString()
+				headers:{"Content-Type":"application/json"}
+				connection:"zohocrm_connection"
+			];
+			try
+			{
+				putData = putResp.get("data");
+				putFirst = putData.get(0);
+				putCode = ifnull(putFirst.get("code"),"");
+				putMessage = ifnull(putFirst.get("message"),"");
+			}			catch (ePutParse)
+			{
+			}
+			if(putCode != "SUCCESS")
+			{
+				if(putMessage != "")
+				{
+					exceptionMessage = putMessage;
+				}
+				else
+				{
+					exceptionMessage = "Trip update did not return SUCCESS: " + putResp.toString();
+				}
+			}
+		}		catch (e)
+		{
+			exceptionMessage = e.toString();
+		}
+		if(exceptionMessage != "")
+		{
+			result.put("message",exceptionMessage);
+			return result;
+		}
+		if(newBookingVehicleId != "" && dealIdForBooking != "")
+		{
+			try
+			{
+				vbMap = Map();
+				vbNameLabel = ifnull(hearseProduct.get("Product_Name"),"Vehicle") + " " + depFormatted;
+				vbMap.put("Name",vbNameLabel);
+				vbMap.put("Vehicle",newBookingVehicleId.toLong());
+				vbMap.put("Deal",dealIdForBooking.toLong());
+				vbMap.put("Start",depFormatted);
+				vbMap.put("End",depFormatted);
+				vbMap.put("Status","Confirmed");
+				vbMap.put("Calendar_View_enabled",true);
+				vbMap.put("Note",vbNameLabel);
+				if(existingBookingId != "")
+				{
+					zoho.crm.updateRecord("Vehicle_Bookings",existingBookingId.toLong(),vbMap,{"connection":"zohocrm_connection"});
+				}
+				else
+				{
+					vbResult = zoho.crm.createRecord("Vehicle_Bookings",vbMap,{"connection":"zohocrm_connection"});
+					newVbId = "";
+					try
+					{
+						newVbId = "" + vbResult.get("id");
+					}					catch (eVbId)
+					{
+						newVbId = "";
+					}
+					if(newVbId != "" && newVbId != "null")
+					{
+						tripStamp = Map();
+						tripStamp.put("Vehicle_Booking_ID",newVbId);
+						zoho.crm.updateRecord("Trips",tripId.toLong(),tripStamp,{"connection":"zohocrm_connection"});
+					}
+				}
+			}			catch (eVb)
+			{
+			}
+		}
+		result.put("success",true);
+		if(newBookingVehicleId != "")
+		{
+			result.put("message","Assignment saved [dbg: " + bookingDebug + "]");
+		}
+		else
+		{
+			result.put("message","Assignment saved");
+		}
+		result.put("scheduled",willSetScheduled);
+	}	catch (e)
+	{
+		result.put("message","Exception: " + e);
+	}
+	return result;
+}
