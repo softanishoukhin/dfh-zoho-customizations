@@ -1,0 +1,184 @@
+// addPreNeedDifferenceLineAndFlagRetainerCredit (ZP-TBD-65 Stage 2, REORGANIZED 2026-09-11)
+// ============================================================================
+// Entity: retainer_invoice. REPLACES
+// addPreNeedDifferenceAndCreditNoteOnRetainerApply_REVISED.deluge.
+//
+// WHY THE REORGANIZATION: applying a retainer invoice to an at-need invoice
+// touches the invoice record too, which independently triggers the existing
+// createinvoiceonxero (workflow "updateInvoiceToXero") -- that function
+// already does ALL the Xero setup this ticket needs (token refresh, contact
+// creation, chart-of-accounts lookup), at the exact point where the Xero
+// invoice is guaranteed to already exist. Having THIS function also do its
+// own independent Xero calls meant two functions reacting to the same event
+// each hitting Xero -- Xero refresh tokens are one-time-use, so two
+// near-simultaneous refreshes risk one failing or the stored token becoming
+// inconsistent, and the old "defer if not synced yet" fallback had no
+// guaranteed retry trigger.
+//
+// NEW DESIGN: this function does ONLY the Pre-Need Difference line -- the one
+// job that genuinely has to run from the retainer side, since only the
+// retainer has the original contract prices. It writes two "handoff" custom
+// fields onto the invoice (the retainer's applied amount and its number);
+// createinvoiceonxero (patched, see
+// createinvoiceonxero_STAGE2_HANDOFF_PATCH.deluge) reads those and creates
+// the Xero credit note itself, reusing its own already-established Xero
+// context -- no duplicate token refresh, no race, no dead-end deferral.
+//
+// PRODUCT MATCHING (unchanged from the prior revision): matches by PRODUCT
+// NAME, not item_id -- confirmed live that Retainer Invoice line items in
+// this org don't carry item_id, only line_item_id (a transaction id, not a
+// catalog reference; retainer lines are free text against "description").
+// Retainer description vs. at-need "name" (falling back to "description"),
+// both normalized (trimmed, lowercased).
+//
+// PREREQUISITES:
+// - PRE_NEED_DIFFERENCE_ITEM_ID: confirmed live as 5830143000035961673.
+// - TWO new Invoices custom fields (handoff only, no Xero involvement in
+//   this function): "Pre-Need Retainer Applied Amount" (Decimal, expected
+//   api_name cf_preneed_retainer_applied_amount) and "Pre-Need Retainer
+//   Number" (Text, expected api_name cf_preneed_retainer_number). Confirm
+//   the live api_names and correct below if they differ -- same lesson as
+//   the credit-note-id field: don't assume, verify live before trusting.
+// - "Xero Retainer Credit Note ID" (cf_xero_retainer_credit_note_id, already
+//   created) is read/written by createinvoiceonxero's patch, not this
+//   function -- it's mentioned here only so the two files' idempotency
+//   stories make sense together.
+//
+// TRIGGER (unchanged): Workflow Rule on Retainer Invoices, On Update.
+
+PRE_NEED_DIFFERENCE_ITEM_ID = "5830143000035961673";
+
+retainerInvoiceID = retainer_invoice.get("retainerinvoice_id");
+organizationID = organization.get("organization_id");
+
+retainerFullResponse = zoho.books.getRecordsByID("RetainerInvoices",organizationID,retainerInvoiceID,"zohobooksconnection");
+retainerData = retainerFullResponse.get("retainerinvoice");
+appliedInvoices = retainerFullResponse.get("invoices");
+
+if(isNull(appliedInvoices) || appliedInvoices.size() == 0)
+{
+	// Not applied to any invoice yet -- nothing to do.
+	return;
+}
+
+// Build a lookup of the retainer's own original per-product amounts, keyed
+// by normalized product name -- reused for every applied invoice below.
+originalPriceByProductName = Map();
+for each  retainerLine in retainerData.get("line_items")
+{
+	productName = retainerLine.get("description");
+	if(!isNull(productName) && productName.trim() != "")
+	{
+		normalizedName = productName.trim().toLowerCase();
+		existingAmount = originalPriceByProductName.get(normalizedName);
+		if(isNull(existingAmount))
+		{
+			existingAmount = 0;
+		}
+		originalPriceByProductName.put(normalizedName,existingAmount + retainerLine.get("item_total"));
+	}
+}
+
+for each  appliedInvoiceEntry in appliedInvoices
+{
+	invoiceID = appliedInvoiceEntry.get("invoice_id");
+	amountApplied = appliedInvoiceEntry.get("amount_applied");
+	if(isNull(amountApplied))
+	{
+		amountApplied = appliedInvoiceEntry.get("total_applied_retainer_amount");
+	}
+	if(isNull(invoiceID) || invoiceID == "")
+	{
+		continue;
+	}
+
+	invoiceDetails = zoho.books.getRecordsByID("Invoices",organizationID,invoiceID,"zohobooksconnection");
+	invoiceData = invoiceDetails.get("invoice");
+
+	// ==========================================
+	// COMPUTE THE PRE-NEED DIFFERENCE LINE, IF NEEDED (idempotent per invoice)
+	// ==========================================
+	alreadyHasDifferenceLine = false;
+	for each  existingLine in invoiceData.get("line_items")
+	{
+		if(existingLine.get("item_id") == PRE_NEED_DIFFERENCE_ITEM_ID)
+		{
+			alreadyHasDifferenceLine = true;
+		}
+	}
+	needsDifferenceLine = false;
+	differenceLineAmount = 0;
+	if(alreadyHasDifferenceLine == false)
+	{
+		todaysPriceForContractItems = 0;
+		originalPriceForMatchedItems = 0;
+		for each  atNeedLine in invoiceData.get("line_items")
+		{
+			productName = atNeedLine.get("name");
+			if(isNull(productName) || productName.trim() == "")
+			{
+				productName = atNeedLine.get("description");
+			}
+			if(!isNull(productName) && productName.trim() != "")
+			{
+				normalizedName = productName.trim().toLowerCase();
+				if(originalPriceByProductName.containKey(normalizedName))
+				{
+					todaysPriceForContractItems = todaysPriceForContractItems + atNeedLine.get("item_total");
+					originalPriceForMatchedItems = originalPriceForMatchedItems + originalPriceByProductName.get(normalizedName);
+				}
+			}
+		}
+		gap = todaysPriceForContractItems - originalPriceForMatchedItems;
+		if(gap > 0)
+		{
+			needsDifferenceLine = true;
+			differenceLineAmount = gap;
+		}
+		else if(gap < 0)
+		{
+			// Contract price >= today's matching-item price -- the
+			// overpayment/refund case, explicitly out of scope for this
+			// ticket (confirmed with Andrea). Flag for manual handling.
+			sendmail
+			[
+				from :zoho.adminuserid
+				to :"softanis.noushadurrahman@gmail.com"
+				subject :"Pre-Need: possible family credit owed"
+				message :"Invoice " + invoiceData.get("invoice_number") + " has a pre-need contract price higher than today's matching product total by " + abs(gap) + ". This case (family may be owed a refund/credit) is out of scope for ZP-TBD-65 and needs manual handling."
+			]
+		}
+	}
+
+	// ==========================================
+	// SINGLE UPDATE -- difference line (if needed) + handoff fields together
+	// ==========================================
+	// Combined into one updateRecord call so this function re-triggers
+	// createinvoiceonxero at most once per applied invoice, instead of twice.
+	combinedUpdateMap = Map();
+	if(needsDifferenceLine == true)
+	{
+		newLineItemsList = list();
+		for each  existingLine in invoiceData.get("line_items")
+		{
+			newLineItemsList.add(existingLine);
+		}
+		differenceLine = Map();
+		differenceLine.put("item_id",PRE_NEED_DIFFERENCE_ITEM_ID);
+		differenceLine.put("quantity",1);
+		differenceLine.put("rate",differenceLineAmount * -1);
+		differenceLine.put("description","Pre-Need Difference - retainer " + retainerData.get("retainerinvoice_number"));
+		newLineItemsList.add(differenceLine);
+		combinedUpdateMap.put("line_items",newLineItemsList);
+	}
+	handoffFields = list();
+	handoffFields.add({"api_name":"cf_preneed_retainer_applied_amount","value":amountApplied});
+	handoffFields.add({"api_name":"cf_preneed_retainer_number","value":retainerData.get("retainerinvoice_number")});
+	combinedUpdateMap.put("custom_fields",handoffFields);
+	zoho.books.updateRecord("Invoices",organizationID,invoiceID,combinedUpdateMap,"zohobooksconnection");
+	if(needsDifferenceLine == true)
+	{
+		info "Added Pre-Need Difference line of " + (differenceLineAmount * -1) + " to invoice " + invoiceData.get("invoice_number");
+	}
+	info "Flagged invoice " + invoiceData.get("invoice_number") + " for pre-need retainer credit note (amount " + amountApplied + ")";
+}

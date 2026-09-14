@@ -1,0 +1,144 @@
+// STAGE 2 HANDOFF PATCH for ZP-TBD-65 -- apply inside the LIVE createinvoiceonxero function
+// ============================================================================
+// Function id 5830143000000527001, entity invoice, workflow "updateInvoiceToXero".
+// REPLACES createinvoiceonxero_STAGE2_PATCH.deluge (the earlier, superseded
+// patch based on an unverified /creditsapplied key guess) -- do not apply
+// that one, and revert it if it was already applied.
+//
+// WHERE TO ADD THIS: anywhere AFTER the point in the live function where
+// xeroInvoiceIdForAddingNote is set (both the success path, where it's set
+// from createInvoiceInXero, and the catch/error path, where it falls back to
+// the existing xeroInvoiceId) and where "headers" and "createContactInXero"
+// are already in scope -- e.g. right after the existing
+// "updateInvoiceInBooks" call, before or after the existing debit_notes/
+// creditsapplied handling block. Order relative to those existing blocks
+// doesn't matter; this one is fully independent of them.
+//
+// SOURCE NOTE (live-source-first): re-pull the live function body before
+// applying -- do not paste this over a stale local copy.
+//
+// WHAT THIS DOES: reads two "handoff" custom fields that
+// addPreNeedDifferenceLineAndFlagRetainerCredit_NEW.deluge (the Retainer
+// Invoice module function) writes onto this same invoice when a pre-need
+// retainer has been applied to it. If present and not already processed
+// (cf_xero_retainer_credit_note_id not yet set), creates a real Xero Credit
+// Note coded to the Pre-Need Liability account and allocates it against this
+// Xero invoice -- reusing the Xero token/headers/contact this function has
+// ALREADY established earlier in this same execution, so no extra Xero
+// token refresh happens here (avoiding the one-time-use refresh-token race
+// that motivated this reorganization).
+//
+// PREREQUISITES:
+// - Two new Invoices custom fields, written by the OTHER function, read here:
+//   cf_preneed_retainer_applied_amount (Decimal) and cf_preneed_retainer_number
+//   (Text) -- confirm live api_names match, correct below if not.
+// - "Xero Retainer Credit Note ID" custom field, live api_name confirmed as
+//   cf_xero_retainer_credit_note_id (note the extra underscore between
+//   "credit" and "note").
+
+preNeedRetainerAppliedAmount = null;
+preNeedRetainerNumber = null;
+preNeedRetainerCreditNoteAlreadyDone = false;
+for each  invField in invoiceData.get("custom_fields")
+{
+	if(invField.get("api_name") == "cf_preneed_retainer_applied_amount")
+	{
+		preNeedRetainerAppliedAmount = invField.get("value");
+	}
+	if(invField.get("api_name") == "cf_preneed_retainer_number")
+	{
+		preNeedRetainerNumber = invField.get("value");
+	}
+	if(invField.get("api_name") == "cf_xero_retainer_credit_note_id")
+	{
+		existingCn = "" + invField.get("value");
+		if(existingCn != "" && existingCn != "null")
+		{
+			preNeedRetainerCreditNoteAlreadyDone = true;
+		}
+	}
+}
+
+if(preNeedRetainerCreditNoteAlreadyDone == false && !isNull(preNeedRetainerAppliedAmount) && preNeedRetainerAppliedAmount != 0 && !isNull(xeroInvoiceIdForAddingNote))
+{
+	try
+	{
+		preNeedLiabilityAccountId = xeroAccountsMap.get("pre need");
+		if(isNull(preNeedLiabilityAccountId))
+		{
+			preNeedLiabilityAccountId = "d82dba9b-5cd3-41a9-97c8-d3a3ceb98c5a";
+		}
+		retainerCreditNoteLineItem = Map();
+		retainerCreditNoteLineItem.put("AccountID",preNeedLiabilityAccountId);
+		retainerCreditNoteLineItem.put("Description","Pre-Need retainer applied - " + preNeedRetainerNumber);
+		retainerCreditNoteLineItem.put("Quantity",1);
+		retainerCreditNoteLineItem.put("UnitAmount",preNeedRetainerAppliedAmount);
+		retainerCreditNoteLineItem.put("TaxType","NONE");
+		retainerCreditNoteMap = Map();
+		retainerCreditNoteMap.put("Type","ACCRECCREDIT");
+		retainerCreditNoteMap.put("Contact",{"ContactID":createContactInXero.get("Contacts").get(0).get("ContactID")});
+		retainerCreditNoteMap.put("Date",zoho.currentdate.toString("yyyy-MM-dd"));
+		retainerCreditNoteMap.put("Status","AUTHORISED");
+		retainerCreditNoteMap.put("LineItems",{retainerCreditNoteLineItem});
+		createRetainerCreditNoteInXero = invokeurl
+		[
+			url :"https://api.xero.com/api.xro/2.0/CreditNotes"
+			type :POST
+			body:retainerCreditNoteMap.toString()
+			headers:headers
+		];
+		retainerXeroCreditNoteId = "";
+		if(createRetainerCreditNoteInXero.containKey("CreditNotes") && createRetainerCreditNoteInXero.get("CreditNotes").size() > 0)
+		{
+			retainerXeroCreditNoteId = createRetainerCreditNoteInXero.get("CreditNotes").get(0).get("CreditNoteID");
+		}
+		if(retainerXeroCreditNoteId != "")
+		{
+			// Xero's CreditNotes/{id}/Allocations endpoint requires PUT, not
+			// POST -- confirmed gotcha from ZP-TBD-54's own build notes.
+			allocationMap = Map();
+			allocationLineMap = Map();
+			allocationLineMap.put("Invoice",{"InvoiceID":xeroInvoiceIdForAddingNote});
+			allocationLineMap.put("Amount",preNeedRetainerAppliedAmount);
+			allocationLineMap.put("Date",zoho.currentdate.toString("yyyy-MM-dd"));
+			allocationMap.put("Allocations",{allocationLineMap});
+			invokeurl
+			[
+				url :"https://api.xero.com/api.xro/2.0/CreditNotes/" + retainerXeroCreditNoteId + "/Allocations"
+				type :PUT
+				parameters:allocationMap.toString()
+				headers:headers
+			];
+			// Suppress re-triggering this same workflow for a marker-only
+			// write -- matches the existing X-ZOHO-Execute-CustomFunction:
+			// false pattern already used elsewhere in this function.
+			preNeedMarkerUpdate = Map();
+			preNeedMarkerFields = list();
+			preNeedMarkerFields.add({"api_name":"cf_xero_retainer_credit_note_id","value":retainerXeroCreditNoteId});
+			preNeedMarkerUpdate.put("custom_fields",preNeedMarkerFields);
+			preNeedMarkerHeaders = Map();
+			preNeedMarkerHeaders.put("X-ZOHO-Execute-CustomFunction","false");
+			invokeurl
+			[
+				url :"https://www.zohoapis.com/books/v3/invoices/" + invoiceID + "?organization_id=" + organizationID
+				type :PUT
+				parameters:preNeedMarkerUpdate
+				headers:preNeedMarkerHeaders
+				connection:"zohobooksconnection"
+			];
+			info "Created Xero retainer credit note " + retainerXeroCreditNoteId + " for invoice " + invoiceData.get("invoice_number");
+		}
+	}
+	catch (e)
+	{
+		sendmail
+		[
+			from :zoho.adminuserid
+			to :"softanis.noushadurrahman@gmail.com"
+			subject :"Pre-Need Retainer Credit Note Error"
+			message :"Invoice: " + invoiceID + " - " + e.toString()
+		]
+		info "Error: Pre-Need retainer credit note creation failed";
+		info e;
+	}
+}

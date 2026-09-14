@@ -1,0 +1,348 @@
+// *** SUPERSEDED 2026-09-11 -- DO NOT DEPLOY ***
+// This function duplicated createinvoiceonxero's entire Xero setup (token
+// refresh, contact, chart-of-accounts) in a second, independently-firing
+// function reacting to the SAME retainer-application event. Two problems:
+// (1) Xero refresh tokens are one-time-use -- two near-simultaneous refreshes
+// risk one call failing or the stored token ending up inconsistent; (2) the
+// "defer if the invoice isn't synced to Xero yet" fallback had no guaranteed
+// retry trigger. Replaced by a split design: see
+// addPreNeedDifferenceLineAndFlagRetainerCredit_NEW.deluge (Retainer Invoice
+// module, difference line + handoff fields only, no Xero calls) and
+// createinvoiceonxero_STAGE2_HANDOFF_PATCH.deluge (reads the handoff and
+// creates the credit note using createinvoiceonxero's own already-established
+// Xero context). Kept only for history.
+// ============================================================================
+//
+// addPreNeedDifferenceAndCreditNoteOnRetainerApply (ZP-TBD-65 Stage 2, REVISED 2026-09-11)
+// ============================================================================
+// Entity: retainer_invoice. SUPERSEDES BOTH:
+//   - addPreNeedDifferenceLineOnRetainerApply_NEW.deluge (the Invoice-entity version)
+//   - createinvoiceonxero_STAGE2_PATCH.deluge (the createinvoiceonxero patch)
+// Do not keep either of those active alongside this function -- see the
+// deployment guide (STAGE2_DEPLOYMENT_GUIDE.md) for exactly what to undo.
+//
+// WHY THE REDESIGN: a real live test confirmed that
+// zoho.books.getRecordsByID("RetainerInvoices", ...) returns, alongside the
+// "retainerinvoice" object, a SIBLING top-level "invoices" array -- every
+// invoice this retainer has been applied to, each entry carrying invoice_id
+// and amount_applied directly:
+//
+//   RET-K-2026-000048 applied to INV-K-2026-003661 ->
+//   "invoices": [{ "invoice_id": "5830143000036042043", "amount_applied": 2622222, ... }]
+//
+// This is confirmed-live ground truth, unlike the original plan (guessing a
+// retainerinvoice_id key inside GET /invoices/{id}/creditsapplied, which was
+// never confirmed and is no longer needed). Triggering from the Retainer
+// Invoice module also matches how the application actually surfaces -- the
+// retainer's own record updates (balance, drawn_status) when it's applied.
+//
+// TRIGGER: new Workflow Rule on the Retainer Invoices module, On Update.
+// Confirmed live: RET-K-2026-000048 went from created to drawn/balance-0
+// about 11 minutes after creation, matching when the application happened --
+// so "on update" catches this.
+//
+// PREREQUISITES:
+// - PRE_NEED_DIFFERENCE_ITEM_ID below: already confirmed live as
+//   5830143000035961673.
+// - NEW Invoices custom field: "Xero Retainer Credit Note ID" (Text, single
+//   line). Live api_name confirmed as cf_xero_retainer_credit_note_id (note
+//   the extra underscore between "credit" and "note" -- already reflected
+//   below). This is a SEPARATE
+//   idempotency marker from the Pre-Need Difference line item so a partial
+//   failure (e.g. the line gets added but the Xero call then fails) retries
+//   just the missing half next run instead of skipping both or duplicating.
+// - The credited invoice must already have cf_xero_invoice_id populated
+//   (already synced to Xero via the existing, UNCHANGED createinvoiceonxero)
+//   before the credit note can be allocated -- same known limitation
+//   ZP-TBD-54 already documented and accepted for its own pipeline. If not
+//   yet populated, this run defers the Xero half; a later retainer-invoice
+//   update/retry will pick it up (the Pre-Need Difference line, if needed,
+//   still gets added regardless -- it doesn't depend on Xero at all).
+
+xeroTenantId = "879c4d25-cee8-46c1-89f9-80dcfe572eb2";
+xeroClientId = "6793DCCECBC842A78F4823D608636FFD";
+xeroClientSecret = "v8ATq7H7hiOn63lryHETiXz6UtkCQZookKUD3tjAMcf4uoQE";
+xeroRefreshTokenVarId = "6503357000009423001";
+defaultAccountId = "d82dba9b-5cd3-41a9-97c8-d3a3ceb98c5a";
+PRE_NEED_DIFFERENCE_ITEM_ID = "5830143000035961673";
+
+retainerInvoiceID = retainer_invoice.get("retainerinvoice_id");
+organizationID = organization.get("organization_id");
+
+retainerFullResponse = zoho.books.getRecordsByID("RetainerInvoices",organizationID,retainerInvoiceID,"zohobooksconnection");
+retainerData = retainerFullResponse.get("retainerinvoice");
+appliedInvoices = retainerFullResponse.get("invoices");
+
+if(isNull(appliedInvoices) || appliedInvoices.size() == 0)
+{
+	// Not applied to any invoice yet -- nothing to do.
+	return;
+}
+
+// Build a lookup of the retainer's own original per-product amounts, keyed
+// by PRODUCT NAME (normalized), once -- reused for every applied invoice
+// below. Confirmed live: Retainer Invoice line items in this org do NOT
+// carry item_id -- only line_item_id (a transaction-specific id, not a
+// catalog product reference; retainer lines are apparently entered as free
+// text against "description", not selected from the Items list). So matching
+// must go by name, not id, unlike the at-need invoice side which does have
+// item_id. This is inherently a little less precise than id-matching (a
+// retyped description with different wording/casing/spacing would fail to
+// match) -- normalized (trimmed, lowercased) to reduce that risk, but still
+// depends on the retainer's description and the at-need invoice's product
+// name/description lining up.
+originalPriceByProductName = Map();
+for each  retainerLine in retainerData.get("line_items")
+{
+	productName = retainerLine.get("description");
+	if(!isNull(productName) && productName.trim() != "")
+	{
+		normalizedName = productName.trim().toLowerCase();
+		existingAmount = originalPriceByProductName.get(normalizedName);
+		if(isNull(existingAmount))
+		{
+			existingAmount = 0;
+		}
+		originalPriceByProductName.put(normalizedName,existingAmount + retainerLine.get("item_total"));
+	}
+}
+
+// Xero token refreshed at most once per run, only if at least one applied
+// invoice still needs its credit note created.
+accessToken = null;
+
+for each  appliedInvoiceEntry in appliedInvoices
+{
+	invoiceID = appliedInvoiceEntry.get("invoice_id");
+	amountApplied = appliedInvoiceEntry.get("amount_applied");
+	if(isNull(amountApplied))
+	{
+		amountApplied = appliedInvoiceEntry.get("total_applied_retainer_amount");
+	}
+	if(isNull(invoiceID) || invoiceID == "")
+	{
+		continue;
+	}
+
+	invoiceDetails = zoho.books.getRecordsByID("Invoices",organizationID,invoiceID,"zohobooksconnection");
+	invoiceData = invoiceDetails.get("invoice");
+
+	// ==========================================
+	// PART 1 -- PRE-NEED DIFFERENCE LINE (idempotent per invoice)
+	// ==========================================
+	alreadyHasDifferenceLine = false;
+	for each  existingLine in invoiceData.get("line_items")
+	{
+		if(existingLine.get("item_id") == PRE_NEED_DIFFERENCE_ITEM_ID)
+		{
+			alreadyHasDifferenceLine = true;
+		}
+	}
+	if(alreadyHasDifferenceLine == false)
+	{
+		todaysPriceForContractItems = 0;
+		originalPriceForMatchedItems = 0;
+		for each  atNeedLine in invoiceData.get("line_items")
+		{
+			// At-need invoice lines carry a catalog "name" (confirmed live on
+			// a real invoice); fall back to "description" for any line that
+			// doesn't have one, for consistency with the retainer side.
+			productName = atNeedLine.get("name");
+			if(isNull(productName) || productName.trim() == "")
+			{
+				productName = atNeedLine.get("description");
+			}
+			if(!isNull(productName) && productName.trim() != "")
+			{
+				normalizedName = productName.trim().toLowerCase();
+				if(originalPriceByProductName.containKey(normalizedName))
+				{
+					todaysPriceForContractItems = todaysPriceForContractItems + atNeedLine.get("item_total");
+					originalPriceForMatchedItems = originalPriceForMatchedItems + originalPriceByProductName.get(normalizedName);
+				}
+			}
+		}
+		gap = todaysPriceForContractItems - originalPriceForMatchedItems;
+		if(gap > 0)
+		{
+			newLineItemsList = list();
+			for each  existingLine in invoiceData.get("line_items")
+			{
+				newLineItemsList.add(existingLine);
+			}
+			differenceLine = Map();
+			differenceLine.put("item_id",PRE_NEED_DIFFERENCE_ITEM_ID);
+			differenceLine.put("quantity",1);
+			differenceLine.put("rate",gap * -1);
+			differenceLine.put("description","Pre-Need Difference - retainer " + retainerData.get("retainerinvoice_number"));
+			newLineItemsList.add(differenceLine);
+			updateMap = Map();
+			updateMap.put("line_items",newLineItemsList);
+			zoho.books.updateRecord("Invoices",organizationID,invoiceID,updateMap,"zohobooksconnection");
+			info "Added Pre-Need Difference line of " + (gap * -1) + " to invoice " + invoiceData.get("invoice_number");
+			// Re-fetch so Part 2 below sees the just-updated custom fields.
+			invoiceDetails = zoho.books.getRecordsByID("Invoices",organizationID,invoiceID,"zohobooksconnection");
+			invoiceData = invoiceDetails.get("invoice");
+		}
+		else if(gap < 0)
+		{
+			sendmail
+			[
+				from :zoho.adminuserid
+				to :"softanis.noushadurrahman@gmail.com"
+				subject :"Pre-Need: possible family credit owed"
+				message :"Invoice " + invoiceData.get("invoice_number") + " has a pre-need contract price higher than today's matching product total by " + abs(gap) + ". This case (family may be owed a refund/credit) is out of scope for ZP-TBD-65 and needs manual handling."
+			]
+		}
+	}
+
+	// ==========================================
+	// PART 2 -- XERO CREDIT NOTE (idempotent per invoice, independent flag)
+	// ==========================================
+	alreadyHasCreditNote = false;
+	xeroInvoiceIdForCredit = null;
+	for each  invField in invoiceData.get("custom_fields")
+	{
+		if(invField.get("api_name") == "cf_xero_retainer_credit_note_id")
+		{
+			existingCn = "" + invField.get("value");
+			if(existingCn != "" && existingCn != "null")
+			{
+				alreadyHasCreditNote = true;
+			}
+		}
+		if(invField.get("api_name") == "cf_xero_invoice_id")
+		{
+			xeroInvoiceIdForCredit = invField.get("value");
+		}
+	}
+
+	if(alreadyHasCreditNote == false && !isNull(amountApplied) && amountApplied != 0)
+	{
+		if(isNull(xeroInvoiceIdForCredit) || xeroInvoiceIdForCredit == "" || xeroInvoiceIdForCredit == "null")
+		{
+			info "Invoice " + invoiceData.get("invoice_number") + " not yet synced to Xero -- retainer credit note deferred to a later run.";
+		}
+		else
+		{
+			try
+			{
+				if(isNull(accessToken))
+				{
+					xeroRefreshToken = zoho.crm.getOrgVariable("xeroRefreshToken");
+					tokenResponse = invokeurl
+					[
+						url :"https://identity.xero.com/connect/token"
+						type :POST
+						parameters:{"grant_type":"refresh_token","refresh_token":xeroRefreshToken,"client_id":xeroClientId,"client_secret":xeroClientSecret}
+						headers:{"Content-Type":"application/x-www-form-urlencoded"}
+					];
+					variables_list = List();
+					variables_list.add({"id":xeroRefreshTokenVarId,"value":tokenResponse.get("refresh_token")});
+					param = Map();
+					param.put("variables",variables_list);
+					invokeurl
+					[
+						url :"https://www.zohoapis.com/crm/v7/settings/variables"
+						type :PUT
+						parameters:param.toString()
+						connection:"zohocrmconnection"
+					]
+					accessToken = tokenResponse.get("access_token");
+				}
+				xeroHeaders = Map();
+				xeroHeaders.put("xero-tenant-id",xeroTenantId);
+				xeroHeaders.put("Authorization","Bearer " + accessToken);
+				xeroHeaders.put("Accept","application/json");
+				xeroHeaders.put("Content-Type","application/json");
+
+				xeroAccountsResponse = invokeurl
+				[
+					url :"https://api.xero.com/api.xro/2.0/Accounts"
+					type :GET
+					headers:xeroHeaders
+				];
+				preNeedLiabilityAccountId = defaultAccountId;
+				for each  xeroAcct in xeroAccountsResponse.get("Accounts")
+				{
+					if(xeroAcct.get("Name").toLowerCase() == "pre need")
+					{
+						preNeedLiabilityAccountId = xeroAcct.get("AccountID");
+					}
+				}
+
+				customerDetails = zoho.books.getRecordsByID("contacts",organizationID,invoiceData.get("customer_id"),"zohobooksconnection");
+				customerDetails = customerDetails.get("contact");
+				xeroContactId = "";
+				for each  custField in customerDetails.get("custom_fields")
+				{
+					if(custField.get("api_name") == "cf_xero_contact_id" && !isNull(custField.get("value")) && custField.get("value") != "" && custField.get("value") != "null")
+					{
+						xeroContactId = custField.get("value");
+					}
+				}
+
+				retainerCreditNoteLineItem = Map();
+				retainerCreditNoteLineItem.put("AccountID",preNeedLiabilityAccountId);
+				retainerCreditNoteLineItem.put("Description","Pre-Need retainer applied - " + retainerData.get("retainerinvoice_number"));
+				retainerCreditNoteLineItem.put("Quantity",1);
+				retainerCreditNoteLineItem.put("UnitAmount",amountApplied);
+				retainerCreditNoteLineItem.put("TaxType","NONE");
+				retainerCreditNoteMap = Map();
+				retainerCreditNoteMap.put("Type","ACCRECCREDIT");
+				retainerCreditNoteMap.put("Contact",{"ContactID":xeroContactId});
+				retainerCreditNoteMap.put("Date",zoho.currentdate.toString("yyyy-MM-dd"));
+				retainerCreditNoteMap.put("Status","AUTHORISED");
+				retainerCreditNoteMap.put("LineItems",{retainerCreditNoteLineItem});
+				createRetainerCreditNoteInXero = invokeurl
+				[
+					url :"https://api.xero.com/api.xro/2.0/CreditNotes"
+					type :POST
+					body:retainerCreditNoteMap.toString()
+					headers:xeroHeaders
+				];
+				retainerXeroCreditNoteId = "";
+				if(createRetainerCreditNoteInXero.containKey("CreditNotes") && createRetainerCreditNoteInXero.get("CreditNotes").size() > 0)
+				{
+					retainerXeroCreditNoteId = createRetainerCreditNoteInXero.get("CreditNotes").get(0).get("CreditNoteID");
+				}
+				if(retainerXeroCreditNoteId != "")
+				{
+					// Xero's CreditNotes/{id}/Allocations endpoint requires PUT,
+					// not POST -- confirmed gotcha from ZP-TBD-54's own build notes.
+					allocationMap = Map();
+					allocationLineMap = Map();
+					allocationLineMap.put("Invoice",{"InvoiceID":xeroInvoiceIdForCredit});
+					allocationLineMap.put("Amount",amountApplied);
+					allocationLineMap.put("Date",zoho.currentdate.toString("yyyy-MM-dd"));
+					allocationMap.put("Allocations",{allocationLineMap});
+					invokeurl
+					[
+						url :"https://api.xero.com/api.xro/2.0/CreditNotes/" + retainerXeroCreditNoteId + "/Allocations"
+						type :PUT
+						parameters:allocationMap.toString()
+						headers:xeroHeaders
+					];
+					invoiceUpdateMap = Map();
+					invoiceCustomFields = list();
+					invoiceCustomFields.add({"api_name":"cf_xero_retainer_credit_note_id","value":retainerXeroCreditNoteId});
+					invoiceUpdateMap.put("custom_fields",invoiceCustomFields);
+					zoho.books.updateRecord("Invoices",organizationID,invoiceID,invoiceUpdateMap,"zohobooksconnection");
+					info "Created Xero retainer credit note " + retainerXeroCreditNoteId + " for invoice " + invoiceData.get("invoice_number");
+				}
+			}
+			catch (e)
+			{
+				sendmail
+				[
+					from :zoho.adminuserid
+					to :"softanis.noushadurrahman@gmail.com"
+					subject :"Pre-Need Retainer Credit Note Error"
+					message :"Invoice: " + invoiceID + ", Retainer: " + retainerInvoiceID + " - " + e.toString()
+				]
+				info "Error: Pre-Need retainer credit note creation failed";
+				info e;
+			}
+		}
+	}
+}

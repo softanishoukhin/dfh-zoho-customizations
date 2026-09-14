@@ -1,0 +1,183 @@
+// *** SUPERSEDED 2026-09-11 -- DO NOT DEPLOY ***
+// Replaced by addPreNeedDifferenceAndCreditNoteOnRetainerApply_REVISED.deluge,
+// which triggers from the Retainer Invoice module instead of Invoice, using a
+// confirmed-live "invoices" array (see that file's header for why). This file
+// is kept only for history of the original design attempt.
+// ============================================================================
+//
+// addPreNeedDifferenceLineOnRetainerApply (NEW function, ZP-TBD-65 Stage 2)
+// ============================================================================
+// Entity: invoice. Deploy as its OWN new Custom Function + Workflow Rule on
+// the Invoices module. DEPLOYMENT REQUIREMENT: this workflow rule must be
+// ORDERED TO FIRE BEFORE "updateInvoiceToXero" (createinvoiceonxero) -- Zoho
+// Books executes multiple workflow rules on the same trigger in the order
+// they're listed in Settings > Automation > Workflow Rules. This matters
+// because createinvoiceonxero re-fetches the invoice fresh via
+// getRecordsByID rather than trusting the trigger payload, so as long as
+// this function's updateRecord call (below) completes first, the Xero push
+// will see the complete line items including the difference line -- but this
+// ordering behavior has NOT been confirmed live, see the test note at the
+// bottom.
+//
+// WHAT THIS DOES: when a pre-need retainer invoice has just been applied to
+// this at-need invoice, computes the gap between today's price and the
+// original pre-need contract price -- but ONLY for the specific products
+// common to both invoices (matched by item_id), then adds a single "Pre-Need
+// Difference" line for the negative of that gap.
+//
+// WHY MATCH BY item_id INSTEAD OF JUST USING THE INVOICE'S REMAINING BALANCE:
+// the call notes are explicit that the funeral director adds new products
+// onto this same invoice, and that's specifically why the cashier (not the
+// FD) owns reconciling it to the contract price. If this just used the
+// invoice's remaining balance after the retainer is applied, a genuinely NEW
+// product the FD added would also show up in that balance and get
+// incorrectly zeroed out along with the real contract-price gap -- DFH would
+// give away the new product for free. Matching by item_id keeps the discount
+// scoped to exactly what the family already paid for at pre-need time.
+//
+// PLACEHOLDER TO FILL IN: PRE_NEED_DIFFERENCE_ITEM_ID below. Create the
+// "Pre-Need Difference" product per the manual step in metadata.md (CRM
+// Products -> syncs to Books Items, coded to the normal Sales account, not
+// Pre-Need Liability, non-taxable), then paste its real Books item_id here.
+//
+// NOT VERIFIED LIVE: the retainer-invoice-id key name in the creditsapplied
+// response (identical caveat to createinvoiceonxero_STAGE2_PATCH.deluge --
+// both pieces use the same detection logic and need the same confirmation
+// against a real retainer-applied invoice once one exists).
+
+PRE_NEED_DIFFERENCE_ITEM_ID = "5830143000035961673"; // TODO: fill in once the product exists in Books
+
+invoiceID = invoice.get("invoice_id");
+organizationID = organization.get("organization_id");
+
+invoiceDetails = zoho.books.getRecordsByID("Invoices",organizationID,invoiceID,"zohobooksconnection");
+invoiceData = invoiceDetails.get("invoice");
+
+// ==========================================
+// IDEMPOTENCY GUARD -- skip if a Pre-Need Difference line already exists
+// ==========================================
+alreadyHasDifferenceLine = false;
+for each  existingLine in invoiceData.get("line_items")
+{
+	if(existingLine.get("item_id") == PRE_NEED_DIFFERENCE_ITEM_ID)
+	{
+		alreadyHasDifferenceLine = true;
+	}
+}
+if(alreadyHasDifferenceLine == true)
+{
+	info "Invoice " + invoiceData.get("invoice_number") + " already has a Pre-Need Difference line -- skipping.";
+	return;
+}
+
+// ==========================================
+// DETECT A RETAINER INVOICE APPLIED TO THIS INVOICE
+// ==========================================
+creditsAppliedResponse = invokeurl
+[
+	url :"https://www.zohoapis.com/books/v3/invoices/" + invoiceID + "/creditsapplied?organization_id=" + organizationID
+	type :GET
+	connection:"zohobooksconnection"
+];
+sourceRetainerInvoiceId = null;
+for each  creditEntry in creditsAppliedResponse.get("credits")
+{
+	candidateId = creditEntry.get("retainerinvoice_id");
+	if(isNull(candidateId) || candidateId == "")
+	{
+		candidateId = creditEntry.get("retainer_invoice_id");
+	}
+	if(!isNull(candidateId) && candidateId != "")
+	{
+		sourceRetainerInvoiceId = candidateId;
+		break;
+	}
+}
+if(isNull(sourceRetainerInvoiceId))
+{
+	// No retainer applied to this invoice -- nothing to do.
+	return;
+}
+
+// ==========================================
+// FETCH THE RETAINER INVOICE'S ORIGINAL LINE ITEMS
+// ==========================================
+retainerDetails = zoho.books.getRecordsByID("RetainerInvoices",organizationID,sourceRetainerInvoiceId,"zohobooksconnection");
+retainerData = retainerDetails.get("retainerinvoice");
+
+originalPriceByItemId = Map();
+for each  retainerLine in retainerData.get("line_items")
+{
+	itemId = retainerLine.get("item_id");
+	if(!isNull(itemId) && itemId != "")
+	{
+		existingAmount = originalPriceByItemId.get(itemId);
+		if(isNull(existingAmount))
+		{
+			existingAmount = 0;
+		}
+		originalPriceByItemId.put(itemId,existingAmount + retainerLine.get("item_total"));
+	}
+}
+
+// ==========================================
+// COMPUTE THE GAP -- ONLY FOR ITEMS COMMON TO BOTH INVOICES
+// ==========================================
+todaysPriceForContractItems = 0;
+originalPriceForMatchedItems = 0;
+for each  atNeedLine in invoiceData.get("line_items")
+{
+	itemId = atNeedLine.get("item_id");
+	if(!isNull(itemId) && originalPriceByItemId.containKey(itemId))
+	{
+		todaysPriceForContractItems = todaysPriceForContractItems + atNeedLine.get("item_total");
+		originalPriceForMatchedItems = originalPriceForMatchedItems + originalPriceByItemId.get(itemId);
+	}
+}
+
+gap = todaysPriceForContractItems - originalPriceForMatchedItems;
+
+if(gap <= 0)
+{
+	// Contract price >= today's matching-item price -- the overpayment/refund
+	// case, explicitly out of scope for this ticket (confirmed with Andrea).
+	// Flag for manual handling rather than silently doing nothing.
+	if(gap < 0)
+	{
+		sendmail
+		[
+			from :zoho.adminuserid
+			to :"softanis.noushadurrahman@gmail.com"
+			subject :"Pre-Need: possible family credit owed"
+			message :"Invoice " + invoiceData.get("invoice_number") + " has a pre-need contract price higher than today's matching product total by " + abs(gap) + ". This case (family may be owed a refund/credit) is out of scope for ZP-TBD-65 and needs manual handling."
+		]
+	}
+	return;
+}
+
+// ==========================================
+// ADD THE PRE-NEED DIFFERENCE LINE
+// ==========================================
+newLineItemsList = list();
+for each  existingLine in invoiceData.get("line_items")
+{
+	newLineItemsList.add(existingLine);
+}
+differenceLine = Map();
+differenceLine.put("item_id",PRE_NEED_DIFFERENCE_ITEM_ID);
+differenceLine.put("quantity",1);
+differenceLine.put("rate",gap * -1);
+differenceLine.put("description","Pre-Need Difference - retainer " + retainerData.get("retainerinvoice_number"));
+newLineItemsList.add(differenceLine);
+
+updateMap = Map();
+updateMap.put("line_items",newLineItemsList);
+updateResult = zoho.books.updateRecord("Invoices",organizationID,invoiceID,updateMap,"zohobooksconnection");
+info "Added Pre-Need Difference line of " + (gap * -1) + " to invoice " + invoiceData.get("invoice_number");
+
+// LIVE TEST NEEDED: confirm on the first real retainer-applied invoice that
+// (a) this function's line-item addition is present BEFORE createinvoiceonxero
+// pushes to Xero on the same trigger cascade (the workflow-ordering assumption
+// above), and if not, that createinvoiceonxero's own re-trigger (from this
+// function's updateRecord call) picks up the complete data on its second pass
+// instead.

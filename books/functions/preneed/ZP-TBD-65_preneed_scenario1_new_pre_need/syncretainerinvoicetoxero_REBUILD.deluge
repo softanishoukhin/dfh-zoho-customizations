@@ -1,0 +1,537 @@
+// RETAINER INVOICE -> XERO RECEIVE MONEY SYNC (rebuilt for ZP-TBD-65, Pre-Need Scenario 1)
+// ============================================================================
+// Replaces the old Invoice(ACCREC)+Payment mechanism with a native Xero Receive
+// Money BankTransaction, coded to the Pre-Need Liability account (26100, "PRE
+// NEED"), posted against BNS DFH-Checking. Confirmed with Andrea 2026-09-09:
+// Dale wants a literal Receive Money transaction ("a receipt without an
+// invoice"), not an invoice+payment pair -- the previous version created an
+// ACCREC invoice and a separate payment against it.
+//
+// PREREQUISITE -- new Books custom field required before this can run:
+// Retainer Invoices module -> new field "Xero Bank Transaction ID" (Text,
+// single line). Confirm the live api_name once created (expected
+// cf_xero_bank_transaction_id, following the cf_xero_invoice_id /
+// cf_xero_credit_note_id naming already used on Invoices/Credit Notes) and
+// correct the two references below if it differs.
+//
+// Function id 5830143000019094452, entity retainer_invoice, workflow
+// "Sync Retainer Invoice To Xero". Function signature/params unchanged.
+
+retainerInvoiceID = retainer_invoice.get("retainerinvoice_id");
+organizationID = organization.get("organization_id");
+
+// Configuration constants
+xeroTenantId = "879c4d25-cee8-46c1-89f9-80dcfe572eb2";
+xeroClientId = "6793DCCECBC842A78F4823D608636FFD";
+xeroClientSecret = "v8ATq7H7hiOn63lryHETiXz6UtkCQZookKUD3tjAMcf4uoQE";
+xeroRefreshTokenVarId = "6503357000009423001";
+defaultAccountId = "d82dba9b-5cd3-41a9-97c8-d3a3ceb98c5a";
+preNeedBankAccountId = "AB461C09-78F6-4BFC-AF77-D045F5EEEB07"; // BNS DFH-Checking, confirmed 2026-09-09
+jmdCurrencyId = "5830143000000000097";
+revenueCenterTrackingId = "5e1a572c-8524-4cac-b9a8-538f152e7397";
+motorVehicleTrackingId = "fe01a38d-e5ad-40a1-83e9-9a6a05e4c4b4";
+createCreditNoteWebhook = "https://www.zohoapis.com/books/v3/settings/incomingwebhooks/iw_createcreditnotefromdebitno/execute?auth_type=apikey&encapiKey=wSsVR60l%2BkP2X%2Ft1yWX%2FJek6ngtTBF2nFx542Vf37CT0Hf%2FLpcc6xkKaUFSnSPUbQmVuQmEW9bstmUoH0WEG2d8kmFoJCyiF9mqRe1U4J3x1xsmZ8mukByoywFHdfc5dlE4%2BzzklTZdn4jfwlvaaO323Vp2e";
+
+// ==========================================
+// FETCH RETAINER INVOICE DETAILS
+// ==========================================
+try
+{
+	retainerInvoiceResponse = zoho.books.getRecordsByID("RetainerInvoices",organizationID,retainerInvoiceID,"zohobooksconnection");
+	if(isNull(retainerInvoiceResponse) || !retainerInvoiceResponse.containKey("retainerinvoice"))
+	{
+		sendmail
+		[
+			from :zoho.adminuserid
+			to :"softanis.noushadurrahman@gmail.com"
+			subject :"Retainer Invoice Fetch Error"
+			message :"Could not fetch retainer invoice: " + retainerInvoiceID
+		]
+		info "Error: Could not fetch retainer invoice";
+	}
+	invoiceData = retainerInvoiceResponse.get("retainerinvoice");
+	invoiceData.put("organization_id",organizationID);
+	invoiceData.put("retainerinvoice_id",retainerInvoiceID);
+}
+catch (e)
+{
+	sendmail
+	[
+		from :zoho.adminuserid
+		to :"softanis.noushadurrahman@gmail.com"
+		subject :"Retainer Invoice Fetch Exception"
+		message :e.toString()
+	]
+	info "Error: Exception in fetching retainer invoice";
+}
+
+// ==========================================
+// IDEMPOTENCY GUARD
+// ==========================================
+// This workflow can refire on Update as well as Create (confirmed pattern
+// elsewhere in this org -- the old version needed its own invoice-existence
+// check for the same reason). A Receive Money transaction has no natural
+// "does this already exist" lookup the way an Invoice number did, so this
+// checks the new custom field instead and skips entirely once populated.
+alreadySyncedToXero = false;
+for each  customField in invoiceData.get("custom_fields")
+{
+	if(customField.get("api_name") == "cf_xero_bank_transaction_id")
+	{
+		existingValue = "" + customField.get("value");
+		if(existingValue != "" && existingValue != "null")
+		{
+			alreadySyncedToXero = true;
+		}
+		break;
+	}
+}
+if(alreadySyncedToXero == true)
+{
+	info "Retainer invoice " + invoiceData.get("retainerinvoice_number") + " already has a Xero Receive Money transaction -- skipping.";
+	return;
+}
+
+// ==========================================
+// REFRESH XERO TOKEN
+// ==========================================
+try
+{
+	xeroRefreshToken = zoho.crm.getOrgVariable("xeroRefreshToken");
+	tokenResponse = invokeurl
+	[
+		url :"https://identity.xero.com/connect/token"
+		type :POST
+		parameters:{"grant_type":"refresh_token","refresh_token":xeroRefreshToken,"client_id":xeroClientId,"client_secret":xeroClientSecret}
+		headers:{"Content-Type":"application/x-www-form-urlencoded"}
+	];
+	xeroRefreshTokenVariable = Map();
+	xeroRefreshTokenVariable.put("id",xeroRefreshTokenVarId);
+	xeroRefreshTokenVariable.put("value",tokenResponse.get("refresh_token"));
+	variables_list = List();
+	variables_list.add(xeroRefreshTokenVariable);
+	param = Map();
+	param.put("variables",variables_list);
+	variableUpdateResult = invokeurl
+	[
+		url :"https://www.zohoapis.com/crm/v7/settings/variables"
+		type :PUT
+		parameters:param.toString()
+		connection:"zohocrmconnection"
+	];
+	accessToken = tokenResponse.get("access_token");
+}
+catch (e)
+{
+	sendmail
+	[
+		from :zoho.adminuserid
+		to :"softanis.noushadurrahman@gmail.com"
+		subject :"Xero Token Error"
+		message :e.toString()
+	]
+	info "Error: Xero token refresh failed";
+}
+
+// ==========================================
+// CHECK CRM INVOICE (unchanged)
+// ==========================================
+crmInvoiceID = null;
+crmInvoiceDetails = null;
+dealExists = false;
+try
+{
+	for each  customField in invoiceData.get("custom_fields")
+	{
+		if(customField.get("label") == "CRM Invoice ID" || customField.get("api_name") == "cf_crm_invoice_id")
+		{
+			crmInvoiceID = customField.get("value");
+			break;
+		}
+	}
+	if(!isNull(crmInvoiceID) && crmInvoiceID != "null" && crmInvoiceID != "")
+	{
+		crmInvoiceDetails = zoho.crm.getRecordById("Invoices",crmInvoiceID);
+		if(!isNull(crmInvoiceDetails) && !isNull(crmInvoiceDetails.get("Deal_Name__s")))
+		{
+			dealExists = true;
+		}
+	}
+}
+catch (e)
+{
+	dealExists = true;
+}
+
+// ==========================================
+// UPDATE CURRENCY FIELDS IF NO DEAL (unchanged)
+// ==========================================
+if(!dealExists)
+{
+	try
+	{
+		exchangeResponse = invokeurl
+		[
+			url :"https://www.zohoapis.com/books/v3/settings/currencies/" + jmdCurrencyId + "/exchangerates?organization_id=" + organizationID
+			type :GET
+			connection:"zohobooksconnection"
+		];
+		exchangeRate = exchangeResponse.get("exchange_rates").get(0).get("rate");
+		amountDueInJMD = invoiceData.get("total");
+		amountDueInUSD = amountDueInJMD / exchangeRate;
+		customFieldsList = list();
+		fieldMap1 = Map();
+		fieldMap1.put("api_name","cf_amount_due_in_jmd");
+		fieldMap1.put("value",amountDueInJMD.round(2));
+		customFieldsList.add(fieldMap1);
+		fieldMap2 = Map();
+		fieldMap2.put("api_name","cf_amount_due_in_usd");
+		fieldMap2.put("value",amountDueInUSD.round(2));
+		customFieldsList.add(fieldMap2);
+		if(invoiceData.containKey("contact_persons_associated") && invoiceData.get("contact_persons_associated").size() > 0)
+		{
+			contactPerson = invoiceData.get("contact_persons_associated").get(0);
+			if(contactPerson.containKey("zcrm_contact_id"))
+			{
+				fieldMap3 = Map();
+				fieldMap3.put("api_name","cf_crm_payer_id");
+				fieldMap3.put("value",contactPerson.get("zcrm_contact_id"));
+				customFieldsList.add(fieldMap3);
+			}
+		}
+		updateMap = Map();
+		updateMap.put("custom_fields",customFieldsList);
+		updateMap.put("reason","Update");
+		zoho.books.updateRecord("RetainerInvoices",organizationID,retainerInvoiceID,updateMap,"zohobooksconnection");
+	}
+	catch (e)
+	{
+		sendmail
+		[
+			from :zoho.adminuserid
+			to :"softanis.noushadurrahman@gmail.com"
+			subject :"Currency Update Error"
+			message :e.toString()
+		]
+	}
+}
+
+// ==========================================
+// SETUP XERO HEADERS
+// ==========================================
+xeroHeaders = Map();
+xeroHeaders.put("xero-tenant-id",xeroTenantId);
+xeroHeaders.put("Authorization","Bearer " + accessToken);
+xeroHeaders.put("Accept","application/json");
+xeroHeaders.put("Content-Type","application/json");
+
+// ==========================================
+// FETCH XERO MASTER DATA
+// ==========================================
+xeroAccounts = Map();
+xeroTaxes = Map();
+xeroTrackingCategories = Map();
+try
+{
+	xeroAccounts = invokeurl
+	[
+		url :"https://api.xero.com/api.xro/2.0/Accounts"
+		type :GET
+		headers:xeroHeaders
+	];
+}
+catch (e)
+{
+	xeroAccounts = Map();
+	xeroAccounts.put("Accounts",list());
+}
+try
+{
+	xeroTaxes = invokeurl
+	[
+		url :"https://api.xero.com/api.xro/2.0/TaxRates"
+		type :GET
+		headers:xeroHeaders
+	];
+}
+catch (e)
+{
+	xeroTaxes = Map();
+	xeroTaxes.put("TaxRates",list());
+}
+try
+{
+	xeroTrackingCategories = invokeurl
+	[
+		url :"https://api.xero.com/api.xro/2.0/TrackingCategories"
+		type :GET
+		headers:xeroHeaders
+	];
+}
+catch (e)
+{
+	xeroTrackingCategories = Map();
+	xeroTrackingCategories.put("TrackingCategories",list());
+}
+
+// ==========================================
+// CHECK/CREATE CONTACT IN XERO (unchanged)
+// ==========================================
+contactData = Map();
+contactData.put("Name",invoiceData.get("customer_name"));
+contactExistInXero = false;
+xeroContactId = null;
+customerDetails = zoho.books.getRecordsByID("contacts",organizationID,invoiceData.get("customer_id"),"zohobooksconnection");
+customerDetails = customerDetails.get("contact");
+for each  customField in customerDetails.get("custom_fields")
+{
+	fieldLabel = customField.get("label");
+	fieldValue = customField.get("value");
+	if((fieldLabel == "Xero Contact ID" || customField.get("api_name") == "cf_xero_contact_id") && !isNull(fieldValue) && fieldValue != "null" && fieldValue != "")
+	{
+		contactExistInXero = true;
+		xeroContactId = fieldValue;
+		break;
+	}
+}
+try
+{
+	if(contactExistInXero == true)
+	{
+		createContactResponse = invokeurl
+		[
+			url :"https://api.xero.com/api.xro/2.0/Contacts/" + xeroContactId
+			type :POST
+			body:contactData.toString()
+			headers:xeroHeaders
+		];
+	}
+	else
+	{
+		createContactResponse = invokeurl
+		[
+			url :"https://api.xero.com/api.xro/2.0/Contacts"
+			type :POST
+			body:contactData.toString()
+			headers:xeroHeaders
+		];
+	}
+	xeroContactId = createContactResponse.get("Contacts").get(0).get("ContactID");
+	booksContactMap = Map();
+	booksContactCustomFields = list();
+	booksContactCustomFields.add({"api_name":"cf_xero_contact_id","value":xeroContactId});
+	booksContactMap.put("custom_fields",booksContactCustomFields);
+	contactUpdaetResult = zoho.books.updateRecord("Contacts",organizationID,invoiceData.get("customer_id"),booksContactMap,"zohobooksconnection");
+}
+catch (e)
+{
+	sendmail
+	[
+		from :zoho.adminuserid
+		to :"softanis.noushadurrahman@gmail.com"
+		subject :"Xero Contact Error"
+		message :"Invoice: " + invoiceData.get("retainerinvoice_number") + " - " + e.toString()
+	]
+	info "Error: Xero contact creation failed";
+}
+
+// ==========================================
+// PREPARE RECEIVE MONEY LINE ITEMS
+// ==========================================
+LineItemsList = list();
+accountMap = Map();
+for each  account in xeroAccounts.get("Accounts")
+{
+	accountMap.put(account.get("Name").toLowerCase(),account.get("AccountID"));
+}
+taxMap = Map();
+for each  tax in xeroTaxes.get("TaxRates")
+{
+	taxMap.put(tax.get("Name").toLowerCase(),tax.get("TaxType"));
+}
+revenueCenterOptions = Map();
+motorVehicleOptions = Map();
+for each  category in xeroTrackingCategories.get("TrackingCategories")
+{
+	if(category.get("TrackingCategoryID") == revenueCenterTrackingId)
+	{
+		for each  option in category.get("Options")
+		{
+			revenueCenterOptions.put(option.get("Name").toLowerCase(),option.get("TrackingOptionID"));
+		}
+	}
+	if(category.get("TrackingCategoryID") == motorVehicleTrackingId)
+	{
+		for each  option in category.get("Options")
+		{
+			motorVehicleOptions.put(option.get("Name").toLowerCase(),option.get("TrackingOptionID"));
+		}
+	}
+}
+for each  lineItem in invoiceData.get("line_items")
+{
+	lineItemMap = Map();
+	// Same hardcoded lookup name as the previous version -- confirmed live
+	// 2026-09-09: Xero account "PRE NEED", code 26100, Type Liability.
+	accountName = "pre need";
+	accountId = accountMap.get(accountName);
+	if(isNull(accountId))
+	{
+		accountId = defaultAccountId;
+	}
+	lineItemMap.put("AccountID",accountId);
+	taxType = "NONE";
+	if(lineItem.containKey("tax_name") && !isNull(lineItem.get("tax_name")))
+	{
+		mappedTax = taxMap.get(lineItem.get("tax_name").toLowerCase());
+		if(!isNull(mappedTax))
+		{
+			taxType = mappedTax;
+		}
+	}
+	lineItemMap.put("TaxType",taxType);
+	trackingList = list();
+	if(lineItem.containKey("item_custom_fields"))
+	{
+		for each  itemCustomField in lineItem.get("item_custom_fields")
+		{
+			fieldName = itemCustomField.get("api_name");
+			fieldValue = itemCustomField.get("value");
+			if(!isNull(fieldValue) && fieldValue != "null" && fieldValue != "")
+			{
+				trackingMap = Map();
+				if(fieldName == "cf_revenue_centers" || fieldName == "Revenue Center")
+				{
+					optionId = revenueCenterOptions.get(fieldValue.toLowerCase());
+					if(!isNull(optionId))
+					{
+						trackingMap.put("TrackingCategoryID",revenueCenterTrackingId);
+						trackingMap.put("TrackingOptionID",optionId);
+						trackingList.add(trackingMap);
+					}
+				}
+				if(fieldName == "cf_motor_vehicle" || fieldName == "Motor Vehicle")
+				{
+					optionId = motorVehicleOptions.get(fieldValue.toLowerCase());
+					if(!isNull(optionId))
+					{
+						trackingMap.put("TrackingCategoryID",motorVehicleTrackingId);
+						trackingMap.put("TrackingOptionID",optionId);
+						trackingList.add(trackingMap);
+					}
+				}
+			}
+		}
+	}
+	lineItemMap.put("Description",lineItem.get("description"));
+	lineItemMap.put("Quantity",1);
+	lineItemMap.put("UnitAmount",lineItem.get("rate"));
+	lineItemMap.put("LineAmount",lineItem.get("item_total"));
+	if(trackingList.size() > 0)
+	{
+		lineItemMap.put("Tracking",trackingList);
+	}
+	LineItemsList.add(lineItemMap);
+}
+
+// ==========================================
+// CREATE THE RECEIVE MONEY BANK TRANSACTION
+// ==========================================
+receiveMoneyMap = Map();
+receiveMoneyMap.put("Type","RECEIVE");
+receiveMoneyMap.put("Contact",{"ContactID":xeroContactId});
+receiveMoneyMap.put("BankAccount",{"AccountID":preNeedBankAccountId});
+receiveMoneyMap.put("Date",invoiceData.get("date"));
+receiveMoneyMap.put("Status","AUTHORISED");
+receiveMoneyMap.put("Reference","Pre-Need Retainer " + invoiceData.get("retainerinvoice_number"));
+if(invoiceData.get("contact_persons_associated").size() > 0)
+{
+	contactPerson = invoiceData.get("contact_persons_associated").get(0);
+	receiveMoneyMap.put("Reference","Pre-Need Retainer " + invoiceData.get("retainerinvoice_number") + " - " + contactPerson.get("first_name") + " " + contactPerson.get("last_name"));
+}
+if(invoiceData.get("is_inclusive_tax") == true)
+{
+	receiveMoneyMap.put("LineAmountTypes","Inclusive");
+}
+receiveMoneyMap.put("LineItems",LineItemsList);
+
+createReceiveMoneyResponse = Map();
+try
+{
+	createReceiveMoneyResponse = invokeurl
+	[
+		url :"https://api.xero.com/api.xro/2.0/BankTransactions"
+		type :POST
+		body:receiveMoneyMap.toString()
+		headers:xeroHeaders
+	];
+}
+catch (e)
+{
+	booksUpdateMap = Map();
+	booksCustomFields = list();
+	booksCustomFields.add({"api_name":"cf_xero_trigger_reschedule","value":"Yes"});
+	booksUpdateMap.put("custom_fields",booksCustomFields);
+	zoho.books.updateRecord("RetainerInvoices",organizationID,retainerInvoiceID,booksUpdateMap,"zohobooksconnection");
+	info "Error: Xero Receive Money creation failed";
+	info e;
+	return;
+}
+
+xeroBankTransactionId = null;
+if(createReceiveMoneyResponse.containKey("BankTransactions") && createReceiveMoneyResponse.get("BankTransactions").size() > 0)
+{
+	xeroBankTransactionId = createReceiveMoneyResponse.get("BankTransactions").get(0).get("BankTransactionID");
+}
+if(isNull(xeroBankTransactionId))
+{
+	sendmail
+	[
+		from :zoho.adminuserid
+		to :"softanis.noushadurrahman@gmail.com"
+		subject :"Xero Receive Money Error"
+		message :invoiceData.get("retainerinvoice_number") + ": " + createReceiveMoneyResponse.toString()
+	]
+	booksUpdateMap = Map();
+	booksCustomFields = list();
+	booksCustomFields.add({"api_name":"cf_xero_trigger_reschedule","value":"Yes"});
+	booksUpdateMap.put("custom_fields",booksCustomFields);
+	zoho.books.updateRecord("RetainerInvoices",organizationID,retainerInvoiceID,booksUpdateMap,"zohobooksconnection");
+	info "Error: no BankTransactionID returned from Xero";
+	return;
+}
+
+// ==========================================
+// UPDATE RETAINER INVOICE WITH THE NEW XERO REFERENCE
+// ==========================================
+booksUpdateMap = Map();
+booksCustomFields = list();
+booksCustomFields.add({"api_name":"cf_xero_bank_transaction_id","value":xeroBankTransactionId});
+booksCustomFields.add({"api_name":"cf_xero_trigger_reschedule","value":""});
+booksUpdateMap.put("custom_fields",booksCustomFields);
+updateResponse = zoho.books.updateRecord("RetainerInvoices",organizationID,retainerInvoiceID,booksUpdateMap,"zohobooksconnection");
+
+// ==========================================
+// PROCESS DEBIT NOTES (unchanged -- unrelated to the receive-money mechanism)
+// ==========================================
+if(invoiceData.containKey("debit_notes") && invoiceData.get("debit_notes").size() > 0)
+{
+	debit_notes = invoiceData.get("debit_notes");
+	for each  debit_note in debit_notes
+	{
+		try
+		{
+			createCreditNoteResponse = invokeurl
+			[
+				url :createCreditNoteWebhook + "&invoice_id=" + debit_note.get("debit_note_id")
+				type :GET
+			];
+		}
+		catch (e)
+		{
+			// Continue to next
+		}
+	}
+}
+
+info "Success: Retainer invoice " + invoiceData.get("retainerinvoice_number") + " posted to Xero as a Receive Money transaction (" + xeroBankTransactionId + ")";

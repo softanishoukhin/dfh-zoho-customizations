@@ -1,0 +1,59 @@
+// TRIMMED for ZP-TBD-65, Pre-Need Scenario 1
+// ============================================================================
+// Function id 5830143000024812988, entity retainer_invoice, workflow
+// "Sync Status Between CRM and Books for Retainer Invoice".
+//
+// WHY: this function used to push the retainer invoice's Books status (e.g.
+// "sent") as an AUTHORISED status update onto the Xero Invoice it created.
+// Once syncretainerinvoicetoxero (see the REBUILD file alongside this one) no
+// longer creates a Xero Invoice at all -- it posts a Receive Money
+// BankTransaction, which is already AUTHORISED at creation -- there is no
+// Xero-side draft/sent/paid lifecycle left to sync. That first block also had
+// no try/catch around its Xero calls, so left in place it was a live risk:
+// once cf_xero_invoice_id stops being populated for new retainers, the field
+// lookup's string check (!= "null") would still pass on an empty string and
+// attempt to POST to ".../Invoices/" with a blank ID.
+//
+// Removed entirely: the Xero token refresh and the "push AUTHORISED to the
+// Xero Invoice" block. Kept as-is: the CRM Invoice status mirror below, which
+// never touched Xero and is unaffected by the Stage 1 rebuild.
+
+invoice = retainer_invoice;
+invoiceID = invoice.get("retainerinvoice_id");
+organizationID = organization.get("organization_id");
+invoiceDetails = zoho.books.getRecordsByID("retainerinvoices",organizationID,invoiceID,"zohobooksconnection");
+invoiceData = invoiceDetails.get("retainerinvoice");
+
+for each  customField in invoiceData.get("custom_fields")
+{
+	if(customField.get("api_name") == "cf_crm_invoice_id" && customField.get("value") != "null")
+	{
+		crmInvoiceMap = Map();
+		if(invoiceData.get("status") == "paid")
+		{
+			crmInvoiceMap.put("Status","Paid");
+		}
+		else if(invoiceData.get("status") == "sent")
+		{
+			crmInvoiceMap.put("Status","Sent");
+		}
+		else if(invoiceData.get("status") == "partially_paid")
+		{
+			crmInvoiceMap.put("Status","Partially Paid");
+		}
+		else if(invoiceData.get("status") == "overdue")
+		{
+			crmInvoiceMap.put("Status","Overdue");
+		}
+		else if(invoiceData.get("status") == "void")
+		{
+			crmInvoiceMap.put("Status","Void");
+		}
+		else if(invoiceData.get("status") == "draft")
+		{
+			crmInvoiceMap.put("Status","Draft");
+		}
+		crmUpdateResult = zoho.crm.updateRecord("Invoices",customField.get("value"),crmInvoiceMap);
+		break;
+	}
+}
