@@ -103,20 +103,30 @@ void automation.createFirstCallStorageInvoice(Int crmid)
 	{
 		storageDays = 1;
 	}
+	// TEMP DEBUG (remove once diagnosed): "info" statements land in this function's own
+	// execution log (Setup > Automation > Functions > this function > execution history),
+	// so we can see exactly what the Operations query did without a UI to surface it in.
 	embalmingComplete = false;
+	opsQueryAll = "select id, Status, Related_Deal from Operations where (Related_Deal.id = '" + crmid + "')";
+	info opsQueryAll;
 	try
 	{
-		opsQuery = "select id, Status from Operations where (Related_Deal.id = '" + crmid + "' and Status = 'Completed')";
-		opsResults = standalone.COQLQuery(opsQuery);
-		if(opsResults.size() > 0)
+		opsResultsAll = standalone.COQLQuery(opsQueryAll);
+		info opsResultsAll;
+		for each  opsRowAll in opsResultsAll
 		{
-			embalmingComplete = true;
+			opsStatusAll = ifnull(opsRowAll.get("Status"),"");
+			if(opsStatusAll == "Completed")
+			{
+				embalmingComplete = true;
+			}
 		}
 	}
-	catch (e)
+	catch (eOpsAll)
 	{
-		embalmingComplete = false;
+		info eOpsAll;
 	}
+	info embalmingComplete;
 	// Find-or-update: this workflow can fire more than once for the same Deal (e.g. the
 	// Stage is moved away and back, or a re-test during setup) -- confirmed live this was
 	// creating a brand new duplicate invoice every time instead of updating the one
