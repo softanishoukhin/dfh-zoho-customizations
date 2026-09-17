@@ -1,0 +1,162 @@
+// getQuestionnaireForDeal -> Custom API: getQuestionnaireForDeal (GET)
+// Looks up an existing Pre_Need_Questionnaire CRM record for this Deal (via
+// Deal_Name lookup) and returns it flat for prefill/resume. This is now the
+// PRIMARY prefill source per the user's decision -- not Final_Wishes_Form /
+// getCreatorRecord, which stays as a parallel write-only store.
+//
+// Uses REST v8 GET (not zoho.crm.getRecordById) to fetch the full record --
+// getRecordById unreliably drops subform data (Persons_Responsible), same
+// reason getDeal.dg/getCreatorRecord.dg already avoid it elsewhere in this app.
+string getQuestionnaireForDeal(String deal_id)
+{
+	result = Map();
+	try
+	{
+		dId = ifnull(deal_id,"").trim();
+		if(dId == "")
+		{
+			result.put("status","error");
+			result.put("message","deal_id is required");
+			return result.toString();
+		}
+
+		// ---- 1) find the record id via COQL (cheap, no subform needed here) ----
+		// User's own applied/tested fix (2026-09-17) -- Deal_Name compared
+		// directly as a quoted string (no .id dot-notation), and a different
+		// connection, zoho_oauth_connection, not zohocrm_connection used
+		// elsewhere in this app.
+		queryMap = Map();
+		queryMap.put("select_query","select id from Pre_Need_Questionnaire where Deal_Name = '" + dId + "'");
+		queryResp = Map();
+		try
+		{
+			queryResp = invokeurl
+			[
+				url :"https://www.zohoapis.com/crm/v7/coql"
+				type :POST
+				parameters:queryMap.toString()
+				connection:"zoho_oauth_connection"
+			];
+		}
+		catch (eQuery)
+		{
+			queryResp = Map();
+		}
+		foundId = "";
+		try
+		{
+			if(queryResp.containKey("data"))
+			{
+				foundId = ifnull(queryResp.get("data").get(0).get("id"),"");
+			}
+		}
+		catch (eParse)
+		{
+			foundId = "";
+		}
+		if(foundId == "")
+		{
+			result.put("status","success");
+			result.put("found",false);
+			return result.toString();
+		}
+
+		// ---- 2) fetch the full record (REST v8 -- includes the subform) ----
+		recResp = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v8/Pre_Need_Questionnaire/" + foundId
+			type :GET
+			connection:"zohocrm_connection"
+		];
+		recData = recResp.get("data").get(0);
+
+		// ---- 2b) if a signature was already captured, fetch + base64-encode it
+		// for the widget to redraw onto its canvas. Uses the documented
+		// download_fields_attachment action (returns the raw file, needs an
+		// authenticated connection -- can't be a plain <img src> from the
+		// browser) then zoho.encryption.base64Encode(file) to turn it back
+		// into a data URL the canvas can drawImage() from. A data: URL is
+		// same-origin, so this never taints the canvas on re-export.
+		signatureDataUrl = "";
+		try
+		{
+			existingSig = ifnull(recData.get("Signature"),List());
+			if(existingSig.size() > 0)
+			{
+				sigAttachmentId = ifnull(existingSig.get(0).get("id"),"");
+				if(sigAttachmentId != "")
+				{
+					sigFileResp = invokeurl
+					[
+						url :"https://www.zohoapis.com/crm/v8/Pre_Need_Questionnaire/" + foundId + "/actions/download_fields_attachment?fields_attachment_id=" + sigAttachmentId
+						type :GET
+						connection:"zoho_oauth_connection"
+					];
+					sigB64 = zoho.encryption.base64Encode(sigFileResp);
+					signatureDataUrl = "data:image/png;base64," + sigB64;
+				}
+			}
+		}
+		catch (eSigFetch)
+		{
+			signatureDataUrl = "";
+		}
+
+		personsRows = List();
+		rawRows = ifnull(recData.get("Persons_Responsible"),List());
+		for each row in rawRows
+		{
+			rowMap = Map();
+			rowMap.put("Name1",ifnull(row.get("Name1"),""));
+			rowMap.put("Relationship",ifnull(row.get("Relationship"),""));
+			rowMap.put("Phone",ifnull(row.get("Phone"),""));
+			personsRows.add(rowMap);
+		}
+
+		record = Map();
+		record.put("id",foundId);
+		record.put("Pre_Planner_First_Name",ifnull(recData.get("Pre_Planner_First_Name"),""));
+		record.put("Pre_Planner_Last_Name",ifnull(recData.get("Pre_Planner_Last_Name"),""));
+		record.put("Pre_Planner_Address_Line_1",ifnull(recData.get("Pre_Planner_Address_Line_1"),""));
+		record.put("Pre_Planner_Address_Line_2",ifnull(recData.get("Pre_Planner_Address_Line_2"),""));
+		record.put("Pre_Planner_City",ifnull(recData.get("Pre_Planner_City"),""));
+		record.put("Pre_Planner_State",ifnull(recData.get("Pre_Planner_State"),""));
+		record.put("Pre_Planner_Postal_Code",ifnull(recData.get("Pre_Planner_Postal_Code"),""));
+		record.put("Pre_Planner_Country",ifnull(recData.get("Pre_Planner_Country"),""));
+		record.put("Persons_Responsible",personsRows);
+		record.put("Disposition_Preference",ifnull(recData.get("Disposition_Preference"),""));
+		record.put("Cemetery",ifnull(recData.get("Cemetery"),""));
+		record.put("Burial_Location_Line_1",ifnull(recData.get("Burial_Location_Line_1"),""));
+		record.put("Burial_Location_Line_2",ifnull(recData.get("Burial_Location_Line_2"),""));
+		record.put("Burial_Location_City",ifnull(recData.get("Burial_Location_City"),""));
+		record.put("Burial_Location_State",ifnull(recData.get("Burial_Location_State"),""));
+		record.put("Burial_Location_Postal_Code",ifnull(recData.get("Burial_Location_Postal_Code"),""));
+		record.put("Ashes_Instructions",ifnull(recData.get("Ashes_Instructions"),""));
+		record.put("Place_of_Worship",ifnull(recData.get("Place_of_Worship"),""));
+		record.put("Ceremony_Preferences",ifnull(recData.get("Ceremony_Preferences"),""));
+		record.put("Obituary_Information",ifnull(recData.get("Obituary_Information"),""));
+		record.put("Clothing_and_Accessories",ifnull(recData.get("Clothing_and_Accessories"),""));
+		record.put("Flowers",ifnull(recData.get("Flowers"),""));
+		record.put("Songs",ifnull(recData.get("Songs"),""));
+		record.put("Readings",ifnull(recData.get("Readings"),""));
+		record.put("Prayers",ifnull(recData.get("Prayers"),""));
+		record.put("Imagined_Service",ifnull(recData.get("Imagined_Service"),""));
+		record.put("Interment_Type",ifnull(recData.get("Interment_Type"),List()));
+		record.put("Interment_Description",ifnull(recData.get("Interment_Description"),""));
+		record.put("Programme_Style",ifnull(recData.get("Programme_Style"),""));
+		record.put("Headstone_Type",ifnull(recData.get("Headstone_Type"),""));
+		record.put("Inscription",ifnull(recData.get("Inscription"),""));
+		record.put("Additional_Instructions",ifnull(recData.get("Additional_Instructions"),""));
+		record.put("signatureDataUrl",signatureDataUrl);
+
+		result.put("status","success");
+		result.put("found",true);
+		result.put("record",record);
+	}
+	catch (eOuter)
+	{
+		result.put("status","error");
+		result.put("message","Unexpected error: " + eOuter.toString());
+	}
+	return result.toString();
+}

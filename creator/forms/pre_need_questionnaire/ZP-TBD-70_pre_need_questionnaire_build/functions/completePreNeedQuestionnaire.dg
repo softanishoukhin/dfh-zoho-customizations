@@ -1,0 +1,293 @@
+// completePreNeedQuestionnaire -> Custom API: completePreNeedQuestionnaire (POST)
+// Called right after submitFinalWishes creates/updates the Final_Wishes_Form
+// and Pre_Need_Questionnaire (CRM) records. Writes the Deal back: status ->
+// Completed, date completed, edit URL gets &record_id= appended so it becomes
+// resumable, and (best effort) uploads the signature image onto BOTH the
+// Deal's Pre_Need_Signature field and the Pre_Need_Questionnaire CRM record's
+// own Signature field (crm_record_id, from submitFinalWishes's response).
+//
+// signature_data is the raw base64 PNG data URL the widget's canvas produced
+// (e.g. "data:image/png;base64,iVBOR..."), passed directly rather than
+// fetched back from Creator -- the form's native Signature field type
+// rejects programmatic writes entirely ("Signature field 'Signature' cannot
+// be updated", confirmed live), so submitFinalWishes never populates it.
+//
+// Image/File Upload custom fields are a TWO-STEP process, confirmed against
+// Zoho's official v8 docs:
+//   1) POST the file to ZFS: https://www.zohoapis.com/crm/v8/files
+//      -> response.data[0].details.id is the ZFS file id.
+//   2) Set the target field's value to [{"File_Id__s": "<zfs file id>"}]
+//      (an array containing one object with that exact key) via a normal
+//      update call.
+// zoho.encryption.base64DecodeToFile(text,fileName) does the base64->file
+// conversion; the resulting file needs .setParamName("file") before being
+// passed to invokeurl's files: param.
+//
+// UPLOADS TO ZFS SEPARATELY FOR EACH TARGET -- confirmed live: reusing one
+// ZFS file id for two different fields/records silently succeeds on the
+// first attach but leaves the second field null. ZFS file ids appear to be
+// single-attachment tokens.
+//
+// Both fields are configured to hold only ONE image, so REPLACING an
+// existing signature is a delete-then-reupload sequence (per the user's own
+// research) -- NOT a combined add+delete in one call. Each target: (a) GET
+// the record, delete the existing entry (its own separate PUT with just
+// {"id":"<existing entry id>","_delete":null}) if one exists, THEN (b)
+// upload the new file to ZFS and attach it in a second, separate PUT.
+string completePreNeedQuestionnaire(String deal_id, String record_id, String signature_data, String crm_record_id)
+{
+	result = Map();
+	try
+	{
+		dId = ifnull(deal_id,"").trim();
+		rId = ifnull(record_id,"").trim();
+		if(dId == "" || rId == "")
+		{
+			result.put("status","error");
+			result.put("message","deal_id and record_id are required");
+			return result.toString();
+		}
+		todayStr = zoho.currenttime.toString("yyyy-MM-dd");
+		sigRaw = ifnull(signature_data,"").trim();
+		hasSig = (sigRaw != "" && sigRaw.contains(","));
+		sigBase64 = "";
+		if(hasSig)
+		{
+			sigBase64 = sigRaw.subString(sigRaw.indexOf(",") + 1);
+		}
+
+		// ---- 1) read the Deal: existing edit URL + existing signature entry ----
+		existingUrl = "";
+		existingDealSigId = "";
+		try
+		{
+			dealResp = invokeurl
+			[
+				url :"https://www.zohoapis.com/crm/v7/Deals/" + dId
+				type :GET
+				connection:"zohocrm_connection"
+			];
+			dealData0 = dealResp.get("data").get(0);
+			existingUrl = ifnull(dealData0.get("Pre_Need_Questionnaire_Edit_URL"),"");
+			existingDealSig = ifnull(dealData0.get("Pre_Need_Signature"),List());
+			if(existingDealSig.size() > 0)
+			{
+				existingDealSigId = ifnull(existingDealSig.get(0).get("id"),"");
+			}
+		}
+		catch (eGet)
+		{
+			existingUrl = "";
+		}
+		newUrl = existingUrl;
+		if(existingUrl != "" && existingUrl.contains("record_id=") == false)
+		{
+			newUrl = existingUrl + "&record_id=" + rId;
+		}
+
+		// ---- 2) if hasSig and an old Deal signature exists, delete it first ----
+		if(hasSig && existingDealSigId != "")
+		{
+			try
+			{
+				delEntry = Map();
+				delEntry.put("id",existingDealSigId);
+				delEntry.put("_delete",null);
+				delList = List();
+				delList.add(delEntry);
+				delMap = Map();
+				delMap.put("Pre_Need_Signature",delList);
+				delDataList = List();
+				delDataList.add(delMap);
+				delBodyMap = Map();
+				delBodyMap.put("data",delDataList);
+				delResp = invokeurl
+				[
+					url :"https://www.zohoapis.com/crm/v7/Deals/" + dId
+					type :PUT
+					parameters:delBodyMap.toString()
+					connection:"zohocrm_connection"
+				];
+				result.put("dealSignatureDeleteResponse",delResp);
+			}
+			catch (eDel)
+			{
+				result.put("dealSignatureDeleteError",eDel.toString());
+			}
+		}
+
+		// ---- 3) upload #1 to ZFS -- for the Deal ----
+		dealSigValue = List();
+		if(hasSig)
+		{
+			try
+			{
+				sigFileA = zoho.encryption.base64DecodeToFile(sigBase64,"signature.png");
+				sigFileA.setParamName("file");
+				zfsRespA = invokeurl
+				[
+					url :"https://www.zohoapis.com/crm/v8/files"
+					type :POST
+					files:sigFileA
+					connection:"zoho_oauth_connection"
+				];
+				zfsDataListA = ifnull(zfsRespA.get("data"),List());
+				if(zfsDataListA.size() > 0)
+				{
+					zfsFileIdA = ifnull(zfsDataListA.get(0).get("details").get("id"),"");
+					if(zfsFileIdA != "")
+					{
+						fileEntryA = Map();
+						fileEntryA.put("File_Id__s",zfsFileIdA);
+						dealSigValue.add(fileEntryA);
+					}
+				}
+				result.put("zfsUploadResponseDeal",zfsRespA);
+			}
+			catch (eZfsA)
+			{
+				result.put("signatureZfsErrorDeal",eZfsA.toString());
+			}
+		}
+
+		// ---- 4) update the Deal: status, date completed, resumable link, new signature ----
+		updateMap = Map();
+		updateMap.put("Pre_Need_Questionnaire_Status","Completed");
+		updateMap.put("Pre_Need_Date_Completed",todayStr);
+		if(newUrl != "")
+		{
+			updateMap.put("Pre_Need_Questionnaire_Edit_URL",newUrl);
+		}
+		if(dealSigValue.size() > 0)
+		{
+			updateMap.put("Pre_Need_Signature",dealSigValue);
+		}
+		dataList = List();
+		dataList.add(updateMap);
+		bodyMap = Map();
+		bodyMap.put("data",dataList);
+		updateResp = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v7/Deals/" + dId
+			type :PUT
+			parameters:bodyMap.toString()
+			connection:"zohocrm_connection"
+		];
+		result.put("dealUpdateResponse",updateResp);
+
+		// ---- 5) CRM module record: delete old signature, then upload+attach new ----
+		try
+		{
+			crmId = ifnull(crm_record_id,"").trim();
+			if(crmId != "" && hasSig)
+			{
+				// 5a) read existing Signature entry on the CRM record
+				existingCrmSigId = "";
+				try
+				{
+					crmGetResp = invokeurl
+					[
+						url :"https://www.zohoapis.com/crm/v7/Pre_Need_Questionnaire/" + crmId
+						type :GET
+						connection:"zohocrm_connection"
+					];
+					crmData0 = crmGetResp.get("data").get(0);
+					existingCrmSig = ifnull(crmData0.get("Signature"),List());
+					if(existingCrmSig.size() > 0)
+					{
+						existingCrmSigId = ifnull(existingCrmSig.get(0).get("id"),"");
+					}
+				}
+				catch (eCrmGet)
+				{
+					existingCrmSigId = "";
+				}
+
+				// 5b) delete it first, as its own call, if present
+				if(existingCrmSigId != "")
+				{
+					try
+					{
+						crmDelEntry = Map();
+						crmDelEntry.put("id",existingCrmSigId);
+						crmDelEntry.put("_delete",null);
+						crmDelList = List();
+						crmDelList.add(crmDelEntry);
+						crmDelMap = Map();
+						crmDelMap.put("Signature",crmDelList);
+						crmDelDataList = List();
+						crmDelDataList.add(crmDelMap);
+						crmDelBodyMap = Map();
+						crmDelBodyMap.put("data",crmDelDataList);
+						crmDelResp = invokeurl
+						[
+							url :"https://www.zohoapis.com/crm/v7/Pre_Need_Questionnaire/" + crmId
+							type :PUT
+							parameters:crmDelBodyMap.toString()
+							connection:"zohocrm_connection"
+						];
+						result.put("crmSignatureDeleteResponse",crmDelResp);
+					}
+					catch (eCrmDel)
+					{
+						result.put("crmSignatureDeleteError",eCrmDel.toString());
+					}
+				}
+
+				// 5c) upload the new file to ZFS (independent token) and attach it
+				crmSigValue = List();
+				sigFileB = zoho.encryption.base64DecodeToFile(sigBase64,"signature.png");
+				sigFileB.setParamName("file");
+				zfsRespB = invokeurl
+				[
+					url :"https://www.zohoapis.com/crm/v8/files"
+					type :POST
+					files:sigFileB
+					connection:"zoho_oauth_connection"
+				];
+				zfsDataListB = ifnull(zfsRespB.get("data"),List());
+				if(zfsDataListB.size() > 0)
+				{
+					zfsFileIdB = ifnull(zfsDataListB.get(0).get("details").get("id"),"");
+					if(zfsFileIdB != "")
+					{
+						fileEntryB = Map();
+						fileEntryB.put("File_Id__s",zfsFileIdB);
+						crmSigValue.add(fileEntryB);
+					}
+				}
+				result.put("zfsUploadResponseCrm",zfsRespB);
+
+				if(crmSigValue.size() > 0)
+				{
+					crmSigMap = Map();
+					crmSigMap.put("Signature",crmSigValue);
+					crmDataList = List();
+					crmDataList.add(crmSigMap);
+					crmBodyMap = Map();
+					crmBodyMap.put("data",crmDataList);
+					crmUpdateResp = invokeurl
+					[
+						url :"https://www.zohoapis.com/crm/v7/Pre_Need_Questionnaire/" + crmId
+						type :PUT
+						parameters:crmBodyMap.toString()
+						connection:"zohocrm_connection"
+					];
+					result.put("crmSignatureUploadResponse",crmUpdateResp);
+				}
+			}
+		}
+		catch (eSig2)
+		{
+			result.put("crmSignatureUploadError",eSig2.toString());
+		}
+
+		result.put("status","success");
+	}
+	catch (eOuter)
+	{
+		result.put("status","error");
+		result.put("message","Unexpected error: " + eOuter.toString());
+	}
+	return result.toString();
+}

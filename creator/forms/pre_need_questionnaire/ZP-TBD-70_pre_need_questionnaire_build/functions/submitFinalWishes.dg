@@ -1,0 +1,196 @@
+// submitFinalWishes -> Custom API: submitFinalWishes (POST)
+// Creates the Final_Wishes_Form record server-side using Deluge's native
+// "insert into" syntax -- confirmed live in this org at
+// Driver_App.ds:770 (Burial_Order_Staging) and Headstone_Request.ds:737
+// (Headstone_Request_Form). This replaces BOTH ZOHO.CREATOR.DATA.addRecords()
+// (401s for an unauthenticated visitor on this public perma-link page) and a
+// direct browser call to Zoho's REST Publish API (blocked by CORS -- that API
+// is meant for server-to-server/curl callers, not browser JS). Routing the
+// whole submission through this Custom API uses the one channel already
+// proven to work end-to-end on this page: ZOHO.CREATOR.DATA.invokeCustomApi.
+//
+// "data" is the JSON.stringify() of the widget's buildData() object; parsed
+// back into a Map with .toMap().
+//
+// Composite fields (Name, Address) do NOT accept a plain Map value in an
+// "insert into" statement -- confirmed live: assigning dataMap.get("Pre_Planner_Name")
+// directly threw "An invalid expression has been assigned to the Pre_Planner_Name
+// field." They need per-subfield dot notation instead (Field.first_name = ...),
+// per Zoho's own Deluge "Composite fields and their usage" doc. Subform rows
+// need their own row-constructor + collection(), per Zoho's "Insert rows in
+// Subform" doc -- also not a plain List of Maps.
+//
+// Deliberately does NOT write the Signature field -- Creator's native
+// Signature field type rejects programmatic writes entirely ("Signature field
+// 'Signature' cannot be updated", confirmed live). The signature image is
+// uploaded straight onto the Deal's Pre_Need_Signature field instead, by
+// completePreNeedQuestionnaire, using the raw base64 the widget already has.
+//
+// ALSO upserts into the CRM module Pre_Need_Questionnaire (Deal_Name lookup),
+// created in parallel per the user's decision to keep both stores. That
+// module uses flat fields (no composite types, no subform row-constructor --
+// its Persons_Responsible subform's fields are plain text: Name1,
+// Relationship, Phone), avoiding every quirk hit on the Creator side. Pass
+// crm_record_id (the existing Pre_Need_Questionnaire record's id, from a
+// prior getQuestionnaireForDeal lookup) to UPDATE instead of duplicate-CREATE
+// on a resubmit/edit.
+string submitFinalWishes(String deal_id, String data, String crm_record_id)
+{
+	result = Map();
+	try
+	{
+		dId = ifnull(deal_id,"").trim();
+		rawData = ifnull(data,"").trim();
+		if(dId == "" || rawData == "")
+		{
+			result.put("status","error");
+			result.put("message","deal_id and data are required");
+			return result.toString();
+		}
+		dataMap = rawData.toMap();
+
+		plannerName = ifnull(dataMap.get("Pre_Planner_Name"),Map());
+		plannerAddr = ifnull(dataMap.get("Pre_Planner_Address"),Map());
+		burialLoc = ifnull(dataMap.get("Burial_Location"),Map());
+		personsList = ifnull(dataMap.get("Persons_Responsible"),List());
+
+		// ---- 1) Final_Wishes_Form (Creator form, native insert-into syntax) ----
+		personsRows = collection();
+		for each p in personsList
+		{
+			pRow = Final_Wishes_Form.Persons_Responsible();
+			pName = ifnull(p.get("Name"),Map());
+			pRow.Name.first_name = ifnull(pName.get("first_name"),"");
+			pRow.Name.last_name = ifnull(pName.get("last_name"),"");
+			pRow.Relationship = ifnull(p.get("Relationship"),"");
+			pRow.Phone = ifnull(p.get("Phone"),"");
+			personsRows.insert(pRow);
+		}
+
+		newId = insert into Final_Wishes_Form
+		[
+			Deal_ID=dId
+			Pre_Planner_Name.first_name=ifnull(plannerName.get("first_name"),"")
+			Pre_Planner_Name.last_name=ifnull(plannerName.get("last_name"),"")
+			Pre_Planner_Address.address_line_1=ifnull(plannerAddr.get("address_line_1"),"")
+			Pre_Planner_Address.address_line_2=ifnull(plannerAddr.get("address_line_2"),"")
+			Pre_Planner_Address.district_city=ifnull(plannerAddr.get("district_city"),"")
+			Pre_Planner_Address.state_province=ifnull(plannerAddr.get("state_province"),"")
+			Pre_Planner_Address.postal_Code=ifnull(plannerAddr.get("postal_Code"),"")
+			Pre_Planner_Address.country=ifnull(plannerAddr.get("country"),"")
+			Persons_Responsible=personsRows
+			Disposition_Preference=ifnull(dataMap.get("Disposition_Preference"),"")
+			Cemetery=ifnull(dataMap.get("Cemetery"),"")
+			Burial_Location.address_line_1=ifnull(burialLoc.get("address_line_1"),"")
+			Burial_Location.address_line_2=ifnull(burialLoc.get("address_line_2"),"")
+			Burial_Location.district_city=ifnull(burialLoc.get("district_city"),"")
+			Burial_Location.state_province=ifnull(burialLoc.get("state_province"),"")
+			Burial_Location.postal_Code=ifnull(burialLoc.get("postal_Code"),"")
+			Ashes_Instructions=ifnull(dataMap.get("Ashes_Instructions"),"")
+			Place_of_Worship=ifnull(dataMap.get("Place_of_Worship"),"")
+			Ceremony_Preferences=ifnull(dataMap.get("Ceremony_Preferences"),"")
+			Obituary_Information=ifnull(dataMap.get("Obituary_Information"),"")
+			Clothing_and_Accessories=ifnull(dataMap.get("Clothing_and_Accessories"),"")
+			Flowers=ifnull(dataMap.get("Flowers"),"")
+			Songs=ifnull(dataMap.get("Songs"),"")
+			Readings=ifnull(dataMap.get("Readings"),"")
+			Prayers=ifnull(dataMap.get("Prayers"),"")
+			Imagined_Service=ifnull(dataMap.get("Imagined_Service"),"")
+			Interment_Type=ifnull(dataMap.get("Interment_Type"),List())
+			Interment_Description=ifnull(dataMap.get("Interment_Description"),"")
+			Programme_Style=ifnull(dataMap.get("Programme_Style"),"")
+			Headstone_Type=ifnull(dataMap.get("Headstone_Type"),"")
+			Inscription=ifnull(dataMap.get("Inscription"),"")
+			Additional_Instructions=ifnull(dataMap.get("Additional_Instructions"),"")
+		];
+		result.put("status","success");
+		result.put("recordId",newId.toString());
+
+		// ---- 2) CRM module Pre_Need_Questionnaire (flat fields, upsert by Deal) ----
+		try
+		{
+			plannerFullName = (ifnull(plannerName.get("first_name"),"") + " " + ifnull(plannerName.get("last_name"),"")).trim();
+			crmRecordName = "Pre-Need Questionnaire";
+			if(plannerFullName != "")
+			{
+				crmRecordName = plannerFullName + " - Pre-Need Questionnaire";
+			}
+
+			crmMap = Map();
+			crmMap.put("Name",crmRecordName);
+			crmMap.put("Deal_Name",dId);
+			crmMap.put("Pre_Planner_First_Name",ifnull(plannerName.get("first_name"),""));
+			crmMap.put("Pre_Planner_Last_Name",ifnull(plannerName.get("last_name"),""));
+			crmMap.put("Pre_Planner_Address_Line_1",ifnull(plannerAddr.get("address_line_1"),""));
+			crmMap.put("Pre_Planner_Address_Line_2",ifnull(plannerAddr.get("address_line_2"),""));
+			crmMap.put("Pre_Planner_City",ifnull(plannerAddr.get("district_city"),""));
+			crmMap.put("Pre_Planner_State",ifnull(plannerAddr.get("state_province"),""));
+			crmMap.put("Pre_Planner_Postal_Code",ifnull(plannerAddr.get("postal_Code"),""));
+			crmMap.put("Pre_Planner_Country",ifnull(plannerAddr.get("country"),""));
+			crmMap.put("Disposition_Preference",ifnull(dataMap.get("Disposition_Preference"),""));
+			crmMap.put("Cemetery",ifnull(dataMap.get("Cemetery"),""));
+			crmMap.put("Burial_Location_Line_1",ifnull(burialLoc.get("address_line_1"),""));
+			crmMap.put("Burial_Location_Line_2",ifnull(burialLoc.get("address_line_2"),""));
+			crmMap.put("Burial_Location_City",ifnull(burialLoc.get("district_city"),""));
+			crmMap.put("Burial_Location_State",ifnull(burialLoc.get("state_province"),""));
+			crmMap.put("Burial_Location_Postal_Code",ifnull(burialLoc.get("postal_Code"),""));
+			crmMap.put("Ashes_Instructions",ifnull(dataMap.get("Ashes_Instructions"),""));
+			crmMap.put("Place_of_Worship",ifnull(dataMap.get("Place_of_Worship"),""));
+			crmMap.put("Ceremony_Preferences",ifnull(dataMap.get("Ceremony_Preferences"),""));
+			crmMap.put("Obituary_Information",ifnull(dataMap.get("Obituary_Information"),""));
+			crmMap.put("Clothing_and_Accessories",ifnull(dataMap.get("Clothing_and_Accessories"),""));
+			crmMap.put("Flowers",ifnull(dataMap.get("Flowers"),""));
+			crmMap.put("Songs",ifnull(dataMap.get("Songs"),""));
+			crmMap.put("Readings",ifnull(dataMap.get("Readings"),""));
+			crmMap.put("Prayers",ifnull(dataMap.get("Prayers"),""));
+			crmMap.put("Imagined_Service",ifnull(dataMap.get("Imagined_Service"),""));
+			crmMap.put("Interment_Type",ifnull(dataMap.get("Interment_Type"),List()));
+			crmMap.put("Interment_Description",ifnull(dataMap.get("Interment_Description"),""));
+			crmMap.put("Programme_Style",ifnull(dataMap.get("Programme_Style"),""));
+			crmMap.put("Headstone_Type",ifnull(dataMap.get("Headstone_Type"),""));
+			crmMap.put("Inscription",ifnull(dataMap.get("Inscription"),""));
+			crmMap.put("Additional_Instructions",ifnull(dataMap.get("Additional_Instructions"),""));
+
+			crmPersonsRows = List();
+			for each p in personsList
+			{
+				pName = ifnull(p.get("Name"),Map());
+				pFirst = ifnull(pName.get("first_name"),"");
+				pLast = ifnull(pName.get("last_name"),"");
+				pFull = (pFirst + " " + pLast).trim();
+				crmRow = Map();
+				crmRow.put("Name1",pFull);
+				crmRow.put("Relationship",ifnull(p.get("Relationship"),""));
+				crmRow.put("Phone",ifnull(p.get("Phone"),""));
+				crmPersonsRows.add(crmRow);
+			}
+			crmMap.put("Persons_Responsible",crmPersonsRows);
+
+			existingCrmId = ifnull(crm_record_id,"").trim();
+			if(existingCrmId != "")
+			{
+				crmUpdateResp = zoho.crm.updateRecord("Pre_Need_Questionnaire",existingCrmId.toLong(),crmMap);
+				result.put("crmQuestionnaireId",existingCrmId);
+				result.put("crmResponse",crmUpdateResp);
+			}
+			else
+			{
+				crmCreateResp = zoho.crm.createRecord("Pre_Need_Questionnaire",crmMap);
+				newCrmId = ifnull(crmCreateResp.get("id"),"");
+				result.put("crmQuestionnaireId",newCrmId);
+				result.put("crmResponse",crmCreateResp);
+			}
+		}
+		catch (eCrm)
+		{
+			// non-fatal -- Final_Wishes_Form (the primary store) already succeeded above
+			result.put("crmError",eCrm.toString());
+		}
+	}
+	catch (eOuter)
+	{
+		result.put("status","error");
+		result.put("message","Unexpected error: " + eOuter.toString());
+	}
+	return result.toString();
+}

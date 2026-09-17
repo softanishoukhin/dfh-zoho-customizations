@@ -1,0 +1,58 @@
+// getCreatorRecord -> Custom API: getCreatorRecord (GET)
+// Returns a previously-saved Final_Wishes_Form record so the widget can resume/edit
+// it. Must go through a Custom API rather than ZOHO.CREATOR.DATA.getRecordById --
+// that client-side call returns 401 in the published/public perma-link context
+// (confirmed from NOKIntake's own prefillFromCreatorRecord comment).
+//
+// Form_Name[criteria] returns the matching record directly (dot-access fields),
+// not a list -- confirmed live in Intake_Form.ds (accountManagement(NOK_Information_Form
+// theForm) reads theForm.deal_id etc. with no .get()/.count() anywhere). A record_id
+// that doesn't exist will throw on field access below and fall into the outer catch,
+// same as NOKIntake makes no separate "not found" check either.
+string getCreatorRecord(String record_id)
+{
+	result = Map();
+	try
+	{
+		rId = ifnull(record_id,"").trim();
+		if(rId == "")
+		{
+			result.put("status","error");
+			result.put("message","record_id is required");
+			return result.toString();
+		}
+		row = Final_Wishes_Form[ID == rId.toLong()];
+		record = Map();
+		record.put("Pre_Planner_Name",row.Pre_Planner_Name);
+		record.put("Pre_Planner_Address",row.Pre_Planner_Address);
+		record.put("Persons_Responsible",row.Persons_Responsible);
+		record.put("Disposition_Preference",row.Disposition_Preference);
+		record.put("Cemetery",row.Cemetery);
+		record.put("Burial_Location",row.Burial_Location);
+		record.put("Ashes_Instructions",row.Ashes_Instructions);
+		record.put("Place_of_Worship",row.Place_of_Worship);
+		record.put("Ceremony_Preferences",row.Ceremony_Preferences);
+		record.put("Obituary_Information",row.Obituary_Information);
+		record.put("Clothing_and_Accessories",row.Clothing_and_Accessories);
+		record.put("Flowers",row.Flowers);
+		record.put("Songs",row.Songs);
+		record.put("Readings",row.Readings);
+		record.put("Prayers",row.Prayers);
+		record.put("Imagined_Service",row.Imagined_Service);
+		record.put("Interment_Type",row.Interment_Type);
+		record.put("Interment_Description",row.Interment_Description);
+		record.put("Programme_Style",row.Programme_Style);
+		record.put("Headstone_Type",row.Headstone_Type);
+		record.put("Inscription",row.Inscription);
+		record.put("Additional_Instructions",row.Additional_Instructions);
+		record.put("Deal_ID",row.Deal_ID);
+		result.put("status","success");
+		result.put("record",record);
+	}
+	catch (eOuter)
+	{
+		result.put("status","error");
+		result.put("message","Unexpected error: " + eOuter.toString());
+	}
+	return result.toString();
+}

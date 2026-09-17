@@ -1,0 +1,87 @@
+// getDeal -> Custom API: getDeal (GET)
+// Resolves the Pre-Need Deal + linked Contact for widget prefill on first load, and
+// returns the existing Pre_Need_Questionnaire_Edit_URL so the widget can pull a
+// record_id out of it (resume case) via the same regex NOKIntake uses.
+string getDeal(String deal_id)
+{
+	result = Map();
+	try
+	{
+		dId = ifnull(deal_id,"").trim();
+		if(dId == "")
+		{
+			result.put("status","error");
+			result.put("message","deal_id is required");
+			return result.toString();
+		}
+		dealResp = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v7/Deals/" + dId
+			type :GET
+			connection:"zohocrm_connection"
+		];
+		dealData = Map();
+		try
+		{
+			dealData = dealResp.get("data").get(0);
+		}
+		catch (eParse)
+		{
+			dealData = Map();
+		}
+		editUrl = ifnull(dealData.get("Pre_Need_Questionnaire_Edit_URL"),"");
+		dealName = ifnull(dealData.get("Deal_Name"),"");
+		plannerName = "";
+		plannerAddress = Map();
+		contactId = "";
+		try
+		{
+			contactInfo = dealData.get("Contact_Name");
+			if(contactInfo != null)
+			{
+				contactId = ifnull(contactInfo.get("id"),"");
+			}
+		}
+		catch(eContact)
+		{
+			contactId = "";
+		}
+		if(contactId != "")
+		{
+			try
+			{
+				conResp = invokeurl
+				[
+					url :"https://www.zohoapis.com/crm/v7/Contacts/" + contactId
+					type :GET
+					connection:"zohocrm_connection"
+				];
+				conData = conResp.get("data").get(0);
+				plannerFirst = ifnull(conData.get("First_Name"),"");
+				plannerLast = ifnull(conData.get("Last_Name"),"");
+				plannerName = (plannerFirst + " " + plannerLast).trim();
+				plannerAddress.put("address_line_1",ifnull(conData.get("Mailing_Street"),""));
+				plannerAddress.put("district_city",ifnull(conData.get("Mailing_City"),""));
+				plannerAddress.put("state_province",ifnull(conData.get("Mailing_State"),""));
+				plannerAddress.put("postal_Code",ifnull(conData.get("Mailing_Zip"),""));
+				plannerAddress.put("country",ifnull(conData.get("Mailing_Country"),""));
+			}
+			catch(eCon)
+			{
+				plannerName = "";
+			}
+		}
+		result.put("status","success");
+		result.put("deal_id",dId);
+		result.put("dealName",dealName);
+		result.put("editUrl",editUrl);
+		result.put("plannerName",plannerName);
+		result.put("plannerAddress",plannerAddress);
+	}
+	catch (eOuter)
+	{
+		result.put("status","error");
+		result.put("message","Unexpected error: " + eOuter.toString());
+	}
+	return result.toString();
+}

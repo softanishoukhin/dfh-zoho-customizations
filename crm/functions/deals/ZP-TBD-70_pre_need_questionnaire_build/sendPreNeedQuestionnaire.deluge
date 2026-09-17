@@ -1,0 +1,48 @@
+// sendPreNeedQuestionnaire -> Deals custom button (Deluge)
+// Builds the perma-link URL for this Deal, marks the questionnaire "Sent", saves
+// the link on the Deal, and opens it in a new tab. This is the whole "launcher" --
+// deliberately NOT a cloned widget project, since NOKIntake itself never builds
+// its own launch link either; something has to, and a plain button suffices.
+//
+// PERMA_TOKEN below is taken from the live page URL the user already published:
+// https://creatorapp.zohopublic.com/delapenhafuneralhome/pre-need-questionnaire/page-perma/Final_Wishes_Form1/zS4dtZBC7VwnvsJTumgwyfTbG89Sw2kXaKMjrnkt0pghN0V7ePR1u6JaRW3Cv8CsvRHbB0nRCyqHqCw741YfYh8wdZYtWrh540uA
+//
+// Fixed (confirmed live): this used to overwrite Pre_Need_Questionnaire_Edit_URL
+// unconditionally, dropping any &record_id= completePreNeedQuestionnaire had
+// already appended -- so re-clicking this button after a completed submission
+// reopened the widget blank instead of resuming. Now it reads the Deal's
+// current edit URL first and carries the existing record_id forward, and only
+// resets status/date if this is a genuinely first-time send.
+dealData = zoho.crm.getRecordById("Deals",deal.id);
+existingUrl = ifnull(dealData.get("Pre_Need_Questionnaire_Edit_URL"),"");
+existingRecordId = "";
+if(existingUrl.contains("record_id="))
+{
+	afterKey = existingUrl.subString(existingUrl.indexOf("record_id=") + 10);
+	ampIdx = afterKey.indexOf("&");
+	if(ampIdx == -1)
+	{
+		existingRecordId = afterKey;
+	}
+	else
+	{
+		existingRecordId = afterKey.subString(0,ampIdx);
+	}
+}
+
+sendUrl = "https://creatorapp.zohopublic.com/delapenhafuneralhome/pre-need-questionnaire/page-perma/Final_Wishes_Form1/zS4dtZBC7VwnvsJTumgwyfTbG89Sw2kXaKMjrnkt0pghN0V7ePR1u6JaRW3Cv8CsvRHbB0nRCyqHqCw741YfYh8wdZYtWrh540uA?deal_id=" + deal.id + "&owner=" + encodeUrl(zoho.loginuserid);
+if(existingRecordId != "")
+{
+	sendUrl = sendUrl + "&record_id=" + existingRecordId;
+}
+
+dealMap = Map();
+if(existingRecordId == "")
+{
+	dealMap.put("Pre_Need_Questionnaire_Status","Sent");
+	dealMap.put("Pre_Need_Date",zoho.currenttime.toString("yyyy-MM-dd"));
+}
+dealMap.put("Pre_Need_Questionnaire_Edit_URL",sendUrl);
+updateResp = zoho.crm.updateRecord("Deals",deal.id,dealMap);
+
+openUrl(sendUrl,"new window");

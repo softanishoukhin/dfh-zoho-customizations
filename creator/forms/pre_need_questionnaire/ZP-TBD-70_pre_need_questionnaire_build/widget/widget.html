@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Pre-Need Final Wishes Questionnaire</title>
+<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+<script src="https://static.zohocdn.com/creator/widgets/version/2.0/widgetsdk-min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/libphonenumber-js@1/bundle/libphonenumber-js.min.js"></script>
+<style>
+  :root{ --line:#dcdfe4; --head:#eef2f6; --accent:#2b6cb0; --accentText:#fff; --muted:#667; }
+  *{ box-sizing:border-box; }
+  body{ font-family:Arial,Helvetica,sans-serif; margin:0; padding:18px; color:#1f2430; background:#fafbfc; }
+  .wrap{ max-width:760px; margin:0 auto; }
+  .title{ text-align:center; margin-bottom:14px; }
+  .title h2{ margin:4px 0; } .title small{ color:var(--muted); }
+  .row{ margin:10px 0; display:flex; flex-direction:column; }
+  label{ font-size:13px; margin-bottom:4px; font-weight:bold; }
+  input,select,textarea{ padding:9px; border:1px solid #c7ccd4; border-radius:6px; font-size:14px; width:100%; }
+  textarea{ resize:vertical; font-family:inherit; min-height:70px; }
+  .grid2{ display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  .sec{ border:1px solid var(--line); border-radius:8px; margin:12px 0; overflow:hidden; background:#fff; }
+  .sec>.head{ background:var(--head); padding:12px 14px; cursor:pointer; font-weight:bold; display:flex; justify-content:space-between; align-items:center; user-select:none; }
+  .sec>.body{ padding:14px; display:none; }
+  .sec.open>.body{ display:block; }
+  .arrow{ transition:transform .15s; } .sec.open .arrow{ transform:rotate(90deg); }
+  .subhead{ font-weight:bold; font-size:13px; margin:12px 0 4px; color:#3a4150; }
+  .btn{ background:var(--accent); color:var(--accentText); border:0; border-radius:6px; padding:12px 18px; font-size:15px; cursor:pointer; margin-top:16px; width:100%; }
+  .btn.secondary{ background:#fff; color:var(--accent); border:1px solid var(--accent); }
+  .btn[disabled]{ opacity:.6; cursor:not-allowed; }
+  #msg{ margin-top:12px; padding:10px; border-radius:6px; display:none; }
+  #msg.ok{ display:block; background:#e6f4ea; color:#1e7d34; }
+  #msg.err{ display:block; background:#fdecea; color:#b3261e; }
+  #overlay{ position:fixed; inset:0; background:rgba(255,255,255,.6); display:none; align-items:center; justify-content:center; z-index:9999; }
+  #overlay.show{ display:flex; }
+  .spinner{ width:38px; height:38px; border:4px solid #d4dbe3; border-top-color:var(--accent); border-radius:50%; animation:spin .8s linear infinite; }
+  @keyframes spin{ to{ transform:rotate(360deg); } }
+  #overlay .box{ background:#fff; padding:18px 22px; border-radius:10px; box-shadow:0 6px 24px rgba(0,0,0,.15); display:flex; gap:12px; align-items:center; font-weight:bold; color:#334; }
+  .row.invalid input, .row.invalid select, .row.invalid textarea{ border-color:#d9534f; background:#fff7f7; }
+  .field-err{ color:#b3261e; font-size:12px; margin-top:4px; display:none; }
+  .row.invalid .field-err{ display:block; }
+  .req{ color:#d9534f; }
+  /* phone country-code picker (generic, reused for every phone field) */
+  .phone-cc-wrap{ position:relative; display:flex; gap:6px; }
+  .phone-cc-wrap input{ flex:1; min-width:0; }
+  .phone-cc-btn{ display:flex; align-items:center; gap:4px; padding:0 10px; border:1px solid #cfd8e3; border-radius:8px; background:#fff; cursor:pointer; font-size:14px; white-space:nowrap; }
+  .phone-cc-btn:hover{ background:#f4f7fa; }
+  .pcc-caret{ font-size:10px; color:#7a8797; margin-left:2px; }
+  .phone-cc-dd{ display:none; position:fixed; z-index:9999; width:260px; max-width:80vw; background:#fff; border:1px solid #cfd8e3; border-radius:8px; box-shadow:0 6px 20px rgba(0,0,0,.12); overflow:hidden; max-height:340px; flex-direction:column; }
+  .phone-cc-dd.open{ display:flex; }
+  .phone-cc-search{ width:100%; box-sizing:border-box; border:none; border-bottom:1px solid #e5e9ee; padding:9px 10px; font-size:14px; outline:none; flex-shrink:0; }
+  .phone-cc-list{ overflow-y:auto; }
+  .phone-cc-item{ display:flex; align-items:center; gap:8px; padding:8px 10px; cursor:pointer; font-size:14px; }
+  .phone-cc-item:hover{ background:#f4f7fa; }
+  .pcc-name{ flex:1; }
+  .pcc-dial-sm{ color:#7a8797; }
+  .phone-cc-empty{ padding:10px; color:#889; font-size:13px; }
+  /* persons responsible subform */
+  .pr-row{ border:1px solid var(--line); border-radius:8px; padding:12px; margin-bottom:10px; position:relative; }
+  .pr-remove{ position:absolute; top:8px; right:8px; background:none; border:0; color:#b3261e; cursor:pointer; font-size:13px; }
+  /* interment type checkboxes */
+  .chk-row{ display:flex; align-items:center; gap:8px; padding:6px 0; }
+  .chk-row input{ width:auto; }
+  /* signature pad */
+  #sigCanvas{ border:1px solid #c7ccd4; border-radius:6px; width:100%; height:180px; touch-action:none; background:#fff; }
+  /* thank-you popup */
+  #thankYouModal{ position:fixed; inset:0; background:rgba(0,0,0,.5); display:none; align-items:center; justify-content:center; z-index:10000; padding:16px; }
+  #thankYouModal.show{ display:flex; }
+  .tyBox{ background:#fff; border-radius:12px; padding:28px 24px; max-width:360px; width:100%; text-align:center; box-shadow:0 10px 40px rgba(0,0,0,.25); }
+  .tyCheck{ width:56px; height:56px; line-height:56px; border-radius:50%; background:#e6f4ea; color:#1e7d34; font-size:28px; margin:0 auto 14px; }
+  .tyBox h3{ margin:0 0 8px; }
+  .tyBox p{ margin:0 0 18px; color:#556; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="title">
+    <img src="form_logo.png" alt="DFH" style="max-width:180px;margin-bottom:8px;"/>
+    <h2>Pre-Need Final Wishes Questionnaire</h2>
+    <small id="dealSub"></small>
+  </div>
+
+  <div class="sec open" data-sec="planner">
+    <div class="head"><span>Pre-Planner</span><span class="arrow">&#9656;</span></div>
+    <div class="body">
+      <div class="row"><label>First Name</label><input id="Pre_Planner_Name_first_name"/></div>
+      <div class="row"><label>Last Name</label><input id="Pre_Planner_Name_last_name"/></div>
+      <div class="row"><label>Address Line 1</label><input id="Pre_Planner_Address_address_line_1"/></div>
+      <div class="row"><label>Address Line 2</label><input id="Pre_Planner_Address_address_line_2"/></div>
+      <div class="grid2">
+        <div class="row"><label>City / District</label><input id="Pre_Planner_Address_district_city"/></div>
+        <div class="row"><label>State / Province</label><input id="Pre_Planner_Address_state_province"/></div>
+      </div>
+      <div class="grid2">
+        <div class="row"><label>Postal Code</label><input id="Pre_Planner_Address_postal_Code"/></div>
+        <div class="row"><label>Country</label><input id="Pre_Planner_Address_country"/></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="sec" data-sec="pr">
+    <div class="head"><span>Persons Responsible</span><span class="arrow">&#9656;</span></div>
+    <div class="body">
+      <div id="prList"></div>
+      <button type="button" class="btn secondary" id="prAddBtn">+ Add Person</button>
+    </div>
+  </div>
+
+  <div class="sec" data-sec="disposition">
+    <div class="head"><span>Disposition</span><span class="arrow">&#9656;</span></div>
+    <div class="body">
+      <div class="row">
+        <label>Burial or Cremation?</label>
+        <div class="chk-row"><input type="radio" name="Disposition_Preference" value="Burial" id="Disposition_Burial"/><label for="Disposition_Burial">Burial</label></div>
+        <div class="chk-row"><input type="radio" name="Disposition_Preference" value="Cremation" id="Disposition_Cremation"/><label for="Disposition_Cremation">Cremation</label></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="sec" data-sec="burial">
+    <div class="head"><span>Burial / Ashes Wishes</span><span class="arrow">&#9656;</span></div>
+    <div class="body">
+      <div class="row"><label>Cemetery</label><input id="Cemetery"/></div>
+      <div class="subhead">Burial Location</div>
+      <div class="row"><label>Address Line 1</label><input id="Burial_Location_address_line_1"/></div>
+      <div class="row"><label>Address Line 2</label><input id="Burial_Location_address_line_2"/></div>
+      <div class="grid2">
+        <div class="row"><label>City / District</label><input id="Burial_Location_district_city"/></div>
+        <div class="row"><label>State / Province</label><input id="Burial_Location_state_province"/></div>
+      </div>
+      <div class="row"><label>Postal Code</label><input id="Burial_Location_postal_Code"/></div>
+      <div class="row"><label>Ashes Instructions</label><textarea id="Ashes_Instructions"></textarea></div>
+      <div class="row"><label>Place of Worship</label><input id="Place_of_Worship"/></div>
+      <div class="row"><label>Ceremony Preferences</label><textarea id="Ceremony_Preferences"></textarea></div>
+      <div class="row"><label>Obituary Information</label><textarea id="Obituary_Information"></textarea></div>
+      <div class="row"><label>Clothing and Accessories</label><textarea id="Clothing_and_Accessories"></textarea></div>
+    </div>
+  </div>
+
+  <div class="sec" data-sec="service">
+    <div class="head"><span>Things Wanted at Service</span><span class="arrow">&#9656;</span></div>
+    <div class="body">
+      <div class="row"><label>Flowers</label><textarea id="Flowers"></textarea></div>
+      <div class="row"><label>Songs</label><textarea id="Songs"></textarea></div>
+      <div class="row"><label>Readings</label><textarea id="Readings"></textarea></div>
+      <div class="row"><label>Prayers</label><textarea id="Prayers"></textarea></div>
+      <div class="row"><label>Imagined Service</label><textarea id="Imagined_Service"></textarea></div>
+    </div>
+  </div>
+
+  <div class="sec" data-sec="interment">
+    <div class="head"><span>Interment</span><span class="arrow">&#9656;</span></div>
+    <div class="body">
+      <div class="row">
+        <label>Interment Type (select all that apply)</label>
+        <div class="chk-row"><input type="checkbox" value="Urn" id="Interment_Type_Urn"/><label for="Interment_Type_Urn">Urn</label></div>
+        <div class="chk-row"><input type="checkbox" value="Keepsake Urn" id="Interment_Type_Keepsake"/><label for="Interment_Type_Keepsake">Keepsake Urn</label></div>
+        <div class="chk-row"><input type="checkbox" value="Scattering Urn" id="Interment_Type_Scattering"/><label for="Interment_Type_Scattering">Scattering Urn</label></div>
+      </div>
+      <div class="row"><label>Interment Description</label><textarea id="Interment_Description"></textarea></div>
+      <div class="row"><label>Programme Style</label><input id="Programme_Style"/></div>
+      <div class="row"><label>Headstone Type</label><input id="Headstone_Type"/></div>
+      <div class="row"><label>Inscription</label><textarea id="Inscription"></textarea></div>
+      <div class="row"><label>Additional Instructions</label><textarea id="Additional_Instructions"></textarea></div>
+    </div>
+  </div>
+
+  <div class="sec" data-sec="sign">
+    <div class="head"><span>Sign-off</span><span class="arrow">&#9656;</span></div>
+    <div class="body">
+      <div class="row">
+        <label>Signature</label>
+        <canvas id="sigCanvas"></canvas>
+        <button type="button" class="btn secondary" id="sigClearBtn">Clear Signature</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="msg"></div>
+  <button type="button" class="btn" id="saveBtn">Submit</button>
+</div>
+
+<div id="overlay"><div class="box"><div class="spinner"></div><span id="overlayText">Loading...</span></div></div>
+
+<div id="thankYouModal">
+  <div class="tyBox">
+    <div class="tyCheck">&#10003;</div>
+    <h3>Thank You</h3>
+    <p>Your Final Wishes information has been submitted successfully.</p>
+    <button type="button" class="btn" id="tyCloseBtn">Close</button>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
