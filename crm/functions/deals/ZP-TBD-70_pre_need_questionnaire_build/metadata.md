@@ -1,16 +1,33 @@
 Task ID: ZP-TBD-70 (placeholder — T-10, projectDocuments/task10.txt)
 Zoho App: CRM
-Module/Form: Deals — custom button
-Function Name: sendPreNeedQuestionnaire (button-attached Deluge, no return value)
-Function Type: Deals custom button action
-Trigger Source: staff clicking "Request Pre-Need Questionnaire" button on the Deal record page
-Connection Name: none — runs in CRM admin context, uses zoho.crm.updateRecord directly
+Module/Form: Deals — custom button ("Send Pre-Need Questionnaire")
+Function Name: none live currently — the button is a Widget
+(copyPreNeedQuestionnaireLinkWidget/, source copied next to this file), not a Deluge
+function. sendPreNeedQuestionnaire.deluge and copyPreNeedQuestionnaireLink.js (the client
+script) are both kept as reference/history only; see their own top-of-file notes for why each
+was superseded.
+Function Type: Deals custom button, Action Type = Widget
+Trigger Source: staff clicking "Send Pre-Need Questionnaire" button on the Deal record page
+Connection Name: none — the widget calls ZOHO.CRM.API directly in the browser
 Related Fields: Pre_Need_Questionnaire_Status, Pre_Need_Date, Pre_Need_Questionnaire_Edit_URL
 Related Modules: Deals (Standard__s layout / "PC" pipeline)
 Created By: Claude Code, 2026-09-17
-Last Updated By: Claude Code, 2026-09-17
+Last Updated By: Claude Code, 2026-09-18
 Sandbox Tested: No — tested live
-Production Deployed: Yes — confirmed working (fresh send and resend-for-edit both tested)
+Production Deployed: Yes — confirmed working live 2026-09-18 (fresh send, resend-for-edit, and
+one-click Copy all passed as part of the full 27-case test pass)
+
+History of this button's implementation (each step confirmed live before moving to the next):
+1. Deluge "Writing Function" action, ends with openUrl() -- worked, but opened a new tab
+   instead of copying the link, which the user wanted changed.
+2. Client Script action calling a converted Custom Function -- abandoned: Client Scripts run
+   in a sandbox with NO DOM access at all ("document" is undefined), confirmed live via
+   "TypeError: Cannot read properties of undefined (reading 'createElement')" on the very
+   first test. Genuine clipboard access isn't reachable from that sandbox.
+3. Widget action (current) -- a real iframe with full DOM/clipboard access, mirroring
+   D:\Office\Andrea_Projects\DFH\widgets\copyPaymentLink\copyPaymentLinkWidget's own proven
+   pattern. Does the URL-build-and-save logic directly via ZOHO.CRM.API (getRecord +
+   updateRecord with Trigger:["workflow"]), not by calling any Deluge function.
 
 Notes:
 

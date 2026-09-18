@@ -1,10 +1,10 @@
-# ZP-TBD-70 (T-10) — Pre-Need Final Wishes Questionnaire — as-built guideline (v3, final)
+# ZP-TBD-70 (T-10) — Pre-Need Final Wishes Questionnaire — as-built guideline (v4, final)
 
-**Status: production-deployed and confirmed working end-to-end (2026-09-17).** This supersedes the
-earlier v1/v2 drafts in this folder's git history — those got the widget-template question wrong
-(v1) and, even corrected (v2), didn't yet know about the CRM-module pivot or any of the signature/
-duplicate-record bugs this section documents. Read this file, not the git history, for how it
-actually works today.
+**Status: production-deployed and confirmed working end-to-end (2026-09-18, full test pass).** This
+supersedes the earlier v1/v2/v3 drafts in this folder's git history — v1 got the widget-template
+question wrong, v2 didn't yet know about the CRM-module pivot, and v3 still had the launcher as a
+Deluge button (since replaced by a Widget, §5) plus two live prefill bugs (§8). Read this file, not
+the git history, for how it actually works today.
 
 Source code lives in two places:
 - `functions/` next to this file — the 5 Creator Custom API Deluge functions, copied from
@@ -13,6 +13,9 @@ Source code lives in two places:
 - `widget/` next to this file — `app.js` / `widget.html`, copied from
   `...\Pre_Need_Questionnaire\app\` (that folder has no git repo of its own, unlike NOKIntake/
   Driver App, so this copy is the only version control it has).
+- The CRM launcher's own source (the live Widget, plus the two abandoned attempts kept as
+  history) lives in `crm/functions/deals/ZP-TBD-70_pre_need_questionnaire_build/` and
+  `crm/client_scripts/ZP-TBD-70_pre_need_questionnaire_build/` — see §5.
 
 ---
 
@@ -67,17 +70,31 @@ the resume/prefill source.
 
 ---
 
-## 5. CRM launcher (Deals custom button)
+## 5. CRM launcher (Deals custom button — "Send Pre-Need Questionnaire")
 
-`sendPreNeedQuestionnaire.deluge` (in `crm/functions/deals/ZP-TBD-70_pre_need_questionnaire_build/`
-next to this task's CRM-side files) builds the perma link, sets `Pre_Need_Questionnaire_Status =
-Sent` + `Pre_Need_Date`, and opens it in a new tab.
+**Current, live implementation: a Widget-type button**, not Deluge. Source:
+`copyPreNeedQuestionnaireLinkWidget/` next to this file (copied from
+`D:\Office\Andrea_Projects\DFH\widgets\copyPreNeedQuestionnaireLink\copyPreNeedQuestionnaireLinkWidget`,
+which has no git repo of its own — same situation as the main questionnaire widget). Clicking it
+opens a small popup that builds/saves the link and shows a one-click **Copy** button, mirroring
+`copyPaymentLinkWidget`'s own proven pattern — everything (reading the Deal's existing edit URL,
+preserving `record_id` on resend, building the link, saving it back) happens directly in the
+widget's JS via `ZOHO.CRM.API.getRecord`/`updateRecord` (`Trigger:["workflow"]`), no Deluge
+function involved.
 
-**Fixed bug:** it originally rebuilt the link unconditionally on every click, discarding any
-`&record_id=` a prior completion had appended — so re-clicking the button to resend/edit an
-already-completed questionnaire always reopened a blank form. Confirmed live. Now it reads the
-Deal's current edit URL first and carries the existing `record_id` forward, only resetting
-status/date on a genuinely first-time send.
+**Two earlier implementations were tried and abandoned, in this order (both kept in the repo as
+reference/history, both marked dead in their own file headers):**
+1. `sendPreNeedQuestionnaire.deluge` as a plain button "Writing Function" ending in `openUrl()` —
+   worked, but opened a new tab instead of letting staff copy the link, which the user wanted
+   changed. Its resend-preserves-`record_id` fix (reads the Deal's current edit URL first, only
+   resets status/date on a genuinely first send) is the same logic now reimplemented in the widget.
+2. Converting that into a callable Custom Function + a Client Script on the button, to copy the
+   returned URL to the clipboard — **abandoned**: confirmed live that Zoho CRM Client Scripts run
+   in a sandbox with **no DOM access at all** (`document` is `undefined` there — a `TypeError:
+   Cannot read properties of undefined (reading 'createElement')` on the very first test, before
+   even reaching `navigator.clipboard`). Genuine clipboard access needs a real iframe with full
+   DOM, i.e. a Widget, not a Client Script — this is a platform limitation, not a code bug, and
+   applies to any future "copy X to clipboard from a CRM button" request in this org.
 
 ---
 
@@ -180,13 +197,35 @@ even though it's fine for regular record CRUD.
 the canvas's default transparency; Zoho's own image preview renders that as black rather than
 white. Fill the canvas white before drawing (and again on Clear).
 
+**Zoho CRM Client Scripts have no DOM access.** `document`/`window` DOM APIs (and therefore
+`document.execCommand` and, in practice, `navigator.clipboard`) are not usable there — confirmed
+live, see §5. If a future task wants a CRM button to touch the clipboard, do the local file
+system, or do anything else DOM-dependent, it needs a Widget-type button, not a Client Script.
+
+**`setAddr()`'s composite-address read side expects lowercase `postal_code`, not `postal_Code`.**
+Two different address-prefill paths exist in this widget: reading a genuinely-saved Creator/CRM
+composite Address object (which Zoho itself returns with a lowercase `postal_code` key -- same
+convention NOKIntake's own `setAddr()` comment already flagged), and `getDeal.dg`'s own
+hand-built `plannerAddress` Map (the Contact-based fallback prefill for a fresh Deal with no
+questionnaire yet). The second one was built with capital-C `postal_Code`, silently mismatching
+what `setAddr()` reads for that field and leaving Postal Code blank on every fresh-Deal prefill,
+confirmed live -- fixed by matching the lowercase key. `address_line_2` was simply never set at
+all in that same Map (Contacts does have a `Mailing_Street_2` field to source it from, confirmed
+via getFields -- it just wasn't wired up originally).
+
 ---
 
-## 9. Confirmed test results (2026-09-17)
+## 9. Confirmed test results (2026-09-18, full pass)
 
 - Fresh submission: creates linked `Final_Wishes_Form` + `Pre_Need_Questionnaire` records, no
   login required, works on an actual phone.
 - Editing/resubmitting the same Deal: updates the existing `Pre_Need_Questionnaire` record (no
   duplicate), prefills every field including the previously-drawn signature, and replacing the
   signature actually replaces it (old one gone, not appended).
-- CRM launcher button: fresh send and resend-for-edit both confirmed working.
+- Fresh-Deal prefill (no questionnaire yet): Pre-Planner name/address, including Address Line 2
+  and Postal Code, all prefill correctly from the linked Contact.
+- CRM launcher widget: fresh send, resend-for-edit, and one-click Copy all confirmed working.
+- All 11 long-text fields are capped at 2000 characters (`maxlength`) with a live "N / 2000"
+  counter underneath, correct immediately whether the field starts blank or prefilled.
+- Full 27-case test pass (`DFH_PreNeed_Questionnaire_Test_Cases.xlsx` in
+  `D:\Office\Andrea_Projects\DFH\widgets\testCases\`) confirmed by the user.

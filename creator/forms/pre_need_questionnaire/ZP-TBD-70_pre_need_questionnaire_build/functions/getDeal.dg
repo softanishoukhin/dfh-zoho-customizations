@@ -61,9 +61,16 @@ string getDeal(String deal_id)
 				plannerLast = ifnull(conData.get("Last_Name"),"");
 				plannerName = (plannerFirst + " " + plannerLast).trim();
 				plannerAddress.put("address_line_1",ifnull(conData.get("Mailing_Street"),""));
+				plannerAddress.put("address_line_2",ifnull(conData.get("Mailing_Street_2"),""));
 				plannerAddress.put("district_city",ifnull(conData.get("Mailing_City"),""));
 				plannerAddress.put("state_province",ifnull(conData.get("Mailing_State"),""));
-				plannerAddress.put("postal_Code",ifnull(conData.get("Mailing_Zip"),""));
+				// key must be lowercase "postal_code" -- app.js's setAddr() reads
+				// a.postal_code for this specific fallback-prefill path (it also
+				// serves the genuine Creator/CRM composite-Address readback path,
+				// which uses that same lowercase key per Zoho's own convention).
+				// A capital-C "postal_Code" here silently mismatched and left the
+				// field blank, confirmed live.
+				plannerAddress.put("postal_code",ifnull(conData.get("Mailing_Zip"),""));
 				plannerAddress.put("country",ifnull(conData.get("Mailing_Country"),""));
 			}
 			catch(eCon)

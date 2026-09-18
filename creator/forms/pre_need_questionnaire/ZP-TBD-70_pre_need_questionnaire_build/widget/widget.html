@@ -39,6 +39,8 @@
   .row.invalid input, .row.invalid select, .row.invalid textarea{ border-color:#d9534f; background:#fff7f7; }
   .field-err{ color:#b3261e; font-size:12px; margin-top:4px; display:none; }
   .row.invalid .field-err{ display:block; }
+  .char-count{ font-size:11px; color:#8a93a3; text-align:right; margin-top:3px; }
+  .char-count.near-limit{ color:#b3261e; }
   .req{ color:#d9534f; }
   /* phone country-code picker (generic, reused for every phone field) */
   .phone-cc-wrap{ position:relative; display:flex; gap:6px; }
@@ -129,22 +131,22 @@
         <div class="row"><label>State / Province</label><input id="Burial_Location_state_province"/></div>
       </div>
       <div class="row"><label>Postal Code</label><input id="Burial_Location_postal_Code"/></div>
-      <div class="row"><label>Ashes Instructions</label><textarea id="Ashes_Instructions"></textarea></div>
+      <div class="row"><label>Ashes Instructions</label><textarea id="Ashes_Instructions" maxlength="2000"></textarea></div>
       <div class="row"><label>Place of Worship</label><input id="Place_of_Worship"/></div>
-      <div class="row"><label>Ceremony Preferences</label><textarea id="Ceremony_Preferences"></textarea></div>
-      <div class="row"><label>Obituary Information</label><textarea id="Obituary_Information"></textarea></div>
-      <div class="row"><label>Clothing and Accessories</label><textarea id="Clothing_and_Accessories"></textarea></div>
+      <div class="row"><label>Ceremony Preferences</label><textarea id="Ceremony_Preferences" maxlength="2000"></textarea></div>
+      <div class="row"><label>Obituary Information</label><textarea id="Obituary_Information" maxlength="2000"></textarea></div>
+      <div class="row"><label>Clothing and Accessories</label><textarea id="Clothing_and_Accessories" maxlength="2000"></textarea></div>
     </div>
   </div>
 
   <div class="sec" data-sec="service">
     <div class="head"><span>Things Wanted at Service</span><span class="arrow">&#9656;</span></div>
     <div class="body">
-      <div class="row"><label>Flowers</label><textarea id="Flowers"></textarea></div>
-      <div class="row"><label>Songs</label><textarea id="Songs"></textarea></div>
-      <div class="row"><label>Readings</label><textarea id="Readings"></textarea></div>
-      <div class="row"><label>Prayers</label><textarea id="Prayers"></textarea></div>
-      <div class="row"><label>Imagined Service</label><textarea id="Imagined_Service"></textarea></div>
+      <div class="row"><label>Flowers</label><textarea id="Flowers" maxlength="2000"></textarea></div>
+      <div class="row"><label>Songs</label><textarea id="Songs" maxlength="2000"></textarea></div>
+      <div class="row"><label>Readings</label><textarea id="Readings" maxlength="2000"></textarea></div>
+      <div class="row"><label>Prayers</label><textarea id="Prayers" maxlength="2000"></textarea></div>
+      <div class="row"><label>Imagined Service</label><textarea id="Imagined_Service" maxlength="2000"></textarea></div>
     </div>
   </div>
 
@@ -157,11 +159,11 @@
         <div class="chk-row"><input type="checkbox" value="Keepsake Urn" id="Interment_Type_Keepsake"/><label for="Interment_Type_Keepsake">Keepsake Urn</label></div>
         <div class="chk-row"><input type="checkbox" value="Scattering Urn" id="Interment_Type_Scattering"/><label for="Interment_Type_Scattering">Scattering Urn</label></div>
       </div>
-      <div class="row"><label>Interment Description</label><textarea id="Interment_Description"></textarea></div>
+      <div class="row"><label>Interment Description</label><textarea id="Interment_Description" maxlength="2000"></textarea></div>
       <div class="row"><label>Programme Style</label><input id="Programme_Style"/></div>
       <div class="row"><label>Headstone Type</label><input id="Headstone_Type"/></div>
-      <div class="row"><label>Inscription</label><textarea id="Inscription"></textarea></div>
-      <div class="row"><label>Additional Instructions</label><textarea id="Additional_Instructions"></textarea></div>
+      <div class="row"><label>Inscription</label><textarea id="Inscription" maxlength="2000"></textarea></div>
+      <div class="row"><label>Additional Instructions</label><textarea id="Additional_Instructions" maxlength="2000"></textarea></div>
     </div>
   </div>
 

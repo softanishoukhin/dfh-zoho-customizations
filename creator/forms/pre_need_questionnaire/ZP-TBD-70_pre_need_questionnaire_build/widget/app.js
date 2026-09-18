@@ -25,7 +25,7 @@ var APIS = {
 
 /* ---------- small helpers (mirror NOKIntake's v()/setVal()/clean()) ---------- */
 function v(id){ var el = $('#' + id); return el.length ? (el.val() || "") : ""; }
-function setVal(id, val){ var $e = $('#' + id); if ($e.length && val !== undefined && val !== null) $e.val(val); }
+function setVal(id, val){ var $e = $('#' + id); if ($e.length && val !== undefined && val !== null) $e.val(val).trigger('input'); }
 function setMsg(text, ok){ $('#msg').text(text).removeClass('ok err').addClass(ok ? 'ok' : 'err'); }
 function showThankYou(){ $('#msg').text('').removeClass('ok err'); $('#thankYouModal').addClass('show'); }
 $(document).on('click', '#tyCloseBtn', function(){ window.location.reload(); });
@@ -727,8 +727,27 @@ function checkReady(attempt){
   sdkPollTimer = setTimeout(function(){ checkReady(attempt + 1); }, 100);
 }
 
+// Live "N / 2000" counter under every capped textarea -- generic, so any
+// textarea[maxlength] gets one without needing its own hand-written markup.
+function initCharCounters(){
+  $('textarea[maxlength]').each(function(){
+    var $ta = $(this);
+    var max = parseInt($ta.attr('maxlength'), 10) || 0;
+    var $count = $('<div class="char-count"></div>');
+    $ta.after($count);
+    function update(){
+      var len = $ta.val().length;
+      $count.text(len + ' / ' + max);
+      $count.toggleClass('near-limit', len >= max);
+    }
+    $ta.on('input', update);
+    update();
+  });
+}
+
 $(document).ready(function(){
   initSignaturePad();
+  initCharCounters();
   prAddRow();
   checkReady(0);
 });

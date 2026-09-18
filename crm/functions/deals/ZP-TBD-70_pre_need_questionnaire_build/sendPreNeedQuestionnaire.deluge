@@ -1,48 +1,68 @@
-// sendPreNeedQuestionnaire -> Deals custom button (Deluge)
-// Builds the perma-link URL for this Deal, marks the questionnaire "Sent", saves
-// the link on the Deal, and opens it in a new tab. This is the whole "launcher" --
-// deliberately NOT a cloned widget project, since NOKIntake itself never builds
-// its own launch link either; something has to, and a plain button suffices.
+// SUPERSEDED (2026-09-18) -- this Custom-Function-with-return-value conversion was built to
+// be called from a Client Script attached to the "Send Pre-Need Questionnaire" button. That
+// Client Script approach was abandoned once live testing confirmed Client Scripts have no
+// DOM access at all (see the .js file's own note in ../../client_scripts/
+// ZP-TBD-70_pre_need_questionnaire_build/), so clipboard copy was never actually reachable.
+// The button now runs as a Widget instead
+// (D:\Office\Andrea_Projects\DFH\widgets\copyPreNeedQuestionnaireLink\copyPreNeedQuestionnaireLinkWidget),
+// which does the same URL-build-and-save logic directly via ZOHO.CRM.API from full widget
+// JS, not by calling this function. Kept here as reference only -- not currently wired to
+// anything live.
+//
+// sendPreNeedQuestionnaire -> standalone Custom Function
+// (Setup > Automation > Functions > Custom Functions -- NOT the button's own inline
+// "Writing Function" editor. That distinction matters: a button-Action-Type=Writing
+// Function body gets an implicit `deal` variable and no return value; a real named
+// Custom Function needs its record id passed in explicitly and can return a string.
+// This got rewritten from the old button-body version specifically so the button's
+// Client Script (see the .js file next to this one) can call it via
+// ZDK.Apps.CRM.Functions.execute() and read the built URL back to copy to clipboard --
+// Deluge itself cannot touch the browser clipboard, that part has to happen client-side.
+//
+// Builds the perma-link URL for the given Deal, marks the questionnaire "Sent" (only on
+// a genuinely first send -- same fix as before, preserves an existing &record_id= on
+// resend instead of dropping it), saves the link on the Deal, and returns the URL.
 //
 // PERMA_TOKEN below is taken from the live page URL the user already published:
 // https://creatorapp.zohopublic.com/delapenhafuneralhome/pre-need-questionnaire/page-perma/Final_Wishes_Form1/zS4dtZBC7VwnvsJTumgwyfTbG89Sw2kXaKMjrnkt0pghN0V7ePR1u6JaRW3Cv8CsvRHbB0nRCyqHqCw741YfYh8wdZYtWrh540uA
-//
-// Fixed (confirmed live): this used to overwrite Pre_Need_Questionnaire_Edit_URL
-// unconditionally, dropping any &record_id= completePreNeedQuestionnaire had
-// already appended -- so re-clicking this button after a completed submission
-// reopened the widget blank instead of resuming. Now it reads the Deal's
-// current edit URL first and carries the existing record_id forward, and only
-// resets status/date if this is a genuinely first-time send.
-dealData = zoho.crm.getRecordById("Deals",deal.id);
-existingUrl = ifnull(dealData.get("Pre_Need_Questionnaire_Edit_URL"),"");
-existingRecordId = "";
-if(existingUrl.contains("record_id="))
+string sendPreNeedQuestionnaire(String recordId)
 {
-	afterKey = existingUrl.subString(existingUrl.indexOf("record_id=") + 10);
-	ampIdx = afterKey.indexOf("&");
-	if(ampIdx == -1)
+	dId = ifnull(recordId,"").trim();
+	if(dId == "")
 	{
-		existingRecordId = afterKey;
+		return "";
 	}
-	else
+	dealData = zoho.crm.getRecordById("Deals",dId.toLong());
+	existingUrl = ifnull(dealData.get("Pre_Need_Questionnaire_Edit_URL"),"");
+	existingRecordId = "";
+	if(existingUrl.contains("record_id="))
 	{
-		existingRecordId = afterKey.subString(0,ampIdx);
+		afterKey = existingUrl.subString(existingUrl.indexOf("record_id=") + 10);
+		ampIdx = afterKey.indexOf("&");
+		if(ampIdx == -1)
+		{
+			existingRecordId = afterKey;
+		}
+		else
+		{
+			existingRecordId = afterKey.subString(0,ampIdx);
+		}
 	}
-}
 
-sendUrl = "https://creatorapp.zohopublic.com/delapenhafuneralhome/pre-need-questionnaire/page-perma/Final_Wishes_Form1/zS4dtZBC7VwnvsJTumgwyfTbG89Sw2kXaKMjrnkt0pghN0V7ePR1u6JaRW3Cv8CsvRHbB0nRCyqHqCw741YfYh8wdZYtWrh540uA?deal_id=" + deal.id + "&owner=" + encodeUrl(zoho.loginuserid);
-if(existingRecordId != "")
-{
-	sendUrl = sendUrl + "&record_id=" + existingRecordId;
-}
+	sendUrl = "https://creatorapp.zohopublic.com/delapenhafuneralhome/pre-need-questionnaire/page-perma/Final_Wishes_Form1/zS4dtZBC7VwnvsJTumgwyfTbG89Sw2kXaKMjrnkt0pghN0V7ePR1u6JaRW3Cv8CsvRHbB0nRCyqHqCw741YfYh8wdZYtWrh540uA?deal_id=" + dId + "&owner=" + encodeUrl(zoho.loginuserid);
+	if(existingRecordId != "")
+	{
+		sendUrl = sendUrl + "&record_id=" + existingRecordId;
+	}
 
-dealMap = Map();
-if(existingRecordId == "")
-{
-	dealMap.put("Pre_Need_Questionnaire_Status","Sent");
-	dealMap.put("Pre_Need_Date",zoho.currenttime.toString("yyyy-MM-dd"));
-}
-dealMap.put("Pre_Need_Questionnaire_Edit_URL",sendUrl);
-updateResp = zoho.crm.updateRecord("Deals",deal.id,dealMap);
+	dealMap = Map();
+	if(existingRecordId == "")
+	{
+		dealMap.put("Pre_Need_Questionnaire_Status","Sent");
+		dealMap.put("Pre_Need_Date",zoho.currenttime.toString("yyyy-MM-dd"));
+	}
+	dealMap.put("Pre_Need_Questionnaire_Edit_URL",sendUrl);
+	updateResp = zoho.crm.updateRecord("Deals",dId.toLong(),dealMap);
 
-openUrl(sendUrl,"new window");
+	return sendUrl;
+}
