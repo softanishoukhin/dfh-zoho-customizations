@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Copy Payment Link</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+    margin: 0;
+    padding: 20px;
+    color: #2b2b2b;
+    background: #fafafa;
+  }
+  h2 { font-size: 18px; margin: 0 0 4px; }
+  .subtitle { color: #6b6b6b; font-size: 13px; margin: 0 0 20px; }
+  .card {
+    background: #fff;
+    border: 1px solid #e2e2e2;
+    border-radius: 8px;
+    padding: 18px;
+    margin-bottom: 16px;
+  }
+  .field { margin-bottom: 14px; }
+  .field:last-child { margin-bottom: 0; }
+  label {
+    display: block;
+    font-size: 12px;
+    font-weight: 600;
+    color: #444;
+    margin-bottom: 4px;
+  }
+  select {
+    width: 100%;
+    padding: 8px 10px;
+    border: 1px solid #ccc;
+    border-radius: 5px;
+    font-size: 13px;
+    background: #fff;
+  }
+  select:focus { outline: none; border-color: #2e7d32; }
+  #linksSection { display: none; }
+  #linksSection.visible { display: block; }
+  .link-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+  .link-row:last-child { margin-bottom: 0; }
+  .link-row .link-label {
+    font-size: 12px;
+    font-weight: 700;
+    color: #444;
+    width: 48px;
+    flex-shrink: 0;
+  }
+  .link-row input[type="text"] {
+    flex: 1;
+    padding: 8px 10px;
+    border: 1px solid #ccc;
+    border-radius: 5px;
+    font-size: 12px;
+    color: #333;
+    background: #f5f5f5;
+  }
+  .copy-wrap { position: relative; flex-shrink: 0; }
+  .copy-btn {
+    width: 34px;
+    height: 34px;
+    border: 1px solid #ccc;
+    border-radius: 5px;
+    background: #fff;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+  }
+  .copy-btn:hover { background: #f0f0f0; }
+  .copy-btn.copied { background: #e8f5e9; border-color: #2e7d32; }
+  .copy-btn svg { width: 16px; height: 16px; pointer-events: none; }
+  .copied-msg {
+    position: absolute;
+    bottom: 100%;
+    right: 0;
+    margin-bottom: 6px;
+    background: #2e7d32;
+    color: #fff;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 3px 8px;
+    border-radius: 4px;
+    white-space: nowrap;
+    display: none;
+  }
+  .copied-msg.visible { display: block; }
+  .unavailable { font-size: 12px; color: #999; font-style: italic; }
+  .actions { display: flex; justify-content: flex-end; margin-top: 4px; }
+  button.secondary {
+    background: #fff;
+    border: 1px solid #ccc;
+    padding: 10px 16px;
+    border-radius: 6px;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  #statusBanner {
+    display: none;
+    padding: 10px 14px;
+    border-radius: 6px;
+    font-size: 13px;
+    margin-bottom: 14px;
+  }
+  #statusBanner.error { display: block; background: #fdecea; color: #b71c1c; border: 1px solid #f5c6cb; }
+  #statusBanner.loading { display: block; background: #eef2f7; color: #333; border: 1px solid #d6dee7; }
+</style>
+</head>
+<body>
+
+  <h2>Copy Payment Link</h2>
+  <p class="subtitle">Send an invoice to whom?</p>
+
+  <div id="statusBanner"></div>
+
+  <div class="card">
+    <div class="field">
+      <label>Potential Payer</label>
+      <select id="payerSelect">
+        <option value="">Select a payer...</option>
+      </select>
+    </div>
+  </div>
+
+  <div class="card" id="linksSection">
+    <div class="link-row" id="jmdRow">
+      <span class="link-label">JMD</span>
+      <input type="text" id="jmdLink" readonly>
+      <div class="copy-wrap">
+        <span class="copied-msg" id="jmdCopiedMsg">Copied!</span>
+        <button type="button" class="copy-btn" id="copyJmdBtn" title="Copy JMD payment link">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+        </button>
+      </div>
+    </div>
+    <div class="link-row" id="usdRow">
+      <span class="link-label">USD</span>
+      <input type="text" id="usdLink" readonly>
+      <div class="copy-wrap">
+        <span class="copied-msg" id="usdCopiedMsg">Copied!</span>
+        <button type="button" class="copy-btn" id="copyUsdBtn" title="Copy USD payment link">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <div class="actions">
+    <button type="button" class="secondary" id="closeBtn">Close</button>
+  </div>
+
+<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+<script src="https://live.zwidgets.com/js-sdk/1.2/ZohoEmbededAppSDK.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
