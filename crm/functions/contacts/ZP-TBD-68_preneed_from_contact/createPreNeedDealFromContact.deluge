@@ -1,0 +1,444 @@
+// createPreNeedDealFromContact (ZP-TBD-68 -- Pre-Need from Contact)
+// ============================================================================
+// NEW standalone CRM function. Called from the preNeedFromContactWidget
+// (D:\Office\Andrea_Projects\DFH\widgets\preNeedFromContact\preNeedFromContactWidget)
+// via ZOHO.CRM.FUNCTIONS.execute("createpreneeddealfromcontact", ...), which
+// is triggered by a new "Create Pre-Need Deal" Widget-type custom button on
+// the Contacts module.
+//
+// SOURCE: task6.txt (D:\Office\Andrea_Projects\DFH\projectDocuments\), which
+// explicitly says the existing Lead-conversion logic in
+// convertLeadOnChangingLeadStatus should be LIFTED, not rewritten. Pulled
+// that function's live source 2026-09-16 before writing anything here (its
+// full code and analysis are further down in this file, for reference).
+//
+// T-07 (task7.txt, same folder): every Contact this function creates or
+// touches must get a valid Contacts.Contact_Type. Confirmed live 2026-09-16
+// via ZohoCRM_getFields: Contact_Type is a picklist, currently valid values
+// are -None-/Deceased Contact/IFR/Guarantor/JTB Rep/Tour Rep/Forensics
+// Lab/Police/Hospital/Funeral Home/Driver/Doctor/Attendant/Portal
+// User/On Scene Contact/Investigating Officer/Amber Driver (unused) -- no
+// payer value exists yet. Confirmed with the developer: add a new value
+// "Payer" (manual Setup step, no write API for CRM picklist values from this
+// session -- see metadata.md). This function now sets:
+//   - payer Contact  -> Contact_Type = "Payer"  (both scenarios)
+//   - beneficiary Contact -> Contact_Type = "IFR" (Scenario 2 only; in
+//     Scenario 1 the payer IS the beneficiary and keeps "Payer" -- she only
+//     ever gets the "Primary Contact" Deal role below, never "IFR", so
+//     Contact_Type mirrors that)
+// enforced at the function level only (not as a layout-level required
+// field), since a layout-level requirement would be global and break every
+// other Contact-creation path in the org (NOKIntake, Lead conversion, manual
+// CRM entry, MNSJ setup, etc.) that doesn't set Contact_Type today.
+// Explicitly does NOT use Is_this_Contact_IFR for this -- task7.txt calls
+// out that having both fields represent the same thing risks them
+// disagreeing; Contact_Type is the single source of truth going forward.
+// Also explicitly does NOT copy the confirmed live bug in
+// convertLeadOnChangingLeadStatus, which does
+// intendedFuneralReciepent.put("Contact_Type",ifnull(recordInfo.get("Pre_Need_Contact_Role"),""))
+// -- Pre_Need_Contact_Role holds answers like "For Self"/"For Spouse"/"For
+// Family Member", which are not valid Contact_Type picklist values at all.
+// That bug is left as-is in the old (soon-to-be-retired) Lead function --
+// fixing it wasn't asked for and is a separate call for Andrea/Dale once the
+// Lead flow's retirement is decided.
+//
+// DUPLICATE DETECTION (added 2026-09-16 after live testing of TC-07 showed
+// re-running the same beneficiary created a brand-new Account every time):
+// before creating the beneficiary Account, search Accounts by exact
+// Account_Name + Account_Type=Deceased and reuse a match instead of
+// creating another one (mirrors convertLeadOnChangingLeadStatus's own
+// search-then-create pattern for its IFR Account). Same idea for the
+// beneficiary Contact in Scenario 2 -- if the Account was reused, search
+// Contacts already linked to that Account (Account_Name = accountId) before
+// creating a new one. A fresh Account never matches, so this only changes
+// behavior on true re-runs with the same beneficiary. Contact_Type is set
+// via an explicit updateRecord after resolving the Contact either way, so a
+// reused older Contact still ends up correct even if it predates T-07.
+//
+// WHAT'S REUSED FROM convertLeadOnChangingLeadStatus, AS-IS:
+// - The Contact_Roles PUT mechanism: PUT /crm/v6/Deals/{dealId}/Contact_Roles/{contactId}
+//   with a {"data":[{"Contact_Role":{"name":...,"id":...}}]} body.
+// - The "Primary Contact" role id, 6503357000001327140 -- hardcoded in the
+//   live function today, reused as-is since it's already proven working.
+// - The dynamic "look up or create" pattern for a Contact Role master record
+//   via POST/GET /crm/v7/Contacts/roles, including the DUPLICATE_DATA
+//   fallback (create returns DUPLICATE_DATA if the role name already
+//   exists -- the code then re-fetches the full list to find its id).
+//
+// WHAT'S DELIBERATELY NOT REUSED (per the brief and live-code review):
+// 1. THE KNOWN BUG the brief calls out: the old function does
+//        accountMap.put("Account_Type","IFR");
+//        ... (many other fields) ...
+//        accountMap.put("Account_Type",ifnull(recordInfo.get("Account_Type"),""));
+//    -- the second line overwrites the first with a blank, since Leads
+//    don't have an Account_Type field. This function sets Account_Type to
+//    "Deceased" exactly ONCE and never touches it again.
+// 2. The old function also reassigns the (freshly-converted-from-Lead)
+//    Contact's own Account_Name to the newly-created IFR Account:
+//        contactMap.put("Account_Name",accountId);
+//        zoho.crm.updateRecord("Contacts",contactId,contactMap,...);
+//    That's harmless in the old Lead-conversion context (the Contact was
+//    created seconds earlier with no prior Account). In this new flow the
+//    payer is a pre-existing real Contact who may already belong to their
+//    own Account -- reassigning it to the beneficiary's Account would
+//    silently break that. Confirmed with the developer 2026-09-16: do NOT
+//    do this. The payer Contact's own Account_Name is left untouched.
+//
+// PREREQUISITES (manual setup, no write API available to this session for
+// either CRM custom fields or CRM functions -- see guideline.md):
+// - New Accounts custom field for TRN. Suggested api_name: Deceased_TRN
+//   (Text, single line), alongside the existing Deceased_* fields. NOT YET
+//   CREATED as of this writing -- the accountMap.put("Deceased_TRN", ...)
+//   line below uses that name as a placeholder; correct it once the field
+//   actually exists and its live api_name is confirmed (same lesson as
+//   ZP-TBD-65's cf_xero_retainer_credit_note_id: don't assume a guessed
+//   name is right, verify it).
+// - This function itself needs to be created in CRM Setup > Developer
+//   Space > Functions as a Standalone function, return type String.
+// - A new "Create Pre-Need Deal" custom button on the Contacts module,
+//   type Widget, pointing at the deployed preNeedFromContactWidget.
+//
+// CONFIRMED LIVE (2026-09-16) before building any of this:
+// - Deals.Pipeline value for Pre Need is literally the string "Pre Need"
+//   (both display_value and actual_value) -- no numeric pipeline id needed.
+//   The old function has a commented-out numeric Pipeline id
+//   ("6049981000002144040") that looks like a stale/wrong leftover; not
+//   reused here.
+// - Initial Stage for a freshly created Pre-Need Deal: "Qualification"
+//   (displayed as "Requested" -- the first stage in the Pre Need pipeline),
+//   per the developer's explicit choice.
+// - Contacts module already has all the standard fields this function needs
+//   for the beneficiary Contact (First_Name, Last_Name, Date_of_Birth,
+//   Email, Phone, Mailing_Street/City/State/Zip/Country, Account_Name) --
+//   confirmed via ZohoCRM_getFields, nothing missing there.
+
+string standalone.createPreNeedDealFromContact(String payerContactId, String isPayerSame, String beneficiaryFirstName, String beneficiaryLastName, String beneficiaryDOB, String beneficiaryStreet, String beneficiaryStreet2, String beneficiaryCity, String beneficiaryState, String beneficiaryZip, String beneficiaryCountry, String beneficiaryPhone, String beneficiaryEmail, String beneficiaryTRN)
+{
+	resultMap = Map();
+	try
+	{
+		payerContact = zoho.crm.getRecordById("Contacts",payerContactId);
+		if(isNull(payerContact))
+		{
+			resultMap.put("status","error");
+			resultMap.put("message","Payer contact not found: " + payerContactId);
+			return resultMap.toString();
+		}
+
+		beneficiaryFullName = beneficiaryFirstName + " " + beneficiaryLastName;
+
+		// ==========================================
+		// BUILD THE DECEASED/BENEFICIARY ACCOUNT
+		// Account_Type set ONCE, hardcoded "Deceased" -- see note 1 above,
+		// this is the exact bug the brief warned against.
+		// ==========================================
+		accountMap = Map();
+		accountMap.put("Account_Name",beneficiaryFullName);
+		accountMap.put("Account_Type","Deceased");
+		accountMap.put("Deceased_First_Name",beneficiaryFirstName);
+		accountMap.put("Deceased_Last_Name",beneficiaryLastName);
+		if(!isNull(beneficiaryDOB) && beneficiaryDOB != "")
+		{
+			accountMap.put("Date_of_Birth",beneficiaryDOB);
+		}
+		accountMap.put("Deceased_Street_Address",ifnull(beneficiaryStreet,""));
+		accountMap.put("Deceased_Street_Address_2",ifnull(beneficiaryStreet2,""));
+		accountMap.put("Deceased_City",ifnull(beneficiaryCity,""));
+		accountMap.put("Deceased_State",ifnull(beneficiaryState,""));
+		accountMap.put("Deceased_Zip_Code",ifnull(beneficiaryZip,""));
+		accountMap.put("Deceased_Country",ifnull(beneficiaryCountry,""));
+		accountMap.put("Phone",ifnull(beneficiaryPhone,""));
+		accountMap.put("Email",ifnull(beneficiaryEmail,""));
+		// TODO: confirm the live api_name once the TRN field is created on
+		// Accounts -- "Deceased_TRN" is a placeholder, not yet verified.
+		accountMap.put("Deceased_TRN",ifnull(beneficiaryTRN,""));
+
+		// DUPLICATE DETECTION (added on request, after live testing showed
+		// re-running the same beneficiary created a fresh Account every
+		// time): search for an existing Deceased Account with this exact
+		// name before creating a new one, mirroring the search-then-create
+		// pattern convertLeadOnChangingLeadStatus already uses for its IFR
+		// Account. If found, reuse it as-is (not updated) rather than
+		// overwriting whatever's already there.
+		accountSearchQuery = Map();
+		accountSearchQuery.put("select_query","select id from Accounts where Account_Name = '" + beneficiaryFullName + "' and Account_Type = 'Deceased' limit 1");
+		accountSearchResponse = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v7/coql"
+			type :POST
+			parameters:accountSearchQuery.toString()
+			connection:"zohooauth"
+		];
+		if(!isNull(accountSearchResponse.get("data")) && accountSearchResponse.get("data").size() > 0)
+		{
+			accountId = accountSearchResponse.get("data").get(0).get("id");
+		}
+		else
+		{
+			accountResult = zoho.crm.createRecord("Accounts",accountMap);
+			if(isNull(accountResult.get("id")))
+			{
+				resultMap.put("status","error");
+				resultMap.put("message","Account creation failed: " + accountResult.toString());
+				return resultMap.toString();
+			}
+			accountId = accountResult.get("id");
+		}
+
+		// ==========================================
+		// DETERMINE THE BENEFICIARY CONTACT
+		// ==========================================
+		if(isPayerSame == "true")
+		{
+			// Scenario 1: payer and beneficiary are the same person --
+			// reuse the existing payer Contact, no new Contact needed.
+			beneficiaryContactId = payerContactId;
+
+			// Link this Contact to the new Account. Unlike Scenario 2
+			// (different payer/beneficiary, see the "else" branch and the
+			// design note near the top of this file), there is no risk of
+			// clobbering an unrelated existing Account relationship here --
+			// the Account being linked genuinely IS this same person's own
+			// record, since they are the beneficiary too. Confirmed as a
+			// gap via live testing 2026-09-16: without this, the new
+			// Account was created but never showed up on the Contact.
+			// T-07: payer's Contact_Type must be set explicitly, not left
+			// blank and not inferred from Is_this_Contact_IFR. Mary only
+			// ever gets the "Primary Contact" role on the Deal below (never
+			// "IFR", even here where she's also the beneficiary) --
+			// Contact_Type mirrors that same Payer role.
+			selfAccountLinkMap = Map();
+			selfAccountLinkMap.put("Account_Name",accountId);
+			selfAccountLinkMap.put("Contact_Type","Payer");
+			zoho.crm.updateRecord("Contacts",payerContactId,selfAccountLinkMap);
+		}
+		else
+		{
+			// Scenario 2: create a NEW Contact for the beneficiary, linked
+			// to the Account just created above.
+			beneficiaryContactMap = Map();
+			beneficiaryContactMap.put("First_Name",beneficiaryFirstName);
+			beneficiaryContactMap.put("Last_Name",beneficiaryLastName);
+			if(!isNull(beneficiaryDOB) && beneficiaryDOB != "")
+			{
+				beneficiaryContactMap.put("Date_of_Birth",beneficiaryDOB);
+			}
+			beneficiaryContactMap.put("Mailing_Street",ifnull(beneficiaryStreet,""));
+			beneficiaryContactMap.put("Mailing_Street_2",ifnull(beneficiaryStreet2,""));
+			beneficiaryContactMap.put("Mailing_City",ifnull(beneficiaryCity,""));
+			beneficiaryContactMap.put("Mailing_State",ifnull(beneficiaryState,""));
+			beneficiaryContactMap.put("Mailing_Zip",ifnull(beneficiaryZip,""));
+			beneficiaryContactMap.put("Mailing_Country",ifnull(beneficiaryCountry,""));
+			beneficiaryContactMap.put("Phone",ifnull(beneficiaryPhone,""));
+			beneficiaryContactMap.put("Email",ifnull(beneficiaryEmail,""));
+			beneficiaryContactMap.put("Account_Name",accountId);
+
+			// DUPLICATE DETECTION (added on request): if the Account above
+			// was reused rather than freshly created, it may already have a
+			// beneficiary Contact linked to it from an earlier run -- reuse
+			// that Contact instead of creating another one on the same
+			// Account. A fresh Account (just created above) will never
+			// match here, so this only fires on true re-runs.
+			contactSearchQuery = Map();
+			contactSearchQuery.put("select_query","select id from Contacts where Account_Name = '" + accountId + "' limit 1");
+			contactSearchResponse = invokeurl
+			[
+				url :"https://www.zohoapis.com/crm/v7/coql"
+				type :POST
+				parameters:contactSearchQuery.toString()
+				connection:"zohooauth"
+			];
+			if(!isNull(contactSearchResponse.get("data")) && contactSearchResponse.get("data").size() > 0)
+			{
+				beneficiaryContactId = contactSearchResponse.get("data").get(0).get("id");
+			}
+			else
+			{
+				beneficiaryContactResult = zoho.crm.createRecord("Contacts",beneficiaryContactMap);
+				if(isNull(beneficiaryContactResult.get("id")))
+				{
+					resultMap.put("status","error");
+					resultMap.put("message","Beneficiary contact creation failed: " + beneficiaryContactResult.toString());
+					return resultMap.toString();
+				}
+				beneficiaryContactId = beneficiaryContactResult.get("id");
+			}
+
+			// T-07: beneficiary Contact_Type = "IFR" -- the actual role
+			// value, not the Pre_Need_Contact_Role answer ("For Self"/"For
+			// Spouse"/"For Family Member") that convertLeadOnChangingLeadStatus
+			// wrongly writes into this same field. Set unconditionally here
+			// (not just in beneficiaryContactMap above) so a reused Contact
+			// from an older run still ends up correct, not just a freshly
+			// created one.
+			beneficiaryContactTypeMap = Map();
+			beneficiaryContactTypeMap.put("Contact_Type","IFR");
+			zoho.crm.updateRecord("Contacts",beneficiaryContactId,beneficiaryContactTypeMap);
+
+			// T-07: set the (pre-existing) payer's Contact_Type too, without
+			// touching Account_Name -- that field is deliberately left alone
+			// for the payer in this scenario (see the design note near the
+			// top of this file: reassigning the payer's own Account to the
+			// beneficiary's Account would silently break their real Account
+			// relationship).
+			payerContactTypeMap = Map();
+			payerContactTypeMap.put("Contact_Type","Payer");
+			zoho.crm.updateRecord("Contacts",payerContactId,payerContactTypeMap);
+		}
+
+		// ==========================================
+		// CREATE THE PRE-NEED DEAL
+		// Account = beneficiary. Contact_Name = the PAYER, always.
+		// Per the brief: "Contact = who pays; Account = who the funeral is
+		// for" -- and once set, the Account must not change later, since
+		// the Books retainer connects to the Deal's Account.
+		// ==========================================
+		// SWITCHED TO RAW REST (invokeurl POST /crm/v7/Deals) -- confirmed
+		// live 2026-09-16 that the native zoho.crm.createRecord("Deals",...)
+		// task gives inconsistent Pipeline/Layout/Stage behavior for this
+		// module: even with the numerically-correct Pipeline id
+		// (6503357000001556214, confirmed via ZohoCRM_getPipelines to
+		// genuinely be "Pre Need" on this exact layout), the created Deal's
+		// Pipeline still resolved to "Standard (Standard)" -- the module's
+		// default pipeline -- instead. Found a directly comparable, already
+		// proven-working example instead:
+		// crm/functions/deals/ZP-TBD-8_police_dropoff_workflow/createOnePoliceDropoffDeceased.deluge
+		// creates Deals via this exact raw REST endpoint, on this SAME
+		// Layout id, with Pipeline/Stage/Type as LABEL strings (not numeric
+		// ids) -- e.g. dealMap.put("Pipeline","Police Cases"). Mirroring
+		// that exactly here rather than trusting the native task's field
+		// coercion, which behaves differently (and, per this ticket's own
+		// testing, unreliably) from raw REST for this field combination.
+		dealAccountMap = Map();
+		dealAccountMap.put("id",accountId);
+		dealContactMap = Map();
+		dealContactMap.put("id",payerContactId);
+
+		dealMap = Map();
+		dealMap.put("Deal_Name",beneficiaryFullName);
+		dealMap.put("Name_of_Deceased",beneficiaryFullName);
+		dealMap.put("Layout","6503357000000091023");
+		dealMap.put("Pipeline","Pre Need");
+		dealMap.put("Stage","Requested");
+		dealMap.put("Type","Pre Need");
+		dealMap.put("Account_Name",dealAccountMap);
+		dealMap.put("Contact_Name",dealContactMap);
+
+		dealList = list();
+		dealList.add(dealMap);
+		dealContainer = Map();
+		dealContainer.put("data",dealList);
+
+		createDealResponse = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v7/Deals"
+			type :POST
+			parameters:dealContainer.toString()
+			connection:"zohooauth"
+		];
+
+		dealCreateResult = createDealResponse.get("data").get(0);
+		if(dealCreateResult.get("code") != "SUCCESS")
+		{
+			resultMap.put("status","error");
+			resultMap.put("message","Deal creation failed: " + createDealResponse.toString());
+			return resultMap.toString();
+		}
+		dealId = dealCreateResult.get("details").get("id");
+
+		// ==========================================
+		// ASSIGN CONTACT ROLES ON THE DEAL
+		// Reuses the exact PUT /Contact_Roles/{contactId} mechanism already
+		// proven in convertLeadOnChangingLeadStatus.
+		// ==========================================
+		primaryContactList = list();
+		primaryContactMap = Map();
+		primaryContactMap.put("name","Primary Contact");
+		primaryContactMap.put("id","6503357000001327140");
+		primaryContactRoleMap = Map();
+		primaryContactRoleMap.put("Contact_Role",primaryContactMap);
+		primaryContactList.add(primaryContactRoleMap);
+		primaryContactListRoleData = Map();
+		primaryContactListRoleData.put("data",primaryContactList);
+		assignPrimaryContactRole = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v6/Deals/" + dealId + "/Contact_Roles/" + payerContactId
+			type :PUT
+			parameters:primaryContactListRoleData.toString()
+			connection:"zohooauth"
+		];
+
+		if(isPayerSame != "true")
+		{
+			// Look up (or create, if it doesn't already exist) the "IFR"
+			// Contact Role master record -- same dynamic lookup-or-create
+			// + DUPLICATE_DATA handling already proven in
+			// convertLeadOnChangingLeadStatus.
+			ifrRoleId = null;
+			contactRoleNameList = list();
+			contactRole = Map();
+			contactRole.put("name","IFR");
+			contactRoleNameList.add(contactRole);
+			contactRoleNameMap = Map();
+			contactRoleNameMap.put("contact_roles",contactRoleNameList);
+			createNewRoleName = invokeurl
+			[
+				url :"https://www.zohoapis.com/crm/v7/Contacts/roles"
+				type :POST
+				parameters:contactRoleNameMap.toString()
+				connection:"zohooauth"
+			];
+			for each  contactRoleInfo in createNewRoleName.get("contact_roles")
+			{
+				if(contactRoleInfo.get("code") == "DUPLICATE_DATA")
+				{
+					allContactRoles = invokeurl
+					[
+						url :"https://www.zohoapis.com/crm/v7/Contacts/roles"
+						type :GET
+						connection:"zohooauth"
+					];
+					for each  singleContactRole in allContactRoles.get("contact_roles")
+					{
+						if(singleContactRole.get("name") == "IFR")
+						{
+							ifrRoleId = singleContactRole.get("id");
+						}
+					}
+				}
+				else if(contactRoleInfo.get("code") == "SUCCESS")
+				{
+					ifrRoleId = contactRoleInfo.get("details").get("id");
+				}
+			}
+			ifrRoleList = list();
+			ifrRoleMap = Map();
+			ifrRoleMap.put("name","IFR");
+			ifrRoleMap.put("id",ifrRoleId);
+			ifrContactRoleMap = Map();
+			ifrContactRoleMap.put("Contact_Role",ifrRoleMap);
+			ifrRoleList.add(ifrContactRoleMap);
+			ifrRoleData = Map();
+			ifrRoleData.put("data",ifrRoleList);
+			assignIfrRole = invokeurl
+			[
+				url :"https://www.zohoapis.com/crm/v6/Deals/" + dealId + "/Contact_Roles/" + beneficiaryContactId
+				type :PUT
+				parameters:ifrRoleData.toString()
+				connection:"zohooauth"
+			];
+		}
+
+		resultMap.put("status","success");
+		resultMap.put("dealId",dealId);
+		resultMap.put("accountId",accountId);
+		resultMap.put("beneficiaryContactId",beneficiaryContactId);
+		return resultMap.toString();
+	}
+	catch (e)
+	{
+		resultMap.put("status","error");
+		resultMap.put("message",e.toString());
+		return resultMap.toString();
+	}
+}

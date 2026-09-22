@@ -1,0 +1,12 @@
+if(recordInfo.get("Pipeline") != "Police Cases" && recordInfo.get("Pipeline") != "Hospital Cases" && recordInfo.get("Pipeline") != "First Call" && recordInfo.get("Pipeline") != "Wholesale")
+{
+	newDealMap = Map();
+	contactInfo = zoho.crm.getRecordById("Contacts",recordInfo.get("Contact_Name").get("id"));
+	info contactInfo.get("Email");
+	if(recordInfo.get("Type") != "Pre Need")
+	{
+		standalone.sendEmail(contactInfo.get("Email"),"6503357000001574114","Deals",crmid);
+	}
+	newDealMap.put("We_are_Here_to_Help_Email_Sent",true);
+	dealUpdate2 = zoho.crm.updateRecord("Deals",crmid,newDealMap);
+}

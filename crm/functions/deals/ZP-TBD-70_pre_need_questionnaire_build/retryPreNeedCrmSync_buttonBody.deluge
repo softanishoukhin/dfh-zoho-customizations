@@ -1,0 +1,15 @@
+// This is the actual "Writing Function" body pasted into the Deals custom button itself
+// (Setup > Deals > Buttons > New Custom Button > "Retry CRM Sync" > Action Type = Writing
+// Function). A button's inline body gets an implicit `deal` variable but is NOT itself
+// where the retry logic lives -- it just calls the real named Custom Function
+// (retryPreNeedCrmSync.deluge, created separately under Setup > Automation > Functions)
+// and shows the result.
+//
+// Called with the standalone. prefix -- this org's established convention for cross-calling
+// a standalone Custom Function (see [[feedback_deluge_automation_vs_standalone_calls]]: the
+// prefix matters here, it's only *automation*-category functions that need a REST call
+// instead). If Setup rejects this call shape, the function may need re-creating under a
+// different category -- check that before assuming the retry logic itself is wrong.
+response = standalone.retryPreNeedCrmSync(deal.id);
+respMap = response.toMap();
+alert ifnull(respMap.get("message"),"Retry finished.");

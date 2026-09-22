@@ -167,18 +167,98 @@ string submitFinalWishes(String deal_id, String data, String crm_record_id)
 			crmMap.put("Persons_Responsible",crmPersonsRows);
 
 			existingCrmId = ifnull(crm_record_id,"").trim();
-			if(existingCrmId != "")
+
+			// ---- retry the actual CRM write up to 3 times before giving up ----
+			// (fixes a silent-failure gap Andrea flagged: Final_Wishes_Form saving
+			// while the CRM record quietly never gets created/updated looked to the
+			// family like a successful submission with nobody the wiser).
+			crmSucceeded = false;
+			lastCrmError = "";
+			newCrmId = "";
+			// Deluge has no counting "for" loop at all -- confirmed. Retrying via
+			// for-each + break over a fixed 3-element list instead, both of which
+			// are proven constructs already used elsewhere in this org.
+			attemptList = List();
+			attemptList.add(1);
+			attemptList.add(2);
+			attemptList.add(3);
+			for each attempt in attemptList
 			{
-				crmUpdateResp = zoho.crm.updateRecord("Pre_Need_Questionnaire",existingCrmId.toLong(),crmMap);
-				result.put("crmQuestionnaireId",existingCrmId);
-				result.put("crmResponse",crmUpdateResp);
+				if(crmSucceeded)
+				{
+					break;
+				}
+				try
+				{
+					if(existingCrmId != "")
+					{
+						crmUpdateResp = zoho.crm.updateRecord("Pre_Need_Questionnaire",existingCrmId.toLong(),crmMap);
+						newCrmId = existingCrmId;
+						crmSucceeded = true;
+						result.put("crmResponse",crmUpdateResp);
+					}
+					else
+					{
+						crmCreateResp = zoho.crm.createRecord("Pre_Need_Questionnaire",crmMap);
+						newCrmId = ifnull(crmCreateResp.get("id"),"");
+						if(newCrmId != "")
+						{
+							crmSucceeded = true;
+						}
+						else
+						{
+							lastCrmError = "createRecord returned no id: " + crmCreateResp.toString();
+						}
+						result.put("crmResponse",crmCreateResp);
+					}
+				}
+				catch (eCrmAttempt)
+				{
+					lastCrmError = eCrmAttempt.toString();
+				}
+			}
+
+			if(crmSucceeded)
+			{
+				result.put("crmQuestionnaireId",newCrmId);
+				// clear any earlier failure flag now that this Deal is syncing fine again
+				try
+				{
+					clearMap = Map();
+					clearMap.put("Pre_Need_CRM_Sync_Status","-None-");
+					clearMap.put("Pre_Need_CRM_Sync_Error","");
+					zoho.crm.updateRecord("Deals",dId.toLong(),clearMap);
+				}
+				catch (eClear)
+				{
+					// non-fatal, purely cosmetic if this particular update doesn't take
+				}
 			}
 			else
 			{
-				crmCreateResp = zoho.crm.createRecord("Pre_Need_Questionnaire",crmMap);
-				newCrmId = ifnull(crmCreateResp.get("id"),"");
-				result.put("crmQuestionnaireId",newCrmId);
-				result.put("crmResponse",crmCreateResp);
+				result.put("crmError",lastCrmError);
+				// ---- flag the Deal + email so a failed sync doesn't go unnoticed ----
+				try
+				{
+					todayTime = zoho.currenttime.toString("yyyy-MM-dd HH:mm");
+					failMap = Map();
+					failMap.put("Pre_Need_CRM_Sync_Status","Failed");
+					failMap.put("Pre_Need_CRM_Sync_Error",todayTime + " -- " + lastCrmError);
+					zoho.crm.updateRecord("Deals",dId.toLong(),failMap);
+
+					sendmail
+					[
+						from :zoho.adminuserid
+						to :"info@dfhja.com"
+						subject :"Pre-Need Questionnaire failed to sync to CRM"
+						message :"A family's Pre-Need Questionnaire submission saved successfully, but the linked CRM record (Pre_Need_Questionnaire) failed to create/update after 3 attempts." + "\n\n" + "Deal ID: " + dId + "\n" + "Time: " + todayTime + "\n" + "Error: " + lastCrmError + "\n\n" + "The submission itself is safe (Final_Wishes_Form record " + newId.toString() + "). Use the \"Retry CRM Sync\" button on the Deal once the underlying issue has cleared."
+					];
+				}
+				catch (eNotify)
+				{
+					// if even the failure-flag/email itself fails, there's nothing further
+					// to do here -- the crmError is still in this function's own response
+				}
 			}
 		}
 		catch (eCrm)

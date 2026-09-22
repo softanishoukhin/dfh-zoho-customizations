@@ -1,0 +1,200 @@
+// retryPreNeedCrmSync -> standalone Custom Function (Setup > Automation > Functions), called
+// from a "Retry CRM Sync" custom button on Deals (Action Type = Writing Function -- no DOM/
+// clipboard needed here, so unlike the launcher button this is a plain Deluge button, no
+// Widget required).
+//
+// Staff clicks this on a Deal flagged Pre_Need_CRM_Sync_Status = "Failed" (set by
+// submitFinalWishes.dg after 3 failed attempts at submit time -- see that file's own retry
+// block for the matching logic). Rebuilds the Pre_Need_Questionnaire CRM record from the
+// Final_Wishes_Form record that already saved successfully in Creator -- the family's
+// submission itself was never at risk, only the CRM-side copy. On success, clears the
+// failure flag; on repeat failure, updates the error field again (but does NOT re-send the
+// alert email -- a human is already looking at this by clicking the button, so this
+// function's own return message, shown via the button's own alert(), is the feedback
+// channel here).
+//
+// Needs a connection with Creator READ scope (zoho.creator.getRecords) in addition to the
+// zohocrm_connection/zoho_oauth_connection this app already uses for CRM calls --
+// pre_need_creator_connection below is a placeholder name; verify it exists with that
+// scope or substitute whichever connection name is actually configured before this runs.
+string retryPreNeedCrmSync(String dealId)
+{
+	result = Map();
+	dId = ifnull(dealId,"").trim();
+	if(dId == "")
+	{
+		result.put("status","error");
+		result.put("message","dealId is required");
+		return result.toString();
+	}
+
+	try
+	{
+		// ---- 1) pull the already-saved Final_Wishes_Form record for this Deal ----
+		fwfRows = zoho.creator.getRecords("delapenhafuneralhome","pre-need-questionnaire","All_Final_Wishes","Deal_ID == \"" + dId + "\"",1,1,"pre_need_creator_connection");
+		fwfList = ifnull(fwfRows.get("result"),List());
+		if(fwfList.size() == 0)
+		{
+			result.put("status","error");
+			result.put("message","No Final_Wishes_Form record found for this Deal -- nothing to retry.");
+			return result.toString();
+		}
+		rec = fwfList.get(0);
+
+		plannerName = ifnull(rec.get("Pre_Planner_Name"),Map());
+		plannerAddr = ifnull(rec.get("Pre_Planner_Address"),Map());
+		burialLoc = ifnull(rec.get("Burial_Location"),Map());
+		personsList = ifnull(rec.get("Persons_Responsible"),List());
+
+		plannerFullName = (ifnull(plannerName.get("first_name"),"") + " " + ifnull(plannerName.get("last_name"),"")).trim();
+		crmRecordName = "Pre-Need Questionnaire";
+		if(plannerFullName != "")
+		{
+			crmRecordName = plannerFullName + " - Pre-Need Questionnaire";
+		}
+
+		crmMap = Map();
+		crmMap.put("Name",crmRecordName);
+		crmMap.put("Deal_Name",dId);
+		crmMap.put("Pre_Planner_First_Name",ifnull(plannerName.get("first_name"),""));
+		crmMap.put("Pre_Planner_Last_Name",ifnull(plannerName.get("last_name"),""));
+		crmMap.put("Pre_Planner_Address_Line_1",ifnull(plannerAddr.get("address_line_1"),""));
+		crmMap.put("Pre_Planner_Address_Line_2",ifnull(plannerAddr.get("address_line_2"),""));
+		crmMap.put("Pre_Planner_City",ifnull(plannerAddr.get("district_city"),""));
+		crmMap.put("Pre_Planner_State",ifnull(plannerAddr.get("state_province"),""));
+		crmMap.put("Pre_Planner_Postal_Code",ifnull(plannerAddr.get("postal_code"),""));
+		crmMap.put("Pre_Planner_Country",ifnull(plannerAddr.get("country"),""));
+		crmMap.put("Disposition_Preference",ifnull(rec.get("Disposition_Preference"),""));
+		crmMap.put("Cemetery",ifnull(rec.get("Cemetery"),""));
+		crmMap.put("Burial_Location_Line_1",ifnull(burialLoc.get("address_line_1"),""));
+		crmMap.put("Burial_Location_Line_2",ifnull(burialLoc.get("address_line_2"),""));
+		crmMap.put("Burial_Location_City",ifnull(burialLoc.get("district_city"),""));
+		crmMap.put("Burial_Location_State",ifnull(burialLoc.get("state_province"),""));
+		crmMap.put("Burial_Location_Postal_Code",ifnull(burialLoc.get("postal_code"),""));
+		crmMap.put("Ashes_Instructions",ifnull(rec.get("Ashes_Instructions"),""));
+		crmMap.put("Place_of_Worship",ifnull(rec.get("Place_of_Worship"),""));
+		crmMap.put("Ceremony_Preferences",ifnull(rec.get("Ceremony_Preferences"),""));
+		crmMap.put("Obituary_Information",ifnull(rec.get("Obituary_Information"),""));
+		crmMap.put("Clothing_and_Accessories",ifnull(rec.get("Clothing_and_Accessories"),""));
+		crmMap.put("Flowers",ifnull(rec.get("Flowers"),""));
+		crmMap.put("Songs",ifnull(rec.get("Songs"),""));
+		crmMap.put("Readings",ifnull(rec.get("Readings"),""));
+		crmMap.put("Prayers",ifnull(rec.get("Prayers"),""));
+		crmMap.put("Imagined_Service",ifnull(rec.get("Imagined_Service"),""));
+		crmMap.put("Interment_Type",ifnull(rec.get("Interment_Type"),List()));
+		crmMap.put("Interment_Description",ifnull(rec.get("Interment_Description"),""));
+		crmMap.put("Programme_Style",ifnull(rec.get("Programme_Style"),""));
+		crmMap.put("Headstone_Type",ifnull(rec.get("Headstone_Type"),""));
+		crmMap.put("Inscription",ifnull(rec.get("Inscription"),""));
+		crmMap.put("Additional_Instructions",ifnull(rec.get("Additional_Instructions"),""));
+
+		crmPersonsRows = List();
+		for each p in personsList
+		{
+			pName = ifnull(p.get("Name"),Map());
+			pFirst = ifnull(pName.get("first_name"),"");
+			pLast = ifnull(pName.get("last_name"),"");
+			pFull = (pFirst + " " + pLast).trim();
+			crmRow = Map();
+			crmRow.put("Name1",pFull);
+			crmRow.put("Relationship",ifnull(p.get("Relationship"),""));
+			crmRow.put("Phone",ifnull(p.get("Phone"),""));
+			crmPersonsRows.add(crmRow);
+		}
+		crmMap.put("Persons_Responsible",crmPersonsRows);
+
+		// ---- 2) find an existing Pre_Need_Questionnaire record for this Deal, if any ----
+		// Same COQL shape as getQuestionnaireForDeal.dg -- id compares unquoted, over
+		// zoho_oauth_connection (not zohocrm_connection).
+		existingCrmId = "";
+		try
+		{
+			queryMap = Map();
+			queryMap.put("select_query","select id from Pre_Need_Questionnaire where Deal_Name = '" + dId + "'");
+			queryResp = invokeurl
+			[
+				url :"https://www.zohoapis.com/crm/v7/coql"
+				type :POST
+				parameters:queryMap.toString()
+				connection:"zoho_oauth_connection"
+			];
+			if(queryResp.containKey("data"))
+			{
+				existingCrmId = ifnull(queryResp.get("data").get(0).get("id"),"");
+			}
+		}
+		catch (eQuery)
+		{
+			existingCrmId = "";
+		}
+
+		// ---- 3) write, with the same 3-attempt retry as submitFinalWishes.dg ----
+		crmSucceeded = false;
+		lastCrmError = "";
+		newCrmId = "";
+		attemptList = List();
+		attemptList.add(1);
+		attemptList.add(2);
+		attemptList.add(3);
+		for each attempt in attemptList
+		{
+			if(crmSucceeded)
+			{
+				break;
+			}
+			try
+			{
+				if(existingCrmId != "")
+				{
+					crmUpdateResp = zoho.crm.updateRecord("Pre_Need_Questionnaire",existingCrmId.toLong(),crmMap);
+					newCrmId = existingCrmId;
+					crmSucceeded = true;
+				}
+				else
+				{
+					crmCreateResp = zoho.crm.createRecord("Pre_Need_Questionnaire",crmMap);
+					newCrmId = ifnull(crmCreateResp.get("id"),"");
+					if(newCrmId != "")
+					{
+						crmSucceeded = true;
+					}
+					else
+					{
+						lastCrmError = "createRecord returned no id: " + crmCreateResp.toString();
+					}
+				}
+			}
+			catch (eCrmAttempt)
+			{
+				lastCrmError = eCrmAttempt.toString();
+			}
+		}
+
+		if(crmSucceeded)
+		{
+			clearMap = Map();
+			clearMap.put("Pre_Need_CRM_Sync_Status","-None-");
+			clearMap.put("Pre_Need_CRM_Sync_Error","");
+			zoho.crm.updateRecord("Deals",dId.toLong(),clearMap);
+			result.put("status","success");
+			result.put("crmQuestionnaireId",newCrmId);
+			result.put("message","CRM sync succeeded.");
+		}
+		else
+		{
+			todayTime = zoho.currenttime.toString("yyyy-MM-dd HH:mm");
+			failMap = Map();
+			failMap.put("Pre_Need_CRM_Sync_Status","Failed");
+			failMap.put("Pre_Need_CRM_Sync_Error",todayTime + " -- retry attempt -- " + lastCrmError);
+			zoho.crm.updateRecord("Deals",dId.toLong(),failMap);
+			result.put("status","error");
+			result.put("message","Still failing: " + lastCrmError);
+		}
+	}
+	catch (eOuter)
+	{
+		result.put("status","error");
+		result.put("message","Unexpected error: " + eOuter.toString());
+	}
+	return result.toString();
+}

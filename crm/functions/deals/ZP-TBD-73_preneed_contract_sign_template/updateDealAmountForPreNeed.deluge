@@ -1,0 +1,88 @@
+string standalone.updateDealAmountForPreNeed(Int crmid)
+{
+// Pre-Need version of updateDealAmount. Amount / Total_Discount / Total_Tax come straight from the Deal's
+// Product_Selection rows, NOT from an invoice: a pre-need Deal's deposit and installment retainer
+// invoices each carry only part of the total, so an invoice-based Amount would be wrong.
+// Product_Selection is a subform, so read the Deal through REST (getRecordById drops subforms).
+getRecordInfo = invokeurl
+[
+	url :"https://www.zohoapis.com/crm/v8/Deals/" + crmid
+	type :GET
+	connection:"zohooauth"
+];
+recordInfo = getRecordInfo.get("data").get(0);
+productRows = recordInfo.get("Product_Selection");
+if(isNull(productRows) || productRows.size() == 0)
+{
+	return "";
+}
+subTotal = 0.0;
+totalDiscount = 0.0;
+totalTax = 0.0;
+// Products.Tax is a multi-select whose values carry the rate in the text, e.g. "GCT on Sales - 15.0 %".
+// Cache the summed rate per product so a product repeated across rows is only fetched once.
+taxRateCache = Map();
+for each  row in productRows
+{
+	// Blank / 0 quantity counts as 1, same rule the invoice-creating functions use for these rows
+	lineQuantity = row.get("Quantity");
+	if(isNull(lineQuantity) || lineQuantity == 0)
+	{
+		lineQuantity = 1;
+	}
+	unitPrice = ifnull(row.get("Unit_Price"),0);
+	lineDiscount = ifnull(row.get("Discount"),0);
+	lineTaxable = (lineQuantity * unitPrice) - lineDiscount;
+	subTotal = subTotal + (lineQuantity * unitPrice);
+	totalDiscount = totalDiscount + lineDiscount;
+	// Tax rate from the row's product (Child_Product is the product the invoices are built from)
+	productId = "";
+	try
+	{
+		productId = row.get("Child_Product").get("id");
+	}
+	catch (eProd)
+	{
+		productId = "";
+	}
+	taxRate = 0.0;
+	if(productId != "")
+	{
+		if(taxRateCache.containKey(productId))
+		{
+			taxRate = taxRateCache.get(productId);
+		}
+		else
+		{
+			productInfo = zoho.crm.getRecordById("Products",productId.toLong());
+			productTaxes = ifnull(productInfo.get("Tax"),list());
+			for each  taxEntry in productTaxes
+			{
+				taxText = taxEntry.toString();
+				dashIndex = taxText.lastIndexOf("-");
+				if(dashIndex >= 0)
+				{
+					taxRate = taxRate + taxText.subString(dashIndex + 1).replaceAll("%","").trim().toDecimal();
+				}
+			}
+			taxRateCache.put(productId,taxRate);
+		}
+	}
+	// Tax applies to the line AFTER its discount
+	totalTax = totalTax + (lineTaxable * taxRate / 100);
+}
+// Amount stays tax-exclusive (Sub_Total less discounts), same as the invoice-based function
+newAmount = (subTotal - totalDiscount).round(2);
+newDiscount = totalDiscount.round(2);
+newTax = totalTax.round(2);
+// Only write when something changed, so an edit-triggered workflow can't loop back into this function
+if(ifnull(recordInfo.get("Amount"),0) != newAmount || ifnull(recordInfo.get("Total_Discount"),0) != newDiscount || ifnull(recordInfo.get("Total_Tax"),0) != newTax)
+{
+	dealMap = Map();
+	dealMap.put("Amount",newAmount);
+	dealMap.put("Total_Discount",newDiscount);
+	dealMap.put("Total_Tax",newTax);
+	zoho.crm.updateRecord("Deals",crmid,dealMap);
+}
+return "";
+}

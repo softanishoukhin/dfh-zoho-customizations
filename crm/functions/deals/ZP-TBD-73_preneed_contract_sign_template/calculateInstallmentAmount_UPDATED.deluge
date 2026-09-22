@@ -1,0 +1,40 @@
+string button.calculateInstallmentAmount(String crmid)
+{
+recordInfo = zoho.crm.getRecordById("Deals",crmid);
+// Define the total amount and divisor dynamically
+total_amount = recordInfo.get("Amount");
+// Pre-need: the deposit is paid up front, so only what is left after it is split into installments
+deposit_amount = ifnull(recordInfo.get("Pre_Need_Deposit_Amount"),0);
+if(deposit_amount > total_amount)
+{
+	return "Deposit is more than the total amount. Please correct the Pre-Need Deposit Amount.";
+}
+installment_base = total_amount - deposit_amount;
+divisor = zoho.crm.getOrgVariable("Total_Installments").toLong();
+// Create a list to store the parts
+parts = List();
+sum_parts = 0.0;
+// Generate a dynamic counter list for looping
+counter = leftpad("1",divisor - 1).replaceAll(" ","1,").toList();
+// Loop to calculate the first (divisor - 1) parts
+for each index i in counter
+{
+	part = round(installment_base / divisor,2);
+	parts.add(part);
+	sum_parts = sum_parts + part;
+	// Manually track the sum
+}
+// Calculate the last part to ensure perfect sum
+last_part = installment_base - sum_parts;
+parts.add(last_part);
+dealMap = Map();
+dealMap.put("Installment_1_Amount",parts.get(0));
+dealMap.put("Installment_2_Amount",parts.get(1));
+dealMap.put("Installment_3_Amount",parts.get(2));
+//Actually Intallment 3 but API name is different
+zoho.crm.updateRecord("Deals",crmid,dealMap);
+// Output the values
+// info parts;
+// info "Sum: " + (sum_parts + last_part); // Manually summing up
+return "Amount of Installments are calculated.";
+}

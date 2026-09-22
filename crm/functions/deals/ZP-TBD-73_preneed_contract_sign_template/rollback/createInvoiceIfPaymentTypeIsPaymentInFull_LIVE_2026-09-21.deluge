@@ -1,0 +1,189 @@
+void automation.createInvoiceIfPaymentTypeIsPaymentInFull(Int crmid)
+{
+getRecordInfo = invokeurl
+[
+	url :"https://www.zohoapis.com/crm/v2.1/Deals/" + crmid
+	type :GET
+	connection:"zohooauth"
+];
+recordInfo = getRecordInfo.get("data").get(0);
+salesOrders = standalone.COQLQuery("select Subject from Sales_Orders where Deal_Name = '" + crmid + "' and Sales_Order_Type = 'Pre-Need' limit 1");
+try 
+{
+	salesOrderID = salesOrders.toList().get(0).get("id");
+}
+catch (e)
+{
+	salesOrderID = null;
+}
+existingInvoiceList = standalone.COQLQuery("select Subject from Invoices where (Deal_Name__s = '" + crmid + "' and (Invoice_For = 'Other' or Invoice_For is null)) limit 1");
+invoiceMap = Map();
+invoiceMap.put("Sales_Order",salesOrderID);
+invoiceMap.put("Owner",recordInfo.get("Owner").get("id"));
+invoiceMap.put("Invoice_For","Other");
+if(!isNull(recordInfo.get("Account_Name")))
+{
+	invoiceMap.put("Account_Name",recordInfo.get("Account_Name").get("id"));
+}
+if(!isNull(recordInfo.get("Contact_Name")))
+{
+	invoiceMap.put("Contact_Name",recordInfo.get("Contact_Name").get("id"));
+	contactInfo = zoho.crm.getRecordById("Contacts",recordInfo.get("Contact_Name").get("id"));
+	invoiceMap.put("Billing_City",ifnull(contactInfo.get("Mailing_City"),""));
+	invoiceMap.put("Billing_Code",ifnull(contactInfo.get("Mailing_Zip"),""));
+	invoiceMap.put("Billing_Country",ifnull(contactInfo.get("Mailing_Country"),""));
+	invoiceMap.put("Billing_State",ifnull(contactInfo.get("Mailing_State"),""));
+	invoiceMap.put("Billing_Street",ifnull(contactInfo.get("Mailing_Street"),""));
+	// 			invoiceMap.put("Shipping_City", ifnull(contactInfo.get("Account_Name"),""));
+	// 			invoiceMap.put("Shipping_Code", ifnull(contactInfo.get("Account_Name"),""));
+	// 			invoiceMap.put("Shipping_Country", ifnull(contactInfo.get("Account_Name"),""));
+	// 			invoiceMap.put("Shipping_State", ifnull(contactInfo.get("Account_Name"),""));
+	// 			invoiceMap.put("Shipping_Street", ifnull(contactInfo.get("Account_Name"),""));
+}
+if(existingInvoiceList.size() == 0)
+{
+	invoiceMap.put("Deal_Name__s",crmid);
+	invoiceMap.put("Invoice_Date",zoho.currentdate.toString("yyyy-MM-dd"));
+	// 		invoiceMap.put("Invoice_For","Police");
+	//invoiceMap.put("Sales_Order",relatedSalesOrders.get(0).get("id"));
+	invoiceMap.put("Status","Created");
+	invoiceMap.put("Subject","Invoice  - " + ifnull(recordInfo.get("Deal_Name"),""));
+}
+invoiceMap.put("Due_Date",zoho.currentdate.toString("yyyy-MM-dd"));
+//invoiceMap.put("Sales_Order",relatedSalesOrders.get(0).get("id"));
+lineItemList = list();
+if(existingInvoiceList.size() == 0)
+{
+	lineItemList = list();
+	for each  product in recordInfo.get("Product_Selection")
+	{
+		productDetails = zoho.crm.getRecordById("Products",product.get("Child_Product").get("id"));
+		productMap = Map();
+		if(!isNull(product.get("Parent_Product")))
+		{
+			productMap.put("Parent_Product",product.get("Parent_Product").get("id"));
+		}
+		productMap.put("Product_Name",product.get("Child_Product").get("id"));
+		productMap.put("Quantity",product.get("Quantity"));
+		//product.get("Quantity")
+		productMap.put("List_Price",product.get("Unit_Price"));
+		lineItemList.add(productMap);
+	}
+	invoiceMap.put("Invoiced_Items",lineItemList);
+	invoiceMap.put("Retainer_Invoice",true);
+	recordList = list();
+	recordList.add(invoiceMap);
+	dataMap = Map();
+	dataMap.put("data",recordList);
+	info dataMap;
+	createInvoice = invokeurl
+	[
+		url :"https://www.zohoapis.com/crm/v8/Invoices"
+		type :POST
+		parameters:dataMap.toString()
+		connection:"zohooauth"
+	];
+	if(!isNull(recordInfo.get("Account_Name")))
+	{
+		accountID = recordInfo.get("Account_Name").get("id");
+		relatedContacts = zoho.crm.getRelatedRecords("Contacts","Accounts",accountID);
+		for each  contact in relatedContacts
+		{
+			potentialPayers = Map();
+			potentialPayers.put("Name",ifnull(contact.get("First_Name"),"") + " " + contact.get("Last_Name"));
+			potentialPayers.put("Account",accountID);
+			potentialPayers.put("Invoice",createInvoice.get("data").get(0).get("details").get("id"));
+			potentialPayers.put("Contact",contact.get("id"));
+			createPotentialPayerResult = zoho.crm.createRecord("Potential_Payers",potentialPayers);
+		}
+	}
+}
+else
+{
+	lineItemList = list();
+	thisExistingProductShouldBeAvailableInCRMInvoice = list();
+	existingInvoiceDetails = invokeurl
+	[
+		url :"https://www.zohoapis.com/crm/v8/Invoices/" + existingInvoiceList.toList().get(0).get("id")
+		type :GET
+		connection:"zohooauth"
+	];
+	crmInvoiceRecordData = existingInvoiceDetails.get("data").get(0);
+	crmInvoicedExistingItems = crmInvoiceRecordData.get("Invoiced_Items");
+	index = 0;
+	// for each  line_item in invoiceInfo.get("line_items")
+	for each  crmInvoiceItem in crmInvoicedExistingItems
+	{
+		try 
+		{
+			productRow = recordInfo.get("Product_Selection").get(index);
+			productId = productRow.get("Child_Product").get("id");
+		}
+		catch (e)
+		{
+			productId = null;
+		}
+		if(!isNull(productId))
+		{
+			itemMap = Map();
+			crmProductInfo = zoho.crm.getRecordById("Products",productId);
+			itemMap.put("Product_Name",productId);
+			if(!isNull(crmProductInfo.get("Parent_Product")))
+			{
+				itemMap.put("Parent_Product",crmProductInfo.get("Parent_Product").get("id"));
+			}
+			itemMap.put("Quantity",recordInfo.get("Product_Selection").get(index).get("Quantity"));
+			itemMap.put("List_Price",recordInfo.get("Product_Selection").get(index).get("Unit_Price"));
+			try 
+			{
+				itemMap.put("id",crmInvoiceItem.get("id"));
+			}
+			catch (e)
+			{
+				info e;
+			}
+			lineItemList.add(itemMap);
+		}
+		else
+		{
+			itemMap = Map();
+			itemMap.put("_delete","null");
+			itemMap.put("id",crmInvoiceItem.get("id"));
+			lineItemList.add(itemMap);
+		}
+		index = index + 1;
+		//break;
+	}
+	//re loop on item to check is there any newly added product in sales order
+	reLoopIndex = 0;
+	totalItemsInSO = recordInfo.get("Product_Selection").size() - 1;
+	for each  line_item in recordInfo.get("Product_Selection")
+	{
+		if(reLoopIndex >= index)
+		{
+			itemMap = Map();
+			itemMap.put("Product_Name",line_item.get("Child_Product").get("id"));
+			if(!isNull(line_item.get("Parent_Product")))
+			{
+				itemMap.put("Parent_Product",line_item.get("Parent_Product").get("id"));
+			}
+			itemMap.put("Quantity",line_item.get("Quantity"));
+			itemMap.put("List_Price",line_item.get("Unit_Price"));
+			lineItemList.add(itemMap);
+		}
+		reLoopIndex = reLoopIndex + 1;
+	}
+	invoiceMap.put("Invoiced_Items",lineItemList);
+	recordList = list();
+	recordList.add(invoiceMap);
+	dataMap = Map();
+	dataMap.put("data",recordList);
+	createInvoice = invokeurl
+	[
+		url :"https://www.zohoapis.com/crm/v8/Invoices/" + existingInvoiceList.toList().get(0).get("id")
+		type :PUT
+		parameters:dataMap.toString()
+		connection:"zohooauth"
+	];
+}
+}

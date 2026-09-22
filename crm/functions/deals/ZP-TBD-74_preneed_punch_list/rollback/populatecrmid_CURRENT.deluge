@@ -1,0 +1,129 @@
+void automation.populateCRMID(Int crmid)
+{
+getRecordInfo = invokeurl
+[
+	url :"https://www.zohoapis.com/crm/v2.1/Deals/" + crmid
+	type :GET
+	connection:"zohooauth"
+];
+recordInfo = getRecordInfo.get("data").get(0);
+//recordInfo = zoho.crm.getRecordById("Deals",crmid);
+recordOwnerEmail = recordInfo.get("Owner").get("email");
+dealMap = Map();
+staffs = invokeurl
+[
+	url :"https://www.zohoapis.com/bookings/v1/json/staffs"
+	type :GET
+	connection:"zohooauth"
+];
+staffData = staffs.get("response").get("returnvalue").get("data");
+for each  staffInfo in staffData
+{
+	if(staffInfo.get("email") == recordOwnerEmail)
+	{
+		dealMap.put("Booking_User_ID",staffInfo.get("id"));
+		break;
+	}
+}
+dealMap.put("CRM_ID_of_Deal",crmid.toString());
+dealMap.put("Initial_Pipeline",recordInfo.get("Pipeline"));
+if(!isNull(recordInfo.get("Date_of_Death")))
+{
+	dealMap.put("Date_of_Death_for_Form",toDateTimeString(recordInfo.get("Date_of_Death").unixEpoch(),"dd-MMM-yyyy","America/Jamaica"));
+}
+if(isNull(recordInfo.get("NOK_Information_Form_Edit_URL")))
+{
+	//dealMap.put("NOK_Information_Form_Edit_URL","https://creatorapp.zohopublic.com/delapenhafuneralhome/nok-information-form/page-perma/Information_Form/mytS8Y83NEyUgu6mzVbSxN6tYGYAQCqxMn5yPv4Ps0qe6mG9T20v47s5buUJuvGynOPV4MDfjGChfdJtb5SBEyFTfCGKt79Bqh90?deal_id=" + crmid + "&filled_by_nok=yes");
+	standalone.createNOKInformationRecordToTheCreator(crmid);
+}
+if(isNull(recordInfo.get("SFH_Form_Edit_URL")))
+{
+	dealMap.put("SFH_Form_Edit_URL","https://creatorapp.zohopublic.com/delapenhafuneralhome/nok-information-form/page-perma/NOK_Form_Ship_In1/CADHrdOXPT24e7xqmuf3ttz2UhEQrqVgJ1QZrMubDXn26DQSZ8HfaW5MYNXOv2t88Nw7fKy1jJRyQ7BxNsktkWGyp7js7kRm6uhw?deal_id=" + crmid);
+}
+result = zoho.crm.updateRecord("Deals",crmid,dealMap);
+if(recordInfo.get("Pipeline") != "Police Cases" && recordInfo.get("Pipeline") != "Hospital Cases" && recordInfo.get("Pipeline") != "First Call" && recordInfo.get("Pipeline") != "Wholesale")
+{
+	newDealMap = Map();
+	contactInfo = zoho.crm.getRecordById("Contacts",recordInfo.get("Contact_Name").get("id"));
+	info contactInfo.get("Email");
+	if(recordInfo.get("Type") == "Pre Need")
+	{
+		standalone.sendEmail(contactInfo.get("Email"),"6503357000020253003","Deals",crmid);
+	}
+	else
+	{
+		standalone.sendEmail(contactInfo.get("Email"),"6503357000001574114","Deals",crmid);
+	}
+	newDealMap.put("We_are_Here_to_Help_Email_Sent",true);
+	dealUpdate2 = zoho.crm.updateRecord("Deals",crmid,newDealMap);
+}
+info result;
+if(!isNull(recordInfo.get("Contact_Name")))
+{
+	contactId = recordInfo.get("Contact_Name").get("id");
+	standalone.updateDealToWotzellLogs(contactId,crmid);
+}
+if(!isNull(recordInfo.get("Investigating_Officer")))
+{
+	contactId = recordInfo.get("Investigating_Officer").get("id");
+	standalone.updateDealToWotzellLogs(contactId,crmid);
+}
+contactRoleResponse = invokeurl
+[
+	url :"https://www.zohoapis.com/crm/v6/Deals/" + crmid + "/Contact_Roles?fields=Email,Department"
+	type :GET
+	connection:"zohooauth"
+];
+for each  contactRoleDetails in contactRoleResponse.get("data")
+{
+	standalone.updateDealToWotzellLogs(contactRoleDetails.get("id"),crmid);
+}
+if(recordInfo.get("Pipeline") == "Wholesale" && recordInfo.get("Wholesale_Type") == "Airport")
+{
+	if(!isNull(recordInfo.get("Receiving_Funeral_Home_for_Wholesale")))
+	{
+		receivingFuneralHomeDetails = zoho.crm.getRecordById("Accounts",recordInfo.get("Receiving_Funeral_Home_for_Wholesale").get("id"));
+		if(!isNull(receivingFuneralHomeDetails.get("Email")))
+		{
+			standalone.sendEmail(receivingFuneralHomeDetails.get("Email"),"6503357000027762003","Deals",crmid);
+		}
+	}
+	standalone.sendEmail(recordOwnerEmail,"6503357000004716410","Deals",crmid);
+	arguments = Map();
+	arguments.put("crmid",crmid);
+	createTripForWholesale = invokeurl
+	[
+		url :"https://www.zohoapis.com/crm/v7/functions/createtripforwholesale/actions/execute?auth_type=oauth"
+		type :GET
+		parameters:arguments
+		connection:"zohooauth"
+	];
+}
+if(recordInfo.get("Pipeline") == "Ship Ins")
+{
+	arguments = Map();
+	arguments.put("crmid",crmid);
+	createTripForShipIn = invokeurl
+	[
+		url :"https://www.zohoapis.com/crm/v7/functions/createtriponarrivingdatetime1/actions/execute?auth_type=oauth"
+		type :GET
+		parameters:arguments
+		connection:"zohooauth"
+	];
+}
+if(recordInfo.get("Pipeline") == "Funeral with Burial" || recordInfo.get("Pipeline") == "Cremation with Service")
+{
+	clothingChecklist = standalone.COQLQuery("select Name from Clothing_Checklist where Related_At_Need_Deal = '" + crmid + "'");
+	if(clothingChecklist.size() == 0)
+	{
+		clothingChecklistMap = Map();
+		clothingChecklistMap.put("Name","Clothing Checklist for " + recordInfo.get("Name_of_Deceased"));
+		clothingChecklistMap.put("Related_At_Need_Deal",crmid);
+		resultClothingChecklist = zoho.crm.createRecord("Clothing_Checklist",clothingChecklistMap,{"trigger":{"workflow"}});
+		//info resultClothingChecklist;
+	}
+}
+//info contactRoleResponse;
+standalone.create_record_to_the_creator(crmid);
+standalone.updateDealOwnerOnBooksContact(crmid);
+}

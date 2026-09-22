@@ -1,0 +1,195 @@
+string button.sendPreNeedFuneralContract(int crmid)
+{
+result = Map();
+result.put("status","error");
+result.put("sign_url","");
+result.put("message","");
+recordInfo = zoho.crm.getRecordById("Deals",crmid);
+contactId = "";
+contactName = "";
+try
+{
+	contactId = ifnull(recordInfo.get("Contact_Name").get("id"),"");
+	contactName = ifnull(recordInfo.get("Contact_Name").get("name"),"");
+}
+catch (eCon)
+{
+	result.put("message","No NOK Contact linked to this Deal");
+	return result.toString();
+}
+if(contactId == "")
+{
+	result.put("message","No NOK Contact linked to this Deal");
+	return result.toString();
+}
+accountId = "";
+try
+{
+	accountId = ifnull(recordInfo.get("Account_Name").get("id"),"");
+}
+catch (eAcc)
+{
+	result.put("message","No Account linked to this Deal");
+	return result.toString();
+}
+if(accountId == "")
+{
+	result.put("message","No Account linked to this Deal");
+	return result.toString();
+}
+contactInfo = zoho.crm.getRecordById("Contacts",contactId.toLong());
+email = ifnull(contactInfo.get("Email"),"");
+accountInfo = zoho.crm.getRecordById("Accounts",accountId.toLong());
+templateId = "441773000001137101";
+// Pre-fill fields -- keys match the Zoho Sign template's field LABELS exactly.
+// If the labels are ever renamed in the Sign editor (e.g. Text - 5 -> Buyer_Name), rename the keys here too.
+field_text_data = Map();
+// --- Confirmed mappings ---
+field_text_data.put("Text - 1",zoho.currenttime.toString("dd"));
+field_text_data.put("Text - 2",zoho.currenttime.toString("MMM"));
+field_text_data.put("Text - 3",zoho.currenttime.toString("yyyy"));
+field_text_data.put("Text - 5",contactName);
+field_text_data.put("Text - 6",ifnull(contactInfo.get("Mailing_Street"),""));
+field_text_data.put("Text - 7",ifnull(accountInfo.get("Deceased_TRN"),""));
+casketPrice = ifnull(recordInfo.get("Casket_Price"),0);
+field_text_data.put("Text - 8",casketPrice.round(2).toString());
+// --- CONFIRM before go-live: payment terms. Sources below are the only matching fields on Deals;
+// --- Deposit, Balance date and Package contents have NO field on Deals yet (see metadata.md).
+totalAmt = ifnull(recordInfo.get("Amount"),0);
+if(totalAmt > 0)
+{
+	// Text - 9 : "total cost of the funeral goods and services is $"   (box not seen in screenshot, number unconfirmed)
+	// field_text_data.put("Text - 9",totalAmt.round(2).toString());
+	// Text - 16 : "Or in Full ___ $"
+	field_text_data.put("Text - 16",totalAmt.round(2).toString());
+}
+inst1Amt = ifnull(recordInfo.get("Installment_1_Amount"),0);
+if(inst1Amt > 0)
+{
+	// Text - 11 : "Installments in the amount of ___"
+	field_text_data.put("Text - 11",inst1Amt.round(2).toString());
+}
+inst1Due = ifnull(recordInfo.get("Installment_1_Due_Date"),"");
+if(inst1Due != "")
+{
+	commenceDate = inst1Due.toString().toDate();
+	// Text - 12 : "commencing on the ___ day of"   /   Text - 13 : "day of ___"
+	field_text_data.put("Text - 12",commenceDate.toString("dd"));
+	field_text_data.put("Text - 13",commenceDate.toString("MMMM yyyy"));
+}
+depositAmt = ifnull(recordInfo.get("Pre_Need_Deposit_Amount"),0);
+if(depositAmt > 0)
+{
+	// Text - 10 : "Deposit of ___"
+	field_text_data.put("Text - 10",depositAmt.round(2).toString());
+}
+balDue = ifnull(recordInfo.get("Pre_Need_Balance_Due_Date"),"");
+if(balDue != "")
+{
+	balanceDate = balDue.toString().toDate();
+	// Text - 14 : "Balance on or before the ___ day of"   /   Text - 15 : "day of ___"
+	field_text_data.put("Text - 14",balanceDate.toString("dd"));
+	field_text_data.put("Text - 15",balanceDate.toString("MMMM yyyy"));
+}
+// Package contents: no source field yet -- left unset so the box stays empty on the contract.
+field_data = Map();
+field_data.put("field_text_data",field_text_data);
+// Read the signer action id + role from the template itself (avoids hardcoding ids)
+tplResp = invokeurl
+[
+	url :"https://sign.zoho.com/api/v1/templates/" + templateId
+	type :GET
+	connection:"zohooauth"
+];
+tplActionId = "";
+tplRole = "";
+try
+{
+	tplActionId = tplResp.get("templates").get("actions").get(0).get("action_id");
+	tplRole = tplResp.get("templates").get("actions").get(0).get("role");
+}
+catch (eTpl)
+{
+	result.put("message","Could not read signer action from template: " + tplResp.toString());
+	return result.toString();
+}
+// Build embedded signing request
+eachActionMap1 = Map();
+eachActionMap1.put("recipient_name",contactName);
+eachActionMap1.put("recipient_email","info@dfhja.com");
+eachActionMap1.put("action_type","SIGN");
+eachActionMap1.put("action_id",tplActionId);
+eachActionMap1.put("role",tplRole);
+eachActionMap1.put("verify_recipient","false");
+eachActionMap1.put("is_embedded",true);
+fieldList = List();
+fieldList.add(eachActionMap1);
+redirect_pages = Map();
+redirect_pages.put("sign_success","https://dfhda.zohocreatorportal.com");
+redirect_pages.put("sign_completed","https://dfhda.zohocreatorportal.com");
+actionMap = Map();
+actionMap.put("actions",fieldList);
+actionMap.put("field_data",field_data);
+actionMap.put("redirect_pages",redirect_pages);
+submitMap = Map();
+submitMap.put("templates",actionMap);
+parameters = Map();
+parameters.put("is_quicksend","true");
+parameters.put("data",submitMap);
+signResp = zoho.sign.createUsingTemplate(templateId,parameters);
+info parameters;
+request_id = "";
+action_id = "";
+try
+{
+	request_id = signResp.get("requests").get("request_id");
+	action_id = signResp.get("requests").get("actions").get(0).get("action_id");
+}
+catch (eParse)
+{
+	result.put("message","Could not parse sign response: " + signResp);
+	info result;
+	return result.toString();
+}
+// Get embedded signing URL
+embedResp = invokeurl
+[
+	url :"https://sign.zoho.com/api/v1/requests/" + request_id + "/actions/" + action_id + "/embedtoken?host=https://dfhda.zohocreatorportal.com"
+	type :POST
+	connection:"zohooauth"
+];
+sign_url = "";
+try
+{
+	sign_url = embedResp.get("sign_url");
+}
+catch (eUrl)
+{
+	result.put("message","No sign_url in response: " + embedResp.toString());
+	return result.toString();
+}
+// Create ZohoSign Documents record in CRM (so the contract shows in the Deal's Sign related list)
+try
+{
+	recordmap = Map();
+	recordmap.put("Name","Pre-Need Funeral Contract");
+	recordmap.put("zohosign__Account",accountId.toLong());
+	recordmap.put("zohosign__Deal",crmid);
+	recordmap.put("zohosign__Owner",recordInfo.get("Owner").get("id"));
+	recordmap.put("zohosign__Date_Sent",today);
+	recordmap.put("Email",email);
+	recordmap.put("zohosign__Contact",contactId.toLong());
+	recordmap.put("zohosign__ZohoSign_Document_ID",request_id);
+	recordmap.put("zohosign__Module_Record_ID",crmid.toString());
+	recordmap.put("zohosign__Document_Status","Out for Signature");
+	recordmap.put("Request_ID",request_id);
+	zoho.crm.createRecord("zohosign__ZohoSign_Documents",recordmap);
+}
+catch (eDoc)
+{
+}
+result.put("status","success");
+result.put("sign_url",sign_url);
+result.put("message","");
+return result.toString();
+}

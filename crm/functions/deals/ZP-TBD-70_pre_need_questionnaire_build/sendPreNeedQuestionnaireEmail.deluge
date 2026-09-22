@@ -1,0 +1,149 @@
+// sendPreNeedQuestionnaireEmail -> standalone Custom Function (Setup > Automation >
+// Functions), called from a "Send Questionnaire by Email" custom button on Deals (Action
+// Type = Writing Function -- plain Deluge, no DOM/clipboard needed here, unlike the
+// original launcher button).
+//
+// Reuses the SAME link-build-and-save logic as sendPreNeedQuestionnaire/
+// copyPreNeedQuestionnaireLinkWidget (preserves an existing &record_id= on resend, only
+// resets Status/Date on a genuinely first send) so the Deal's Pre_Need_Questionnaire_Edit_URL
+// field always holds the correct, current link BEFORE the email is sent -- the email
+// template's button references that field as a real Zoho merge tag
+// (${!Deals.Pre_Need_Questionnaire_Edit_URL}), which Zoho resolves automatically. No manual
+// placeholder string-replace needed, unlike Headstone_Request.ds's older pattern (that one
+// uses hand-hacked placeholder tokens because ITS template doesn't use real merge fields).
+//
+// EMAIL_TEMPLATE_ID below is a placeholder -- replace with the real id once the template is
+// duplicated (see the guideline note next to this file for exactly what to change in it).
+string sendPreNeedQuestionnaireEmail(String dealId)
+{
+	result = Map();
+	dId = ifnull(dealId,"").trim();
+	if(dId == "")
+	{
+		result.put("status","error");
+		result.put("message","dealId is required");
+		return result.toString();
+	}
+
+	EMAIL_TEMPLATE_ID = "REPLACE_WITH_DUPLICATED_TEMPLATE_ID";
+
+	try
+	{
+		// ---- 1) resolve the Deal + linked Contact's email ----
+		dealResp = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v7/Deals/" + dId
+			type :GET
+			connection:"zohocrm_connection"
+		];
+		dealData = dealResp.get("data").get(0);
+		contactInfo = dealData.get("Contact_Name");
+		contactId = "";
+		if(contactInfo != null)
+		{
+			contactId = ifnull(contactInfo.get("id"),"");
+		}
+		if(contactId == "")
+		{
+			result.put("status","error");
+			result.put("message","This Deal has no linked Contact -- cannot determine who to email.");
+			return result.toString();
+		}
+		conResp = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v7/Contacts/" + contactId
+			type :GET
+			connection:"zohocrm_connection"
+		];
+		conData = conResp.get("data").get(0);
+		contactEmail = ifnull(conData.get("Email"),"").trim();
+		if(contactEmail == "")
+		{
+			result.put("status","error");
+			result.put("message","This Deal's linked Contact has no email address on file.");
+			return result.toString();
+		}
+
+		// ---- 2) build/save the link, same rule as the other launcher (preserve
+		//         record_id on resend, only reset Status/Date on a first send) ----
+		existingUrl = ifnull(dealData.get("Pre_Need_Questionnaire_Edit_URL"),"");
+		existingRecordId = "";
+		if(existingUrl.contains("record_id="))
+		{
+			afterKey = existingUrl.subString(existingUrl.indexOf("record_id=") + 10);
+			ampIdx = afterKey.indexOf("&");
+			if(ampIdx == -1)
+			{
+				existingRecordId = afterKey;
+			}
+			else
+			{
+				existingRecordId = afterKey.subString(0,ampIdx);
+			}
+		}
+
+		sendUrl = "https://creatorapp.zohopublic.com/delapenhafuneralhome/pre-need-questionnaire/page-perma/Final_Wishes_Form1/zS4dtZBC7VwnvsJTumgwyfTbG89Sw2kXaKMjrnkt0pghN0V7ePR1u6JaRW3Cv8CsvRHbB0nRCyqHqCw741YfYh8wdZYtWrh540uA?deal_id=" + dId + "&owner=" + encodeUrl(zoho.loginuserid);
+		if(existingRecordId != "")
+		{
+			sendUrl = sendUrl + "&record_id=" + existingRecordId;
+		}
+
+		dealUpdateMap = Map();
+		if(existingRecordId == "")
+		{
+			dealUpdateMap.put("Pre_Need_Questionnaire_Status","Sent");
+			dealUpdateMap.put("Pre_Need_Date",zoho.currenttime.toString("yyyy-MM-dd"));
+		}
+		dealUpdateMap.put("Pre_Need_Questionnaire_Edit_URL",sendUrl);
+		zoho.crm.updateRecord("Deals",dId.toLong(),dealUpdateMap);
+
+		// ---- 3) fetch the (duplicated) branded template and send it as-is -- its
+		//         ${!Deals.Pre_Need_Questionnaire_Edit_URL} merge tag now resolves to
+		//         the link just saved above ----
+		templateResp = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v2.1/settings/email_templates/" + EMAIL_TEMPLATE_ID
+			type :GET
+			connection:"zoho_oauth_connection"
+		];
+		templateData = templateResp.get("email_templates").get(0);
+		templateContent = templateData.get("content");
+		templateSubject = ifnull(templateData.get("subject"),"Your Pre-Need Final Wishes Questionnaire");
+
+		fromMap = Map();
+		fromMap.put("email",zoho.adminuserid);
+		toMap = Map();
+		toMap.put("email",contactEmail);
+		toList = List();
+		toList.add(toMap);
+
+		emailEntry = Map();
+		emailEntry.put("from",fromMap);
+		emailEntry.put("to",toList);
+		emailEntry.put("subject",templateSubject);
+		emailEntry.put("content",templateContent);
+		emailEntry.put("mail_format","html");
+		emailDataList = List();
+		emailDataList.add(emailEntry);
+		emailBodyMap = Map();
+		emailBodyMap.put("data",emailDataList);
+
+		sendResp = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v8/Deals/" + dId + "/actions/send_mail"
+			type :POST
+			parameters:emailBodyMap.toString()
+			connection:"zoho_oauth_connection"
+		];
+
+		result.put("status","success");
+		result.put("message","Questionnaire emailed to " + contactEmail + ".");
+		result.put("sendResponse",sendResp);
+	}
+	catch (eOuter)
+	{
+		result.put("status","error");
+		result.put("message","Unexpected error: " + eOuter.toString());
+	}
+	return result.toString();
+}

@@ -1,0 +1,8 @@
+// "Send Questionnaire by Email" button body (Setup > Deals > Buttons > New Custom Button >
+// Action Type = Writing Function). Calls the real named Custom Function
+// (sendPreNeedQuestionnaireEmail.deluge, created separately under Setup > Automation >
+// Functions) and shows the result. standalone. prefix per this org's established
+// convention for cross-calling a standalone Custom Function.
+response = standalone.sendPreNeedQuestionnaireEmail(deal.id);
+respMap = response.toMap();
+alert ifnull(respMap.get("message"),"Finished.");

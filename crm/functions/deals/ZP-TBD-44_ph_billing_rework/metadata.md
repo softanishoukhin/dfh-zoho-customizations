@@ -761,3 +761,87 @@ Tier 3 items 4/5/7 (Condition misspelling data pattern, the exact string compare
 un-run decomposed daily rate) — the audit's own live-data evidence for these is thorough and
 specific; nothing found during this pass contradicts them. Flagging as still open rather than
 closed.
+
+## Addendum 2026-09-14 — new autopsy location "Forensic Institute", 4th fixed-KM location
+
+Andrea added a new Autopsy Location Account, **Forensic Institute**
+(id `6503357000081195002`, https://crm.zoho.com/crm/org871210233/tab/Accounts/6503357000081195002),
+and asked that its billing mirror **House of Tranquillity Funeral Home**
+(id `6503357000070128001`) exactly. Checked both Accounts live side by side:
+
+| Field | Tranquillity | Forensic Institute |
+|---|---|---|
+| Account_Type | Autopsy Location | Autopsy Location ✓ |
+| Autopsy_Location_Owner | Third-Party | Third-Party ✓ |
+| Autopsy_Fixed_KM | 180 | 180 ✓ |
+| Billing_City | Kingston | Kingston ✓ |
+| Has_Multiple_Autopsy_Location | false | false ✓ |
+
+**Good news: the Account itself is already set up as a mirror of Tranquillity** — Dale (or
+whoever created it) already matched every field this billing mechanism reads. Nothing to
+change on the Account.
+
+**Real gap found, confirmed live:** the fixed-KM mechanism actually lives in **two** separate
+functions, and only one of them was ever generalized to read `Autopsy_Fixed_KM` dynamically
+(item 12 above, in `CreateSalesOrderforPoliceCase`). The other one —
+`automation.updateSalesOrderOnNumberOfDistanceinKMUpdate` (id `6503357000016798029`, fires
+when `Trips.Number_of_distance_in_km` is edited/corrected **after** the Sales Order already
+exists) — still has the **old 3-location hardcode**, confirmed live 2026-09-14:
+```deluge
+if(alId == "6503357000070128004") { newKm = 167; }         // Archers
+else if(alId == "6503357000070128001") { newKm = 180; }    // Tranquillity
+else if(alId == "6503357000070128007") { newKm = 54; }     // Doyles
+```
+Forensic Institute's id is not in this list. **Practical effect:** the very first Sales Order
+created for a Forensic Institute case will bill correctly (167/180/... via the already-generic
+path). But if the trip's KM is ever edited or corrected afterward (a common flow — Amber
+sending a late/corrected value, or a dispatcher fixing a typo), this second function runs
+instead, doesn't recognize Forensic Institute, and silently replaces the fixed 180 with
+whatever real KM is now on the trip — breaking the "mirror Tranquillity" ask in that one
+scenario. This is the same gap Andrea asked about generically earlier ("what happens when a
+new facility is added") — this is that gap, now concrete.
+
+**Guideline — apply directly in `updateSalesOrderOnNumberOfDistanceinKMUpdate` (CRM function,
+guideline only, no write-capable MCP tool exists for CRM functions):** replace the hardcoded
+block above with the same dynamic lookup already live in `CreateSalesOrderforPoliceCase`,
+so this stops being a 3-facility (soon 4-facility) hardcode and instead automatically covers
+Forensic Institute today and any future location without another code change:
+```deluge
+if(alId != "")
+{
+	try
+	{
+		autopsyLocationAccount = zoho.crm.getRecordById("Accounts",alId.toLong());
+		fixedKmForLocation = ifnull(autopsyLocationAccount.get("Autopsy_Fixed_KM"),0);
+		if(fixedKmForLocation > 0)
+		{
+			newKm = fixedKmForLocation;
+		}
+	}
+	catch (eFixedKm)
+	{
+		// leave newKm as the real driven KM already computed above
+	}
+}
+```
+Everything else in the function (the `Multi Deceased Autopsy Trip` fan-out, the Deal
+resolution, the `patchAutopsyTripQuantityOnSalesOrder`/`patchPickupQuantityOnSalesOrder`
+calls) is unchanged.
+
+**Test plan:** create/advance a Police Autopsy case at Forensic Institute through initial
+Sales Order creation — confirm it bills at 180 km (already works today, fallback path).
+Then edit the trip's `Number_of_distance_in_km` after the Sales Order exists — confirm the
+line item snaps back to 180, not the edited value. Repeat once for Tranquillity to confirm no
+regression on the existing 3 locations.
+
+**Not yet applied** — no write-capable tool exists for CRM functions from this session;
+Dale needs to paste this into the live function.
+
+**Separate, explicitly not part of this:** the 8 "Archers/Tranquillity/Doyles/Kris Radiology
+PM Trip O/W & R/T" catalog products (`Product_Category = 'PME Transport Fee'`, see the
+`pme-transport-fee-product-selection-2026-09-14.md` finding in this ticket's `findings/`
+folder) are a completely separate, currently-unused mechanism — no code reads them. This
+request only concerns the live `Autopsy_Fixed_KM` mechanism above. If Andrea also wants a
+matching "Forensic Institute PM Trip O/W / R/T" pair added to that catalog for consistency,
+that's a products-only change with no billing effect today, and is a separate decision from
+the fix above.
