@@ -1,0 +1,386 @@
+string standalone.createInstallmentInvoice(Int crmid, String installmentAmountFieldAPI, String installmentDueDateFieldAPI)
+{
+getRecordInfo = invokeurl
+[
+	url :"https://www.zohoapis.com/crm/v2.1/Deals/" + crmid
+	type :GET
+	connection:"zohooauth"
+];
+recordInfo = getRecordInfo.get("data").get(0);
+// ZP-TBD-75: an unused installment slot is left blank by calculateInstallmentAmount -- skip it
+// instead of creating a $0 / blank-due-date invoice. This function previously had no such guard,
+// which was safe only because Total_Installments was always fixed at 3 (every slot was always
+// populated); that's no longer guaranteed now the schedule is date-derived and some Deals will
+// only use 1 or 2 of the 3 slots.
+guardAmount = ifnull(recordInfo.get(installmentAmountFieldAPI),0);
+guardDueDate = recordInfo.get(installmentDueDateFieldAPI);
+if(guardAmount <= 0 || isNull(guardDueDate))
+{
+	info "No amount/due date on " + installmentAmountFieldAPI + " for Deal " + crmid + " - installment invoice not created";
+	return "";
+}
+taxFieldResponse = invokeurl
+[
+	url :"https://www.zohoapis.com/crm/v8/settings/fields/6503357000000002797?module=Products"
+	type :GET
+	connection:"zohooauth"
+];
+taxFieldMap = Map();
+fieldsList = taxFieldResponse.get("fields");
+if(fieldsList != null && fieldsList.size() > 0)
+{
+	pickListValues = fieldsList.get(0).get("pick_list_values");
+	for each  pickVal in pickListValues
+	{
+		actualValue = pickVal.get("actual_value");
+		valParts = actualValue.toList(" - ");
+		taxName = valParts.get(0);
+		pctPart = valParts.get(1).replaceAll(" %","").trim();
+		pctNum = pctPart.toDecimal();
+		entry = Map();
+		entry.put("id",pickVal.get("id"));
+		entry.put("percentage",pctNum);
+		entry.put("name",taxName);
+		taxFieldMap.put(actualValue,entry);
+	}
+}
+salesOrders = standalone.COQLQuery("select Subject from Sales_Orders where Deal_Name = '" + crmid + "' and Sales_Order_Type = 'Pre-Need' limit 1");
+try
+{
+	salesOrderID = salesOrders.toList().get(0).get("id");
+}
+catch (e)
+{
+	salesOrderID = null;
+}
+// 	existingInvoiceList = standalone.COQLQuery("select Subject from Invoices where Deal_Name__s = '" + crmid + "' limit 1");
+if(installmentAmountFieldAPI == "Installment_1_Amount")
+{
+	invoiceFor = "Installment 1";
+}
+else if(installmentAmountFieldAPI == "Installment_2_Amount")
+{
+	invoiceFor = "Installment 2";
+}
+else
+{
+	invoiceFor = "Installment 3";
+}
+existingInvoiceList = standalone.COQLQuery("select Subject from Invoices where Deal_Name__s = '" + crmid + "' and Invoice_For = '" + invoiceFor + "' limit 1");
+invoiceMap = Map();
+invoiceMap.put("Sales_Order",salesOrderID);
+invoiceMap.put("Owner",recordInfo.get("Owner").get("id"));
+invoiceMap.put("Invoice_For",invoiceFor);
+if(!isNull(recordInfo.get("Account_Name")))
+{
+	invoiceMap.put("Account_Name",recordInfo.get("Account_Name").get("id"));
+}
+if(!isNull(recordInfo.get("Contact_Name")))
+{
+	invoiceMap.put("Contact_Name",recordInfo.get("Contact_Name").get("id"));
+	contactInfo = zoho.crm.getRecordById("Contacts",recordInfo.get("Contact_Name").get("id"));
+	invoiceMap.put("Billing_City",ifnull(contactInfo.get("Mailing_City"),""));
+	invoiceMap.put("Billing_Code",ifnull(contactInfo.get("Mailing_Zip"),""));
+	invoiceMap.put("Billing_Country",ifnull(contactInfo.get("Mailing_Country"),""));
+	invoiceMap.put("Billing_State",ifnull(contactInfo.get("Mailing_State"),""));
+	invoiceMap.put("Billing_Street",ifnull(contactInfo.get("Mailing_Street"),""));
+}
+if(existingInvoiceList.size() == 0)
+{
+	invoiceMap.put("Deal_Name__s",crmid);
+	invoiceMap.put("Invoice_Date",zoho.currentdate.toString("yyyy-MM-dd"));
+	// 		invoiceMap.put("Invoice_For","Police");
+	//invoiceMap.put("Sales_Order",relatedSalesOrders.get(0).get("id"));
+	invoiceMap.put("Status","Created");
+	invoiceMap.put("Subject","Invoice  - " + ifnull(recordInfo.get("Deal_Name"),"") + " - " + invoiceFor);
+}
+invoiceMap.put("Due_Date",recordInfo.get(installmentDueDateFieldAPI));
+//invoiceMap.put("Sales_Order",relatedSalesOrders.get(0).get("id"));
+lineItemList = list();
+total_amount = recordInfo.get(installmentAmountFieldAPI);
+divisor = recordInfo.get("Product_Selection").size();
+// Create a list to store the parts
+parts = List();
+sum_parts = 0.0;
+// Generate a dynamic counter list for looping
+counter = leftpad("1",divisor - 1).replaceAll(" ","1,").toList();
+// Loop to calculate the first (divisor - 1) parts
+for each index i in counter
+{
+	part = round(total_amount / divisor,2);
+	parts.add(part);
+	sum_parts = sum_parts + part;
+	// Manually track the sum
+}
+// Calculate the last part to ensure perfect sum
+last_part = total_amount - sum_parts;
+parts.add(last_part);
+// Discount (T-16): the installment amounts are already NET of the Deal's product discounts (Deal Amount is net),
+// so Discount can't just be copied onto the lines -- that would discount twice. Instead each row's discount is
+// shown pro rata to this invoice's share of the Deal's net total: List_Price becomes the gross share and
+// Discount the discount share, so every line's net stays exactly the allocated part.
+dealNetTotal = 0.0;
+for each  netRow in recordInfo.get("Product_Selection")
+{
+	netQuantity = netRow.get("Quantity");
+	if(isNull(netQuantity) || netQuantity == 0)
+	{
+		netQuantity = 1;
+	}
+	dealNetTotal = dealNetTotal + netQuantity * ifnull(netRow.get("Unit_Price"),0) - ifnull(netRow.get("Discount"),0);
+}
+discountFraction = 0.0;
+if(dealNetTotal > 0)
+{
+	discountFraction = total_amount / dealNetTotal;
+}
+if(existingInvoiceList.size() == 0)
+{
+	partsCounter = 0;
+	lineItemList = list();
+	for each  product in recordInfo.get("Product_Selection")
+	{
+		productDetails = zoho.crm.getRecordById("Products",product.get("Child_Product").get("id"));
+		productMap = Map();
+		if(!isNull(product.get("Parent_Product")))
+		{
+			productMap.put("Parent_Product",product.get("Parent_Product").get("id"));
+		}
+		productMap.put("Product_Name",product.get("Child_Product").get("id"));
+		productMap.put("Quantity",product.get("Quantity"));
+		//product.get("Quantity")
+		lineQuantity = product.get("Quantity");
+		if(isNull(lineQuantity) || lineQuantity == 0)
+		{
+			lineQuantity = 1;
+		}
+		lineDiscount = (ifnull(product.get("Discount"),0) * discountFraction).round(2);
+		productMap.put("List_Price",((parts.get(partsCounter) + lineDiscount) / lineQuantity).round(2));
+		productMap.put("Discount",lineDiscount);
+		// tax is charged on the line AFTER its discount
+		lineAmount = productMap.get("Quantity") * productMap.get("List_Price") - lineDiscount;
+		taxList = productDetails.get("Tax");
+		if(taxList != null && taxList.size() > 0)
+		{
+			taxInfo = taxFieldMap.get(taxList.get(0));
+			if(taxInfo != null)
+			{
+				taxPct = taxInfo.get("percentage");
+				taxValue = (lineAmount * taxPct / 100).round(2);
+				taxEntry = Map();
+				taxEntry.put("id",taxInfo.get("id"));
+				taxEntry.put("name",taxInfo.get("name"));
+				taxEntry.put("percentage",taxPct);
+				taxEntry.put("value",taxValue);
+				productMap.put("Line_Tax",{taxEntry});
+				productMap.put("Tax",taxValue);
+			}
+			else
+			{
+				productMap.put("Line_Tax",list());
+				productMap.put("Tax",0);
+			}
+		}
+		else
+		{
+			productMap.put("Line_Tax",list());
+			productMap.put("Tax",0);
+		}
+		lineItemList.add(productMap);
+		partsCounter = partsCounter + 1;
+	}
+	invoiceMap.put("Invoiced_Items",lineItemList);
+	invoiceMap.put("Retainer_Invoice",true);
+	recordList = list();
+	recordList.add(invoiceMap);
+	dataMap = Map();
+	dataMap.put("data",recordList);
+	info dataMap;
+	createInvoice = invokeurl
+	[
+		url :"https://www.zohoapis.com/crm/v8/Invoices"
+		type :POST
+		parameters:dataMap.toString()
+		connection:"zohooauth"
+	];
+	if(!isNull(recordInfo.get("Account_Name")))
+	{
+		accountID = recordInfo.get("Account_Name").get("id");
+		relatedContacts = zoho.crm.getRelatedRecords("Contacts","Accounts",accountID);
+		for each  contact in relatedContacts
+		{
+			potentialPayers = Map();
+			potentialPayers.put("Name",ifnull(contact.get("First_Name"),"") + " " + contact.get("Last_Name"));
+			potentialPayers.put("Account",accountID);
+			potentialPayers.put("Invoice",createInvoice.get("data").get(0).get("details").get("id"));
+			potentialPayers.put("Contact",contact.get("id"));
+			createPotentialPayerResult = zoho.crm.createRecord("Potential_Payers",potentialPayers);
+		}
+	}
+}
+else
+{
+	lineItemList = list();
+	thisExistingProductShouldBeAvailableInCRMInvoice = list();
+	existingInvoiceDetails = invokeurl
+	[
+		url :"https://www.zohoapis.com/crm/v8/Invoices/" + existingInvoiceList.toList().get(0).get("id")
+		type :GET
+		connection:"zohooauth"
+	];
+	crmInvoiceRecordData = existingInvoiceDetails.get("data").get(0);
+	crmInvoicedExistingItems = crmInvoiceRecordData.get("Invoiced_Items");
+	index = 0;
+	// for each  line_item in invoiceInfo.get("line_items")
+	for each  crmInvoiceItem in crmInvoicedExistingItems
+	{
+		try
+		{
+			productRow = recordInfo.get("Product_Selection").get(index);
+			productId = productRow.get("Child_Product").get("id");
+		}
+		catch (e)
+		{
+			productId = null;
+		}
+		if(!isNull(productId))
+		{
+			itemMap = Map();
+			crmProductInfo = zoho.crm.getRecordById("Products",productId);
+			itemMap.put("Product_Name",productId);
+			if(!isNull(crmProductInfo.get("Parent_Product")))
+			{
+				itemMap.put("Parent_Product",crmProductInfo.get("Parent_Product").get("id"));
+			}
+			itemMap.put("Quantity",recordInfo.get("Product_Selection").get(index).get("Quantity"));
+			lineQuantity = recordInfo.get("Product_Selection").get(index).get("Quantity");
+			if(isNull(lineQuantity) || lineQuantity == 0)
+			{
+				lineQuantity = 1;
+			}
+			lineDiscount = (ifnull(recordInfo.get("Product_Selection").get(index).get("Discount"),0) * discountFraction).round(2);
+			itemMap.put("List_Price",((parts.get(index) + lineDiscount) / lineQuantity).round(2));
+			itemMap.put("Discount",lineDiscount);
+			// tax is charged on the line AFTER its discount
+			lineAmount = itemMap.get("Quantity") * itemMap.get("List_Price") - lineDiscount;
+			taxList = crmProductInfo.get("Tax");
+			if(taxList != null && taxList.size() > 0)
+			{
+				taxInfo = taxFieldMap.get(taxList.get(0));
+				if(taxInfo != null)
+				{
+					taxPct = taxInfo.get("percentage");
+					taxValue = (lineAmount * taxPct / 100).round(2);
+					taxEntry = Map();
+					taxEntry.put("id",taxInfo.get("id"));
+					taxEntry.put("name",taxInfo.get("name"));
+					taxEntry.put("percentage",taxPct);
+					taxEntry.put("value",taxValue);
+					itemMap.put("Line_Tax",{taxEntry});
+					itemMap.put("Tax",taxValue);
+				}
+				else
+				{
+					itemMap.put("Line_Tax",list());
+					itemMap.put("Tax",0);
+				}
+			}
+			else
+			{
+				itemMap.put("Line_Tax",list());
+				itemMap.put("Tax",0);
+			}
+			try
+			{
+				itemMap.put("id",crmInvoiceItem.get("id"));
+			}
+			catch (e)
+			{
+				info e;
+			}
+			lineItemList.add(itemMap);
+		}
+		else
+		{
+			itemMap = Map();
+			itemMap.put("_delete","null");
+			itemMap.put("id",crmInvoiceItem.get("id"));
+			lineItemList.add(itemMap);
+		}
+		index = index + 1;
+		//break;
+	}
+	//re loop on item to check is there any newly added product in sales order
+	reLoopIndex = 0;
+	totalItemsInSO = recordInfo.get("Product_Selection").size() - 1;
+	for each  line_item in recordInfo.get("Product_Selection")
+	{
+		if(reLoopIndex >= index)
+		{
+			itemMap = Map();
+			itemMap.put("Product_Name",line_item.get("Child_Product").get("id"));
+			if(!isNull(line_item.get("Parent_Product")))
+			{
+				itemMap.put("Parent_Product",line_item.get("Parent_Product").get("id"));
+			}
+			itemMap.put("Quantity",line_item.get("Quantity"));
+			lineQuantity = line_item.get("Quantity");
+			if(isNull(lineQuantity) || lineQuantity == 0)
+			{
+				lineQuantity = 1;
+			}
+			lineDiscount = (ifnull(line_item.get("Discount"),0) * discountFraction).round(2);
+			itemMap.put("List_Price",((parts.get(reLoopIndex) + lineDiscount) / lineQuantity).round(2));
+			itemMap.put("Discount",lineDiscount);
+			lineItemProductDetails = zoho.crm.getRecordById("Products",line_item.get("Child_Product").get("id"));
+			// tax is charged on the line AFTER its discount
+			lineAmount = itemMap.get("Quantity") * itemMap.get("List_Price") - lineDiscount;
+			taxList = lineItemProductDetails.get("Tax");
+			if(taxList != null && taxList.size() > 0)
+			{
+				taxInfo = taxFieldMap.get(taxList.get(0));
+				if(taxInfo != null)
+				{
+					taxPct = taxInfo.get("percentage");
+					taxValue = (lineAmount * taxPct / 100).round(2);
+					taxEntry = Map();
+					taxEntry.put("id",taxInfo.get("id"));
+					taxEntry.put("name",taxInfo.get("name"));
+					taxEntry.put("percentage",taxPct);
+					taxEntry.put("value",taxValue);
+					itemMap.put("Line_Tax",{taxEntry});
+					itemMap.put("Tax",taxValue);
+				}
+				else
+				{
+					itemMap.put("Line_Tax",list());
+					itemMap.put("Tax",0);
+				}
+			}
+			else
+			{
+				itemMap.put("Line_Tax",list());
+				itemMap.put("Tax",0);
+			}
+			lineItemList.add(itemMap);
+		}
+		reLoopIndex = reLoopIndex + 1;
+	}
+	invoiceMap.put("Invoiced_Items",lineItemList);
+	recordList = list();
+	recordList.add(invoiceMap);
+	dataMap = Map();
+	dataMap.put("data",recordList);
+	createInvoice = invokeurl
+	[
+		url :"https://www.zohoapis.com/crm/v8/Invoices/" + existingInvoiceList.toList().get(0).get("id")
+		type :PUT
+		parameters:dataMap.toString()
+		connection:"zohooauth"
+	];
+}
+api_names = installmentAmountFieldAPI.toList("_");
+api_name = api_names.get(1);
+info standalone.save_api_responses("Create_Installment_Invoice_" + api_name,"Deals",crmid,createInvoice.toString());
+return "";
+}

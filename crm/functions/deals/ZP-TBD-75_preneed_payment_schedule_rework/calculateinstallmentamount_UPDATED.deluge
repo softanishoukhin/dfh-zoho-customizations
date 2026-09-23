@@ -1,0 +1,143 @@
+string button.calculateInstallmentAmount(String crmid)
+{
+recordInfo = zoho.crm.getRecordById("Deals",crmid);
+total_amount = ifnull(recordInfo.get("Contract_Value"),0);
+// Pre-need: the deposit is paid up front, so only what is left after it is split into installments.
+// Pre_Need_Deposit_Amount / Pre_Need_Balance_Due_Date are reused as-is (ZP-TBD-75) -- they already
+// drive createPreNeedDepositRetainerInvoice, so no field rename was needed.
+deposit_amount = ifnull(recordInfo.get("Pre_Need_Deposit_Amount"),0);
+if(deposit_amount > total_amount)
+{
+	return "Deposit is more than the total amount. Please correct the Pre-Need Deposit Amount.";
+}
+installment_base = total_amount - deposit_amount;
+dealMap = Map();
+// Always clear all 3 slots first -- a Deal previously calculated with more periods than this run
+// needs its stale slots blanked. Use null, not "" -- automation.handleWorkflowTriggerAndActionByTimelineProcess
+// (the actual trigger for the 3 invoice functions) only skips a slot when Installment_N_Amount reads
+// back isNull(); an empty string on a currency field is not guaranteed to read back as null.
+dealMap.put("Installment_1_Amount",null);
+dealMap.put("Installment_1_Due_Date",null);
+dealMap.put("Installment_2_Amount",null);
+dealMap.put("Installment_2_Due_Date",null);
+dealMap.put("Installment_3_Amount",null);
+dealMap.put("Installment_3_Due_Date",null);
+if(installment_base <= 0)
+{
+	// Deposit already covers the full contract value -- nothing left to schedule.
+	// {"trigger":{"workflow"}} is required -- see note above the final updateRecord call below.
+	zoho.crm.updateRecord("Deals",crmid,dealMap,{"trigger":{"workflow"}});
+	return "Deposit covers the full contract value. No installments scheduled.";
+}
+balanceDueDate = recordInfo.get("Pre_Need_Balance_Due_Date");
+commencementDate = recordInfo.get("Installment_Commencement_Date");
+dayOfMonth = recordInfo.get("Installment_Day_of_Month");
+if(isNull(balanceDueDate) || isNull(commencementDate) || isNull(dayOfMonth))
+{
+	return "Installment_Commencement_Date, Installment_Day_of_Month and Pre_Need_Balance_Due_Date must all be set before calculating installments.";
+}
+// getRecordById returns date fields as String, not Date -- Deluge's relational operators only work on
+// genuinely numeric/Date values ("Comparison of non numeric expression" otherwise), same reason the
+// old code needed .toLong() on the (String) org variable before using it numerically.
+balanceDueDate = balanceDueDate.toDate();
+commencementDate = commencementDate.toDate();
+dayOfMonth = dayOfMonth.toLong();
+if(commencementDate > balanceDueDate)
+{
+	return "Installment Commencement Date is after the Balance Due Date. Please correct the dates.";
+}
+// Build the list of installment due dates: Installment_Commencement_Date, then one per calendar
+// month on Installment_Day_of_Month, up to (but not including) the balance due date. The balance
+// due date itself is always the last period -- it IS the final balance, not a separate field.
+dueDates = List();
+cursorDate = commencementDate;
+// Deluge has no while/for loop, only "for each" -- iterate a fixed-size dummy list and break early.
+// 6 is just a safety ceiling; the real cap is the "> 3 periods" check below.
+maxPeriodAttempts = {1,2,3,4,5,6};
+for each attempt in maxPeriodAttempts
+{
+	if(cursorDate >= balanceDueDate)
+	{
+		break;
+	}
+	dueDates.add(cursorDate);
+	// advance one calendar month, landing on Installment_Day_of_Month -- built manually rather than
+	// relying on a Deluge addMonth() built-in, since that wasn't confirmed available in this org's
+	// Deluge version. Test this block first (see guideline.md).
+	nextMonth = cursorDate.getMonth() + 1;
+	nextYear = cursorDate.getYear();
+	if(nextMonth > 12)
+	{
+		nextMonth = 1;
+		nextYear = nextYear + 1;
+	}
+	monthStr = nextMonth.toString();
+	if(nextMonth < 10)
+	{
+		monthStr = "0" + monthStr;
+	}
+	dayStr = dayOfMonth.toString();
+	if(dayOfMonth < 10)
+	{
+		dayStr = "0" + dayStr;
+	}
+	cursorDate = (nextYear + "-" + monthStr + "-" + dayStr).toDate();
+}
+dueDates.add(balanceDueDate);
+// Only 3 installment slots exist on the Deal (Installment_1/2/3) -- fail loudly instead of silently
+// dropping a payment or throwing an index error.
+if(dueDates.size() > 3)
+{
+	return "This schedule needs " + dueDates.size() + " installment payments, but only 3 Installment slots exist on the Deal. Space the payments further apart, or raise a request to add another Installment slot.";
+}
+periodCount = dueDates.size();
+parts = List();
+sum_parts = 0.0;
+index = 0;
+for each dueDate in dueDates
+{
+	if(index < periodCount - 1)
+	{
+		part = round(installment_base / periodCount,2);
+		sum_parts = sum_parts + part;
+	}
+	else
+	{
+		// last period (the balance due date) absorbs the rounding remainder
+		part = installment_base - sum_parts;
+	}
+	parts.add(part);
+	index = index + 1;
+}
+if(periodCount >= 1)
+{
+	dealMap.put("Installment_1_Amount",parts.get(0));
+	dealMap.put("Installment_1_Due_Date",dueDates.get(0).toString("yyyy-MM-dd"));
+}
+if(periodCount >= 2)
+{
+	dealMap.put("Installment_2_Amount",parts.get(1));
+	dealMap.put("Installment_2_Due_Date",dueDates.get(1).toString("yyyy-MM-dd"));
+}
+if(periodCount >= 3)
+{
+	dealMap.put("Installment_3_Amount",parts.get(2));
+	dealMap.put("Installment_3_Due_Date",dueDates.get(2).toString("yyyy-MM-dd"));
+}
+// The old function never set Due_Date, only Amount, so staff had to type due dates in manually via
+// the UI -- a real user edit, which fires workflows normally. This function now sets Due_Date too, via
+// an in-function zoho.crm.updateRecord call, which does NOT fire workflow rules by default (Zoho's
+// standard behavior for API-style updates from within a function, to avoid cascading loops). Without
+// explicitly enabling it here, automation.handleWorkflowTriggerAndActionByTimelineProcess -- the
+// dispatcher that actually creates the installment invoices -- would never run, and no invoice would
+// ever get created. {"trigger":{"workflow"}} is the documented Zoho Deluge/REST v2+ config key
+// (singular "trigger") -- note DFH's own commented-out reference to this in
+// handleWorkflowTriggerAndActionByTimelineProcess uses plural "triggers", which looks like an
+// untested typo. Confirm the correct key in a sandbox before relying on it (see guideline.md).
+// This only re-triggers workflow rules scoped to the 6 Installment_1/2/3_Amount/_Due_Date fields
+// this function ever touches -- but since it's the first time this button has ever enabled workflow
+// triggering, also check Setup for any other Deals "any field edit" rule that might fire for the
+// first time as a side effect (see guideline.md).
+zoho.crm.updateRecord("Deals",crmid,dealMap,{"trigger":{"workflow"}});
+return "Amount of Installments are calculated.";
+}
