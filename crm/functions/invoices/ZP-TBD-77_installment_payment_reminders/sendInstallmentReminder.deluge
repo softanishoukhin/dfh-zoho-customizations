@@ -1,0 +1,161 @@
+string standalone.sendInstallmentReminder(int crmid, String stage)
+{
+// ZP-TBD-77: sends one payment reminder email (with the Fygaro payment links) for a Pre-Need installment invoice.
+// STANDALONE function holding all the logic. A workflow cannot reuse one function with different parameters, so each
+// of the 4 date-based rules on Invoices calls its own tiny automation.* wrapper (see the wrapper_*.deluge files),
+// and every wrapper just calls this with its fixed stage:
+//   A  Due_Date - 7 days        BEFORE_7
+//   B  Due_Date - 1 day         BEFORE_1
+//   C  Due_Date + 3 days        OVERDUE   (first overdue reminder)
+//   D  Next_Overdue_Reminder_At OVERDUE   (every later overdue reminder)
+// Zoho date-based rules cannot recur, so the "every 10 days" is done by hand: after each overdue reminder this
+// function moves Invoices.Next_Overdue_Reminder_At (DateTime) forward 10 days, and rule D fires on that field.
+// The chain stops by itself when the invoice is Paid / Void / Cancelled (rule criteria fail, function returns
+// without re-arming) or the Books balance is 0.
+// The email templates are Potential_Payers-module templates (clones of "Invoice Notification" 6503357000019017359),
+// because the pay links need ${Potential_Payers.id} as custom_reference. So the mail is sent FROM the Potential Payer
+// record that belongs to this invoice's contact, not from the Invoice itself.
+//
+// ---- CONFIG: the 3 Potential_Payers email template IDs (0 = not set yet, function refuses to send) ----
+templateBefore7 = 0;
+templateBefore1 = 0;
+templateOverdue = 0;
+// ------------------------------------------------------------------------------------------------------
+templateId = 0;
+if(stage == "BEFORE_7")
+{
+	templateId = templateBefore7;
+}
+else if(stage == "BEFORE_1")
+{
+	templateId = templateBefore1;
+}
+else if(stage == "OVERDUE")
+{
+	templateId = templateOverdue;
+}
+else
+{
+	info "sendInstallmentReminder: unknown stage " + stage;
+	return "unknown stage";
+}
+if(templateId == 0)
+{
+	info "sendInstallmentReminder: template id for " + stage + " is not configured";
+	return "template not configured";
+}
+nextReminderAt = zoho.currenttime.addDay(10).toString("yyyy-MM-dd'T'HH:mm:ss","America/Jamaica");
+retryReminderAt = zoho.currenttime.addDay(1).toString("yyyy-MM-dd'T'HH:mm:ss","America/Jamaica");
+invoiceResponse = invokeurl
+[
+	url :"https://www.zohoapis.com/crm/v8/Invoices/" + crmid + "?fields=Status,Due_Date,Invoice_For,Contact_Name"
+	type :GET
+	connection:"zohooauth"
+];
+invoiceInfo = invoiceResponse.get("data").get(0);
+invoiceStatus = ifnull(invoiceInfo.get("Status"),"");
+invoiceFor = ifnull(invoiceInfo.get("Invoice_For"),"");
+dueDateText = invoiceInfo.get("Due_Date");
+contactRef = invoiceInfo.get("Contact_Name");
+// only real, still-collectable installment invoices get reminders; these end the overdue chain (no re-arm)
+if(invoiceStatus == "Paid" || invoiceStatus == "Void" || invoiceStatus == "Cancelled")
+{
+	info "Invoice " + crmid + " is " + invoiceStatus + " - reminder (" + stage + ") not sent, overdue chain ends";
+	return "invoice " + invoiceStatus;
+}
+if(invoiceFor != "Installment 1" && invoiceFor != "Installment 2" && invoiceFor != "Installment 3")
+{
+	info "Invoice " + crmid + " is not an installment invoice (" + invoiceFor + ") - reminder (" + stage + ") not sent";
+	return "not an installment invoice";
+}
+if(isNull(dueDateText))
+{
+	info "Invoice " + crmid + " has no Due_Date - reminder (" + stage + ") not sent";
+	return "no due date";
+}
+if(stage == "OVERDUE")
+{
+	// Due_Date may have been moved forward after the chain started -> not overdue any more: clear the chain,
+	// rule C (Due_Date + 3) starts it again when the new date passes
+	dueDate = dueDateText.toDate();
+	today = zoho.currentdate.toString("yyyy-MM-dd").toDate();
+	daysOverdue = ((today.toLong() - dueDate.toLong()) / 86400000).round(0).toLong();
+	if(daysOverdue < 3)
+	{
+		info "Invoice " + crmid + " is " + daysOverdue + " days overdue - not yet a reminder day, chain cleared";
+		clearMap = Map();
+		clearMap.put("Next_Overdue_Reminder_At",null);
+		clearResult = zoho.crm.updateRecord("Invoices",crmid,clearMap);
+		return "not yet overdue";
+	}
+}
+// invoice's contact + email
+contactEmail = "";
+if(!isNull(contactRef))
+{
+	contactResponse = invokeurl
+	[
+		url :"https://www.zohoapis.com/crm/v8/Contacts/" + contactRef.get("id") + "?fields=Email"
+		type :GET
+		connection:"zohooauth"
+	];
+	contactEmail = ifnull(contactResponse.get("data").get(0).get("Email"),"");
+}
+if(isNull(contactRef) || contactEmail.trim() == "")
+{
+	info "Invoice " + crmid + ": no contact / contact email - reminder (" + stage + ") not sent";
+	if(stage == "OVERDUE")
+	{
+		rearmMap = Map();
+		rearmMap.put("Next_Overdue_Reminder_At",nextReminderAt);
+		rearmResult = zoho.crm.updateRecord("Invoices",crmid,rearmMap);
+	}
+	return "no contact email";
+}
+// invoice's contact -> that contact's Potential Payer for THIS invoice (its id is the Fygaro custom_reference)
+payerRows = standalone.COQLQuery("select Name from Potential_Payers where Contact = " + contactRef.get("id") + " and Invoice = " + crmid + " limit 1");
+if(payerRows.size() == 0)
+{
+	info "Invoice " + crmid + ": no Potential Payer found for contact " + contactRef.get("id") + " - reminder (" + stage + ") not sent";
+	if(stage == "OVERDUE")
+	{
+		rearmMap = Map();
+		rearmMap.put("Next_Overdue_Reminder_At",nextReminderAt);
+		rearmResult = zoho.crm.updateRecord("Invoices",crmid,rearmMap);
+	}
+	return "no potential payer";
+}
+payerId = payerRows.toList().get(0).get("id");
+// the links use Invoices.Amount_in_JMD / Amount_in_USD, which are only filled when someone pressed "Send Invoice for
+// Payment" and go stale after any payment -- refresh them from the Books balance right before sending
+refreshText = standalone.refreshInvoiceAmountsForPotentialPayer(payerId);
+refreshResult = refreshText.toMap();
+if(refreshResult.get("status") != "success")
+{
+	info "Invoice " + crmid + ": amount refresh failed (" + refreshResult.get("message") + ") - reminder (" + stage + ") not sent";
+	if(stage == "OVERDUE")
+	{
+		// usually the 2-minute Books-sync window: try again tomorrow instead of waiting 10 days
+		retryMap = Map();
+		retryMap.put("Next_Overdue_Reminder_At",retryReminderAt);
+		retryResult = zoho.crm.updateRecord("Invoices",crmid,retryMap);
+	}
+	return "amount refresh failed";
+}
+// Books balance is already zero (paid in Books, CRM status not synced yet) -> nothing to remind about, chain ends
+if(ifnull(refreshResult.get("amountInJMD"),"0").toDecimal() <= 0 && ifnull(refreshResult.get("amountInUSD"),"0").toDecimal() <= 0)
+{
+	info "Invoice " + crmid + ": Books balance is 0 - reminder (" + stage + ") not sent, overdue chain ends";
+	return "balance is 0";
+}
+sendResult = standalone.sendEmail(contactEmail,templateId,"Potential_Payers",payerId.toLong());
+info "Installment reminder " + stage + " sent for invoice " + crmid + " (payer " + payerId + ") to " + contactEmail;
+if(stage == "OVERDUE")
+{
+	nextMap = Map();
+	nextMap.put("Next_Overdue_Reminder_At",nextReminderAt);
+	nextResult = zoho.crm.updateRecord("Invoices",crmid,nextMap);
+	info "Next overdue reminder for invoice " + crmid + " set to " + nextReminderAt;
+}
+return "sent";
+}

@@ -1,0 +1,7 @@
+void automation.sendInstallmentReminder1DayBefore(int crmid)
+{
+// ZP-TBD-77 -- Rule B: Due_Date - 1 day
+// Thin wrapper: a workflow can't reuse one function with different parameters, so each rule gets its own wrapper
+// with the stage fixed here. All logic is in standalone.sendInstallmentReminder.
+standalone.sendInstallmentReminder(crmid,"BEFORE_1");
+}
