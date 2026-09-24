@@ -1,0 +1,214 @@
+// ZP-TBD-78 -- Pre-Need -> At-Need conversion: shared matcher.
+//
+// CRM > Setup > Developer Space > Functions > New Function
+//   Function type / category : Standalone
+//   API name                 : findpreneedmatches   (confirm after saving -- the
+//                              Link widget calls it by exactly this lowercase name)
+//   Connection               : zohooauth  (same connection the other Pre-Need
+//                              functions use; needs Deals + Accounts READ)
+//
+// Finds Pre-Need plans that might belong to a deceased person. Used by:
+//   (1) flagPossiblePreNeedMatch  -- the after-the-Deal-is-created safety check
+//   (2) the "Link Pre-Need" widget -- to list the candidates staff pick from
+// The NOKIntake popup (part A) uses a copy of this same logic inside the Creator
+// widgetLookup "checkPreNeed" action (Creator cannot cross-call CRM functions
+// without an extra REST connection scope) -- keep the two in step, see guideline.md.
+//
+// WHAT COUNTS AS A "PRE-NEED ACCOUNT":
+//   Accounts.Account_Type is "Deceased" for BOTH pre-need and at-need people, so the
+//   Account alone can't tell them apart. An Account is a Pre-Need Account when it is
+//   the Account of a Deal with Type = "Pre Need". Confirmed live 2026-09-24: 6+ real
+//   Pre Need Deals, Deal_Name = Name_of_Deceased = Account name (full "First Last").
+//   DOB is NOT on the Pre-Need Deal (null on all of them) -- it is on the Account
+//   (Accounts.Date_of_Birth), so DOB and address are read from the Account.
+//
+// MATCH RULES (deliberately simple, over-flagging is safe, under-flagging is not):
+//   - names are normalised (lower case, punctuation stripped, spaces collapsed)
+//   - two name parts or more: candidate must contain BOTH the first and last word
+//     of the search name as whole words (so "John Brown" finds "John A. Brown")
+//   - one name part only: candidate name must equal it exactly
+//   - DOB: if BOTH sides have a DOB and they differ -> NOT a match (dropped)
+//           if both have one and they are equal      -> dobMatch = true (listed first)
+//           if either is blank                       -> still listed (name-only match)
+//   - the Account the caller says to exclude (the new Deal's own Account) is skipped
+//
+// Args:
+//   fullName          "First Last" as entered (the Deal's Name_of_Deceased)
+//   dob               yyyy-MM-dd or "" when unknown
+//   excludeAccountId  Account id to leave out, or ""
+// Returns (JSON string, per the CRM string-only rule):
+//   {"status":"success","count":N,"matches":[{accountId,dealId,name,dob,address,stage,
+//     dobMatch,dealUrl,accountUrl}, ...]}
+//   {"status":"error","message":"..."}
+string standalone.findPreNeedMatches(String fullName, String dob, String excludeAccountId)
+{
+	result = Map();
+	try
+	{
+		searchRaw = ifnull(fullName,"").toString();
+		norm = searchRaw.toLowerCase().replaceAll("[^a-z0-9 ]"," ").replaceAll("\\s+"," ").trim();
+		if(norm == "")
+		{
+			result.put("status","success");
+			result.put("count",0);
+			result.put("matches",List());
+			return result.toString();
+		}
+		searchDob = ifnull(dob,"").toString().trim();
+		excludeId = ifnull(excludeAccountId,"").toString().trim();
+		nameParts = norm.toList(" ");
+		firstWord = nameParts.get(0);
+		lastWord = nameParts.get(nameParts.size() - 1);
+		twoOrMore = nameParts.size() > 1;
+		// ---- candidate Pre-Need Deals: narrow in COQL by the last word ----
+		safeLast = lastWord.replaceAll("'","''");
+		coqlMap = Map();
+		coqlMap.put("select_query","select id, Deal_Name, Name_of_Deceased, Stage, Account_Name from Deals where Type = 'Pre Need' and Deal_Name like '%" + safeLast + "%' limit 200");
+		coqlResp = Map();
+		try
+		{
+			coqlResp = invokeurl
+			[
+				url :"https://www.zohoapis.com/crm/v7/coql"
+				type :POST
+				parameters:coqlMap.toString()
+				connection:"zohooauth"
+			];
+		}
+		catch (eCoql)
+		{
+			coqlResp = Map();
+		}
+		strong = List();
+		weak = List();
+		seenAccounts = List();
+		if(coqlResp.containKey("data"))
+		{
+			for each  dealRow in coqlResp.get("data")
+			{
+				acctId = "";
+				acctName = "";
+				acctLk = dealRow.get("Account_Name");
+				// Lookup normally reads back as {id,name}; tolerate a plain id too
+				// (see feedback_lookup_field_reads_as_plain_id).
+				if(acctLk != null)
+				{
+					try
+					{
+						acctId = ifnull(acctLk.get("id"),"").toString();
+						acctName = ifnull(acctLk.get("name"),"").toString();
+					}
+					catch (eLk)
+					{
+						acctId = ifnull(acctLk,"").toString();
+					}
+				}
+				if(acctId == "" || acctId == excludeId || seenAccounts.contains(acctId))
+				{
+					continue;
+				}
+				candName = acctName;
+				if(candName == "")
+				{
+					candName = ifnull(dealRow.get("Name_of_Deceased"),ifnull(dealRow.get("Deal_Name"),"")).toString();
+				}
+				candNorm = candName.toLowerCase().replaceAll("[^a-z0-9 ]"," ").replaceAll("\\s+"," ").trim();
+				nameOk = false;
+				if(twoOrMore)
+				{
+					padded = " " + candNorm + " ";
+					if(padded.contains(" " + firstWord + " ") && padded.contains(" " + lastWord + " "))
+					{
+						nameOk = true;
+					}
+				}
+				else
+				{
+					if(candNorm == norm)
+					{
+						nameOk = true;
+					}
+				}
+				if(!nameOk)
+				{
+					continue;
+				}
+				// ---- read DOB + address from the Account (they are not on the Deal) ----
+				acctInfo = Map();
+				try
+				{
+					acctResp = invokeurl
+					[
+						url :"https://www.zohoapis.com/crm/v7/Accounts/" + acctId + "?fields=Account_Name,Date_of_Birth,Deceased_Street_Address,Deceased_Street_Address_2,Deceased_City,Deceased_State,Deceased_Zip_Code,Deceased_Country"
+						type :GET
+						connection:"zohooauth"
+					];
+					if(acctResp.containKey("data") && !acctResp.get("data").isEmpty())
+					{
+						acctInfo = acctResp.get("data").get(0);
+					}
+				}
+				catch (eAcct)
+				{
+					acctInfo = Map();
+				}
+				candDob = ifnull(acctInfo.get("Date_of_Birth"),"").toString().trim();
+				dobMatch = false;
+				if(searchDob != "" && candDob != "")
+				{
+					if(searchDob == candDob)
+					{
+						dobMatch = true;
+					}
+					else
+					{
+						// both known and different -> a different person
+						continue;
+					}
+				}
+				addrParts = List();
+				addrKeys = {"Deceased_Street_Address","Deceased_Street_Address_2","Deceased_City","Deceased_State","Deceased_Zip_Code","Deceased_Country"};
+				for each  ak in addrKeys
+				{
+					av = ifnull(acctInfo.get(ak),"").toString().trim();
+					if(av != "")
+					{
+						addrParts.add(av);
+					}
+				}
+				dealId = ifnull(dealRow.get("id"),"").toString();
+				m = Map();
+				m.put("accountId",acctId);
+				m.put("dealId",dealId);
+				m.put("name",candName);
+				m.put("dob",candDob);
+				m.put("address",addrParts.toString(", "));
+				m.put("stage",ifnull(dealRow.get("Stage"),"").toString());
+				m.put("dobMatch",dobMatch);
+				m.put("dealUrl","https://crm.zoho.com/crm/org871210233/tab/Potentials/" + dealId);
+				m.put("accountUrl","https://crm.zoho.com/crm/org871210233/tab/Accounts/" + acctId);
+				seenAccounts.add(acctId);
+				if(dobMatch)
+				{
+					strong.add(m);
+				}
+				else
+				{
+					weak.add(m);
+				}
+			}
+		}
+		matches = List();
+		matches.addAll(strong);
+		matches.addAll(weak);
+		result.put("status","success");
+		result.put("count",matches.size());
+		result.put("matches",matches);
+	}
+	catch (eOuter)
+	{
+		result.put("status","error");
+		result.put("message","findPreNeedMatches failed: " + eOuter.toString());
+	}
+	return result.toString();
+}

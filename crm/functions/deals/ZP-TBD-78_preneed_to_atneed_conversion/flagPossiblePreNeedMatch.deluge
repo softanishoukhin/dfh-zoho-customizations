@@ -1,0 +1,189 @@
+// ZP-TBD-78 -- Part B: second safety check after a Police / Hospital / First Call
+// Deal is created.
+//
+// CRM > Setup > Developer Space > Functions > New Function
+//   Function type / category : Automation   (called from a workflow rule, same
+//                              category as onDeceasedPickupCreate)
+//   API name                 : flagpossiblepreneedmatch
+//   Connection               : zohooauth
+//
+// Called by TWO Deals workflow rules (see deployment-checklist.md):
+//   Rule 1  "Flag possible Pre-Need match - on create"
+//           Module Deals, Execute On: Create
+//           Criteria: Type is one of (First Call, Hospital, Police)
+//   Rule 2  "Flag possible Pre-Need match - name or DOB changed"
+//           Module Deals, Execute On: Edit, only when Name_of_Deceased OR
+//           Date_of_Birth is modified
+//           Criteria: same Type list
+//   Both pass: dealId = ${Deals.Deals Id}
+//   Rule 2 exists because Hospital/Police cases are often created with no name
+//   ("Unknown Deceased - ...") and the name is filled in later.
+//
+// WHAT IT DOES
+//   1. Skips unless the Deal is First Call / Hospital / Police.
+//   2. Skips when Pre_Need_Status is already "Matched" (staff/intake linked it) or
+//      "Not a Match" (staff said it is not the same person at Intake or on the
+//      Link widget) -- the safety check must not re-flag a decision a person made.
+//   3. Looks for Pre-Need plans with the same name (and DOB when known) via
+//      standalone.findpreneedmatches, ignoring the Deal's own Account.
+//   4. Matches found  -> Pre_Need_Status = "Possible Match" and
+//                        Pre_Need_Possible_Matches = one line per match:
+//                        Name | DOB | Address | CRM record URL
+//      No matches     -> if it was previously "Possible Match" (name changed to
+//                        something no longer matching) both fields are cleared.
+//
+// zoho.crm.updateRecord is used WITHOUT {"trigger":{"workflow"}} on purpose:
+// Rule 2 fires on edit of Name/DOB, and this write only touches the two Pre-Need
+// fields, so no workflow re-fires and there is no loop.
+//
+// New Deals fields required first (guideline.md section 1):
+//   Pre_Need_Status            picklist  Matched / Possible Match / Not a Match
+//   Pre_Need_Possible_Matches  multi-line text (large)
+void automation.flagPossiblePreNeedMatch(String dealId)
+{
+	dId = ifnull(dealId,"").toString().trim();
+	if(dId == "")
+	{
+		return;
+	}
+	// REST v8 GET, not getRecordById (see feedback_getrecordbyid_drops_subforms;
+	// also getRecordById hands Date fields back as strings).
+	deal = Map();
+	try
+	{
+		dealResp = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v8/Deals/" + dId + "?fields=Type,Name_of_Deceased,Deal_Name,Date_of_Birth,Account_Name,Pre_Need_Status"
+			type :GET
+			connection:"zohooauth"
+		];
+		if(dealResp.containKey("data") && !dealResp.get("data").isEmpty())
+		{
+			deal = dealResp.get("data").get(0);
+		}
+	}
+	catch (eGet)
+	{
+		info "flagPossiblePreNeedMatch: could not read Deal " + dId + ": " + eGet;
+		return;
+	}
+	if(!deal.containKey("id"))
+	{
+		return;
+	}
+	dType = ifnull(deal.get("Type"),"").toString();
+	if(dType != "First Call" && dType != "Hospital" && dType != "Police")
+	{
+		return;
+	}
+	currentStatus = ifnull(deal.get("Pre_Need_Status"),"").toString();
+	if(currentStatus == "Matched" || currentStatus == "Not a Match")
+	{
+		return;
+	}
+	// ---- name: Name_of_Deceased, falling back to Deal_Name ----
+	dName = ifnull(deal.get("Name_of_Deceased"),"").toString().trim();
+	if(dName == "")
+	{
+		dName = ifnull(deal.get("Deal_Name"),"").toString().trim();
+	}
+	// Placeholder names from unidentified Hospital/Police cases carry no identity.
+	if(dName == "" || dName.toLowerCase().startsWith("unknown deceased"))
+	{
+		return;
+	}
+	// ---- the Deal's own Account (excluded from the search) + DOB ----
+	ownAccountId = "";
+	acctLk = deal.get("Account_Name");
+	if(acctLk != null)
+	{
+		try
+		{
+			ownAccountId = ifnull(acctLk.get("id"),"").toString();
+		}
+		catch (eLk)
+		{
+			ownAccountId = ifnull(acctLk,"").toString();
+		}
+	}
+	dob = ifnull(deal.get("Date_of_Birth"),"").toString().trim();
+	if(dob == "" && ownAccountId != "")
+	{
+		try
+		{
+			ownAcctResp = invokeurl
+			[
+				url :"https://www.zohoapis.com/crm/v7/Accounts/" + ownAccountId + "?fields=Date_of_Birth"
+				type :GET
+				connection:"zohooauth"
+			];
+			if(ownAcctResp.containKey("data") && !ownAcctResp.get("data").isEmpty())
+			{
+				dob = ifnull(ownAcctResp.get("data").get(0).get("Date_of_Birth"),"").toString().trim();
+			}
+		}
+		catch (eDob)
+		{
+			dob = "";
+		}
+	}
+	// ---- search ----
+	matchResp = Map();
+	try
+	{
+		matchResp = standalone.findPreNeedMatches(dName,dob,ownAccountId).toMap();
+	}
+	catch (eFind)
+	{
+		info "flagPossiblePreNeedMatch: matcher failed for Deal " + dId + ": " + eFind;
+		return;
+	}
+	if(ifnull(matchResp.get("status"),"") != "success")
+	{
+		info "flagPossiblePreNeedMatch: matcher error for Deal " + dId + ": " + matchResp;
+		return;
+	}
+	matchList = matchResp.get("matches");
+	upd = Map();
+	if(matchList.size() > 0)
+	{
+		lines = List();
+		idx = 1;
+		for each  mt in matchList
+		{
+			dobTxt = ifnull(mt.get("dob"),"").toString();
+			if(dobTxt == "")
+			{
+				dobTxt = "not recorded";
+			}
+			addrTxt = ifnull(mt.get("address"),"").toString();
+			if(addrTxt == "")
+			{
+				addrTxt = "not recorded";
+			}
+			lines.add(idx + ") " + ifnull(mt.get("name"),"") + " | DOB: " + dobTxt + " | Address: " + addrTxt + " | " + ifnull(mt.get("dealUrl"),""));
+			idx = idx + 1;
+		}
+		upd.put("Pre_Need_Status","Possible Match");
+		upd.put("Pre_Need_Possible_Matches",lines.toString("\n"));
+	}
+	else
+	{
+		if(currentStatus == "Possible Match")
+		{
+			upd.put("Pre_Need_Status",null);
+			upd.put("Pre_Need_Possible_Matches","");
+		}
+	}
+	if(!upd.isEmpty())
+	{
+		try
+		{
+			zoho.crm.updateRecord("Deals",dId.toLong(),upd);
+		}
+		catch (eUpd)
+		{
+			info "flagPossiblePreNeedMatch: could not update Deal " + dId + ": " + eUpd;
+		}
+	}
+}

@@ -1,0 +1,412 @@
+// ZP-TBD-78 -- Parts B + C: link an At-Need Deal to the correct Pre-Need Account
+// and clean up the duplicate Account this leaves behind.
+//
+// CRM > Setup > Developer Space > Functions > New Function
+//   Function type / category : Standalone   (called from the Link Pre-Need widget)
+//   API name                 : linkpreneedtodeal
+//   Connection               : zohooauth (needs Deals/Accounts/Contacts/Operations
+//                              read+write, Accounts delete, Notes create)
+//
+// Called by the "Link Pre-Need" widget on the Deal (widgets/linkPreNeed) with
+//   dealId            the Police / Hospital / First Call Deal being linked
+//   preNeedAccountId  the Account that owns the Pre-Need plan (chosen by staff)
+//
+// THE SIMPLE, SAFE PROCESS (agreed with the developer 2026-09-24 -- "re-point, delete
+// only if empty"). Nothing is merged field-by-field; the Deal simply moves onto the
+// Pre-Need Account, and the Account it came from is removed only when it is provably
+// left empty. Order matters: every step is safe to stop after, so a failure part-way
+// leaves the data consistent (the duplicate then still has references and is only
+// FLAGGED, never deleted).
+//
+//   0. Guards: Deal is First Call/Hospital/Police; the chosen Account really is a
+//      Pre-Need Account (has a Deal with Type = "Pre Need"); the At-Need Deal has NO
+//      Quote / Sales Order / Invoice yet (once billing exists the Account is tied to
+//      Books -- the Account must not be swapped by a button, ask the developer).
+//   1. Copy at-need facts the Pre-Need Account doesn't have yet onto it (Date of
+//      Death, Deceased Size, Condition, DOB, first/last name) -- fill blanks only, the
+//      Pre-Need Account's own data (name spelling, address, TRN) is never overwritten.
+//   2. Deal.Account_Name -> Pre-Need Account;  Pre_Need_Status = "Matched";
+//      Pre_Need_Possible_Matches cleared.
+//   3. Contacts that sat on the duplicate Account (the NOK etc.) -> Pre-Need Account.
+//   4. Operations records of this Deal: Deceased -> Pre-Need Account.
+//   5. Duplicate Account: DELETE (goes to the CRM Recycle Bin, restorable 60 days)
+//      only if ALL of: it has no Deals, no Contacts, no Operations left AND it was
+//      created within 1 day of this Deal (i.e. by the same intake). Otherwise it is
+//      renamed "DUPLICATE - <name>" with a Description pointing at the Pre-Need
+//      Account, for a person to merge/delete by hand.
+//   6. A Note on the Deal records what was done.
+//
+// Returns JSON string: {"status":"success"|"error","message":"...",
+//   "duplicateAction":"deleted"|"flagged"|"none","contactsMoved":n,"operationsMoved":n}
+string standalone.linkPreNeedToDeal(String dealId, String preNeedAccountId)
+{
+	result = Map();
+	result.put("duplicateAction","none");
+	try
+	{
+		dId = ifnull(dealId,"").toString().trim();
+		pnAcctId = ifnull(preNeedAccountId,"").toString().trim();
+		if(dId == "" || pnAcctId == "")
+		{
+			result.put("status","error");
+			result.put("message","dealId and preNeedAccountId are both required");
+			return result.toString();
+		}
+		// ---- read the At-Need Deal (REST v8, not getRecordById) ----
+		deal = Map();
+		dealResp = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v8/Deals/" + dId + "?fields=Type,Account_Name,Created_Time,Pre_Need_Status,Name_of_Deceased,Deal_Name"
+			type :GET
+			connection:"zohooauth"
+		];
+		if(dealResp.containKey("data") && !dealResp.get("data").isEmpty())
+		{
+			deal = dealResp.get("data").get(0);
+		}
+		if(!deal.containKey("id"))
+		{
+			result.put("status","error");
+			result.put("message","Could not read Deal " + dId);
+			return result.toString();
+		}
+		dType = ifnull(deal.get("Type"),"").toString();
+		if(dType != "First Call" && dType != "Hospital" && dType != "Police")
+		{
+			result.put("status","error");
+			result.put("message","Only First Call, Hospital and Police Deals can be linked to a Pre-Need (this Deal is '" + dType + "').");
+			return result.toString();
+		}
+		oldAcctId = "";
+		oldLk = deal.get("Account_Name");
+		if(oldLk != null)
+		{
+			try
+			{
+				oldAcctId = ifnull(oldLk.get("id"),"").toString();
+			}
+			catch (eOldLk)
+			{
+				oldAcctId = ifnull(oldLk,"").toString();
+			}
+		}
+		// ---- guard: the chosen Account must really be a Pre-Need Account ----
+		pnCheck = Map();
+		pnCheck.put("select_query","select id from Deals where Type = 'Pre Need' and Account_Name = '" + pnAcctId + "' limit 1");
+		pnCheckResp = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v7/coql"
+			type :POST
+			parameters:pnCheck.toString()
+			connection:"zohooauth"
+		];
+		if(!pnCheckResp.containKey("data") || pnCheckResp.get("data").isEmpty())
+		{
+			result.put("status","error");
+			result.put("message","That Account has no Pre-Need Deal, so it cannot be linked as a Pre-Need Account.");
+			return result.toString();
+		}
+		// ---- guard: no billing documents on the At-Need Deal yet ----
+		billingLists = {"Quotes","Sales_Orders","Invoices"};
+		for each  bl in billingLists
+		{
+			try
+			{
+				billDocs = zoho.crm.getRelatedRecords(bl,"Deals",dId.toLong());
+				if(billDocs != null && billDocs.size() > 0)
+				{
+					result.put("status","error");
+					result.put("message","This Deal already has " + bl.replaceAll("_"," ") + ". The Account cannot be swapped by the Link button once billing exists -- ask the developer to link it manually.");
+					return result.toString();
+				}
+			}
+			catch (eBill)
+			{
+				// related list unavailable / empty response: do not block on it
+				info "linkPreNeedToDeal: billing check for " + bl + " skipped: " + eBill;
+			}
+		}
+		// ---- already linked: just make the status right ----
+		if(oldAcctId == pnAcctId)
+		{
+			sameUpd = Map();
+			sameUpd.put("Pre_Need_Status","Matched");
+			sameUpd.put("Pre_Need_Possible_Matches","");
+			zoho.crm.updateRecord("Deals",dId.toLong(),sameUpd);
+			result.put("status","success");
+			result.put("message","This Deal was already on that Pre-Need Account. Status set to Matched.");
+			return result.toString();
+		}
+		// ---- 1. copy at-need facts onto the Pre-Need Account (fill blanks only) ----
+		acctFields = "Account_Name,Date_of_Birth,Date_of_Death,Deceased_Size,Condition,Deceased_First_Name,Deceased_Last_Name,Created_Time";
+		oldAcct = Map();
+		if(oldAcctId != "")
+		{
+			oldAcctResp = invokeurl
+			[
+				url :"https://www.zohoapis.com/crm/v7/Accounts/" + oldAcctId + "?fields=" + acctFields
+				type :GET
+				connection:"zohooauth"
+			];
+			if(oldAcctResp.containKey("data") && !oldAcctResp.get("data").isEmpty())
+			{
+				oldAcct = oldAcctResp.get("data").get(0);
+			}
+		}
+		pnAcct = Map();
+		pnAcctResp = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v7/Accounts/" + pnAcctId + "?fields=" + acctFields
+			type :GET
+			connection:"zohooauth"
+		];
+		if(pnAcctResp.containKey("data") && !pnAcctResp.get("data").isEmpty())
+		{
+			pnAcct = pnAcctResp.get("data").get(0);
+		}
+		pnName = ifnull(pnAcct.get("Account_Name"),"").toString();
+		fillKeys = {"Date_of_Birth","Date_of_Death","Deceased_Size","Condition","Deceased_First_Name","Deceased_Last_Name"};
+		acctFill = Map();
+		for each  fk in fillKeys
+		{
+			oldVal = ifnull(oldAcct.get(fk),"").toString().trim();
+			pnVal = ifnull(pnAcct.get(fk),"").toString().trim();
+			if(oldVal != "" && pnVal == "")
+			{
+				acctFill.put(fk,oldAcct.get(fk));
+			}
+		}
+		if(!acctFill.isEmpty())
+		{
+			zoho.crm.updateRecord("Accounts",pnAcctId.toLong(),acctFill);
+		}
+		// ---- 2. re-point the Deal ----
+		dealUpd = Map();
+		acctRef = Map();
+		acctRef.put("id",pnAcctId);
+		dealUpd.put("Account_Name",acctRef);
+		dealUpd.put("Pre_Need_Status","Matched");
+		dealUpd.put("Pre_Need_Possible_Matches","");
+		zoho.crm.updateRecord("Deals",dId.toLong(),dealUpd);
+		// ---- 3. Contacts that were on the duplicate Account ----
+		contactsMoved = 0;
+		operationsMoved = 0;
+		if(oldAcctId != "")
+		{
+			conQuery = Map();
+			conQuery.put("select_query","select id from Contacts where Account_Name = '" + oldAcctId + "' limit 200");
+			conResp = invokeurl
+			[
+				url :"https://www.zohoapis.com/crm/v7/coql"
+				type :POST
+				parameters:conQuery.toString()
+				connection:"zohooauth"
+			];
+			if(conResp.containKey("data"))
+			{
+				for each  conRow in conResp.get("data")
+				{
+					conUpd = Map();
+					conUpd.put("Account_Name",acctRef);
+					try
+					{
+						zoho.crm.updateRecord("Contacts",ifnull(conRow.get("id"),"").toString().toLong(),conUpd);
+						contactsMoved = contactsMoved + 1;
+					}
+					catch (eCon)
+					{
+						info "linkPreNeedToDeal: contact move failed: " + eCon;
+					}
+				}
+			}
+		}
+		// ---- 4. Operations records of this Deal ----
+		opsList = List();
+		try
+		{
+			opsList = zoho.crm.searchRecords("Operations","(Related_Deal:equals:" + dId + ")");
+		}
+		catch (eOps)
+		{
+			opsList = List();
+		}
+		for each  op in opsList
+		{
+			opAcctId = "";
+			try
+			{
+				opAcctId = ifnull(op.get("Deceased").get("id"),"").toString();
+			}
+			catch (eOpAcct)
+			{
+				opAcctId = "";
+			}
+			if(opAcctId == oldAcctId || opAcctId == "")
+			{
+				opUpd = Map();
+				opUpd.put("Deceased",acctRef);
+				try
+				{
+					zoho.crm.updateRecord("Operations",ifnull(op.get("id"),"").toString().toLong(),opUpd);
+					operationsMoved = operationsMoved + 1;
+				}
+				catch (eOpUpd)
+				{
+					info "linkPreNeedToDeal: operations move failed: " + eOpUpd;
+				}
+			}
+		}
+		// ---- 5. the duplicate Account ----
+		dupAction = "none";
+		if(oldAcctId != "")
+		{
+			remaining = 0;
+			// Deals still on it
+			dq = Map();
+			dq.put("select_query","select id from Deals where Account_Name = '" + oldAcctId + "' limit 1");
+			dqResp = invokeurl
+			[
+				url :"https://www.zohoapis.com/crm/v7/coql"
+				type :POST
+				parameters:dq.toString()
+				connection:"zohooauth"
+			];
+			if(dqResp.containKey("data") && !dqResp.get("data").isEmpty())
+			{
+				remaining = remaining + 1;
+			}
+			// Contacts still on it
+			cq = Map();
+			cq.put("select_query","select id from Contacts where Account_Name = '" + oldAcctId + "' limit 1");
+			cqResp = invokeurl
+			[
+				url :"https://www.zohoapis.com/crm/v7/coql"
+				type :POST
+				parameters:cq.toString()
+				connection:"zohooauth"
+			];
+			if(cqResp.containKey("data") && !cqResp.get("data").isEmpty())
+			{
+				remaining = remaining + 1;
+			}
+			// Operations still pointing at it
+			oq = Map();
+			oq.put("select_query","select id from Operations where Deceased = '" + oldAcctId + "' limit 1");
+			try
+			{
+				oqResp = invokeurl
+				[
+					url :"https://www.zohoapis.com/crm/v7/coql"
+					type :POST
+					parameters:oq.toString()
+					connection:"zohooauth"
+				];
+				if(oqResp.containKey("data") && !oqResp.get("data").isEmpty())
+				{
+					remaining = remaining + 1;
+				}
+			}
+			catch (eOq)
+			{
+				// cannot prove it is empty -> treat as not empty
+				remaining = remaining + 1;
+			}
+			// Created by the same intake? (Account and Deal created within 1 day)
+			sameIntake = false;
+			try
+			{
+				acctDay = ifnull(oldAcct.get("Created_Time"),"").toString().subString(0,10).toDate();
+				dealDay = ifnull(deal.get("Created_Time"),"").toString().subString(0,10).toDate();
+				dayGap = acctDay.daysBetween(dealDay);
+				if(dayGap >= -1 && dayGap <= 1)
+				{
+					sameIntake = true;
+				}
+			}
+			catch (eDay)
+			{
+				sameIntake = false;
+			}
+			if(remaining == 0 && sameIntake)
+			{
+				try
+				{
+					invokeurl
+					[
+						url :"https://www.zohoapis.com/crm/v7/Accounts/" + oldAcctId
+						type :DELETE
+						connection:"zohooauth"
+					];
+					dupAction = "deleted";
+				}
+				catch (eDel)
+				{
+					info "linkPreNeedToDeal: duplicate delete failed: " + eDel;
+					dupAction = "flagged";
+				}
+			}
+			else
+			{
+				dupAction = "flagged";
+			}
+			if(dupAction == "flagged")
+			{
+				oldName = ifnull(oldAcct.get("Account_Name"),"").toString();
+				flagUpd = Map();
+				if(!oldName.startsWith("DUPLICATE - "))
+				{
+					flagUpd.put("Account_Name","DUPLICATE - " + oldName);
+				}
+				flagUpd.put("Description","Duplicate of Pre-Need Account " + pnName + " (https://crm.zoho.com/crm/org871210233/tab/Accounts/" + pnAcctId + "). Deal " + dId + " was re-pointed to that Account on " + zoho.currentdate.toString("yyyy-MM-dd") + ". Not auto-deleted because it still has related records or was not created with this Deal. Review, then merge or delete.");
+				try
+				{
+					zoho.crm.updateRecord("Accounts",oldAcctId.toLong(),flagUpd);
+				}
+				catch (eFlag)
+				{
+					info "linkPreNeedToDeal: could not flag duplicate: " + eFlag;
+				}
+			}
+		}
+		// ---- 6. Note on the Deal ----
+		noteText = "Linked to Pre-Need Account '" + pnName + "' (https://crm.zoho.com/crm/org871210233/tab/Accounts/" + pnAcctId + ") on " + zoho.currentdate.toString("yyyy-MM-dd") + ". Contacts moved: " + contactsMoved + ". Operations moved: " + operationsMoved + ". Duplicate Account: " + dupAction + ".";
+		noteMap = Map();
+		noteMap.put("Note_Title","Pre-Need linked");
+		noteMap.put("Note_Content",noteText);
+		noteParent = Map();
+		noteParentModule = Map();
+		noteParentModule.put("api_name","Deals");
+		noteParent.put("module",noteParentModule);
+		noteParent.put("id",dId);
+		noteMap.put("Parent_Id",noteParent);
+		noteList = List();
+		noteList.add(noteMap);
+		noteBody = Map();
+		noteBody.put("data",noteList);
+		try
+		{
+			invokeurl
+			[
+				url :"https://www.zohoapis.com/crm/v7/Notes"
+				type :POST
+				parameters:noteBody.toString()
+				connection:"zohooauth"
+			];
+		}
+		catch (eNote)
+		{
+			info "linkPreNeedToDeal: note failed: " + eNote;
+		}
+		result.put("status","success");
+		result.put("message","Deal linked to Pre-Need Account '" + pnName + "'.");
+		result.put("duplicateAction",dupAction);
+		result.put("contactsMoved",contactsMoved);
+		result.put("operationsMoved",operationsMoved);
+	}
+	catch (eOuter)
+	{
+		result.put("status","error");
+		result.put("message","linkPreNeedToDeal failed: " + eOuter.toString());
+	}
+	return result.toString();
+}
