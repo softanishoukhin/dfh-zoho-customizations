@@ -100,7 +100,18 @@ string standalone.linkPreNeedToDeal(String dealId, String preNeedAccountId)
 			parameters:pnCheck.toString()
 			connection:"zohooauth"
 		];
-		if(!pnCheckResp.containKey("data") || pnCheckResp.get("data").isEmpty())
+		// NOTE (all COQL reads in this function): COQL answers a query with no rows as an EMPTY
+		// reply, not a Map, so containKey on it throws. Rows are read defensively instead.
+		pnRows = List();
+		try
+		{
+			pnRows = pnCheckResp.get("data");
+		}
+		catch (ePnRows)
+		{
+			pnRows = List();
+		}
+		if(pnRows == null || pnRows.size() == 0)
 		{
 			result.put("status","error");
 			result.put("message","That Account has no Pre-Need Deal, so it cannot be linked as a Pre-Need Account.");
@@ -202,9 +213,22 @@ string standalone.linkPreNeedToDeal(String dealId, String preNeedAccountId)
 				parameters:conQuery.toString()
 				connection:"zohooauth"
 			];
-			if(conResp.containKey("data"))
+			conRows = List();
+			try
 			{
-				for each  conRow in conResp.get("data")
+				conRows = conResp.get("data");
+			}
+			catch (eConRows)
+			{
+				conRows = List();
+			}
+			if(conRows == null)
+			{
+				conRows = List();
+			}
+			if(conRows.size() > 0)
+			{
+				for each  conRow in conRows
 				{
 					conUpd = Map();
 					conUpd.put("Account_Name",acctRef);
@@ -271,7 +295,16 @@ string standalone.linkPreNeedToDeal(String dealId, String preNeedAccountId)
 				parameters:dq.toString()
 				connection:"zohooauth"
 			];
-			if(dqResp.containKey("data") && !dqResp.get("data").isEmpty())
+			dqRows = List();
+			try
+			{
+				dqRows = dqResp.get("data");
+			}
+			catch (eDqRows)
+			{
+				dqRows = List();
+			}
+			if(dqRows != null && dqRows.size() > 0)
 			{
 				remaining = remaining + 1;
 			}
@@ -285,7 +318,16 @@ string standalone.linkPreNeedToDeal(String dealId, String preNeedAccountId)
 				parameters:cq.toString()
 				connection:"zohooauth"
 			];
-			if(cqResp.containKey("data") && !cqResp.get("data").isEmpty())
+			cqRows = List();
+			try
+			{
+				cqRows = cqResp.get("data");
+			}
+			catch (eCqRows)
+			{
+				cqRows = List();
+			}
+			if(cqRows != null && cqRows.size() > 0)
 			{
 				remaining = remaining + 1;
 			}
@@ -301,7 +343,16 @@ string standalone.linkPreNeedToDeal(String dealId, String preNeedAccountId)
 					parameters:oq.toString()
 					connection:"zohooauth"
 				];
-				if(oqResp.containKey("data") && !oqResp.get("data").isEmpty())
+				oqRows = List();
+				try
+				{
+					oqRows = oqResp.get("data");
+				}
+				catch (eOqRows)
+				{
+					oqRows = List();
+				}
+				if(oqRows != null && oqRows.size() > 0)
 				{
 					remaining = remaining + 1;
 				}

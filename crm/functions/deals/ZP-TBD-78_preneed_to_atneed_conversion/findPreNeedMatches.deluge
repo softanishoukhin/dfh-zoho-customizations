@@ -82,9 +82,25 @@ string standalone.findPreNeedMatches(String fullName, String dob, String exclude
 		strong = List();
 		weak = List();
 		seenAccounts = List();
-		if(coqlResp.containKey("data"))
+		// COQL answers a query with no rows as an EMPTY reply (not a Map with "data"), so calling
+		// containKey on it throws and the whole function reported an error whenever nothing
+		// matched (test case B-04). Read the rows defensively instead.
+		coqlRows = List();
+		try
 		{
-			for each  dealRow in coqlResp.get("data")
+			coqlRows = coqlResp.get("data");
+		}
+		catch (eRows)
+		{
+			coqlRows = List();
+		}
+		if(coqlRows == null)
+		{
+			coqlRows = List();
+		}
+		if(coqlRows.size() > 0)
+		{
+			for each  dealRow in coqlRows
 			{
 				acctId = "";
 				acctName = "";

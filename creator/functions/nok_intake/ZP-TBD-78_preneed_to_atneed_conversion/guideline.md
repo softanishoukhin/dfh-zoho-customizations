@@ -89,9 +89,23 @@ map checkPreNeedMatch(string fullName, string dob)
 	strong = List();
 	weak = List();
 	seenAccounts = List();
-	if(coqlResp.containKey("data"))
+	// COQL answers a query with no rows as an EMPTY reply (not a Map), so containKey on it
+	// throws -- read the rows defensively.
+	coqlRows = List();
+	try 
 	{
-		for each  dealRow in coqlResp.get("data")
+		coqlRows = coqlResp.get("data");
+	}	catch (eRows)
+	{
+		coqlRows = List();
+	}
+	if(coqlRows == null)
+	{
+		coqlRows = List();
+	}
+	if(coqlRows.size() > 0)
+	{
+		for each  dealRow in coqlRows
 		{
 			acctId = "";
 			acctName = "";
