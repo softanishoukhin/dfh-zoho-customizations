@@ -53,7 +53,7 @@ Amount_Paid_To_Date (snapshot), Contact_Name (only if the At-Need Deal has none)
 | Products (`Product_Selection`) | Each Pre-Need row not already on the Deal is added: same Parent/Child product, category, quantity, trim colour. `Unit_Price` = today's catalogue price, `Discount` = catalogue total - contract total, so Quote/SO/Invoice land on the contract price. |
 | Contacts | The Pre-Need Deal's Contact Roles (payer, beneficiary, NOK...) are added to the At-Need Deal with the same role. |
 | Payments already made | `Amount_Paid_To_Date` snapshot + Note listing contract value, deposit, paid to date, payment type. The retainer itself is applied at at-need invoicing (ZP-TBD-65 Stage 2). |
-| Questionnaire link | `Pre_Need_Deal` lookup -> the Pre-Need Deal (the questionnaire hangs off that Deal). |
+| Questionnaire link | `Pre_Need_Deal_URL` (URL field) -> the Pre-Need Deal (the questionnaire hangs off that Deal), plus a back-link Note on the Pre-Need Deal. |
 
 ## D. Deliberately NOT copied (would re-trigger Pre-Need billing automations)
 Contract_Value, Pre_Need_Deposit_Amount, Payment_Type, Installment_1/2/3_Amount + Due_Date,

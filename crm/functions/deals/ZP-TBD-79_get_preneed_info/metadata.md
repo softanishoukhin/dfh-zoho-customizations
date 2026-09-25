@@ -53,7 +53,7 @@ Service, Cremation Only).
 ## What this touches
 | Item | Change |
 |---|---|
-| Deals field | +1 `Pre_Need_Deal` (Lookup -> Deals, label "Pre-Need Deal"). Records the source plan; also shows the At-Need Deal in a related list on the Pre-Need Deal. |
+| Deals field | +1 `Pre_Need_Deal_URL` (URL, label "Pre-Need Deal"). Records the source plan as a clickable link; the function reads the Deal id from the end of it. **Not a lookup: Deals is at its lookup-field limit** (developer, 2026-09-25). Because a URL field gives no related list on the Pre-Need Deal, the first run also adds a Note "Used for At-Need Deal" on the Pre-Need Deal. |
 | `button.getPreNeedInfo` | NEW -- `getPreNeedInfo.deluge` |
 | Deals button | +1 "Get Pre Need Info" (detail page) |
 | Existing functions / workflows | **None changed.** Reuses the Type-change workflow, `getCurrentDateTime` and the SO workflow as they are. |

@@ -9,7 +9,8 @@
 //   Connection   : zohooauth (Deals/Accounts/Contacts/Products read, Deals write, Notes create,
 //                  Pre_Need_Questionnaire read, COQL)
 //
-// Requires: new Deals field `Pre_Need_Deal` (Lookup -> Deals, label "Pre-Need Deal").
+// Requires: new Deals field `Pre_Need_Deal_URL` (URL, label "Pre-Need Deal"). Not a lookup --
+//           Deals is at its lookup-field limit (confirmed by the developer 2026-09-25).
 // Requires: ZP-TBD-78 already done on this Deal (Pre_Need_Status = "Matched"), so the
 //           Deal sits on the Pre-Need person's Account.
 //
@@ -26,7 +27,7 @@
 //   0. Guards: Deal Type is First Call / Hospital / Police (or already a funeral type, for a
 //      re-run); Pre_Need_Status = Matched; Deal has an Account.
 //   1. Finds the Pre-Need Deal (Type = "Pre Need", same Account; or the one already stored in
-//      Pre_Need_Deal) and its Pre_Need_Questionnaire record.
+//      Pre_Need_Deal_URL) and its Pre_Need_Questionnaire record.
 //   2. Fills BLANK At-Need Deal fields from the Pre-Need Deal first (staff-entered contract
 //      data), then from the questionnaire (family's wishes). Questionnaire answers with no
 //      matching Deal field are combined into one labelled block in Funeral_Special_Instructions
@@ -50,7 +51,7 @@
 //
 // Safe to click again: blank-only fields, products de-duplicated by product id, Contact Roles
 // de-duplicated, Type only changed from First Call / Hospital / Police, Notes only on the first
-// run (Pre_Need_Deal empty before this run).
+// run (Pre_Need_Deal_URL empty before this run).
 //
 // Returns a plain-text summary for the button popup.
 string button.getPreNeedInfo(String dealId)
@@ -114,7 +115,17 @@ string button.getPreNeedInfo(String dealId)
 		firstRun = true;
 		try
 		{
-			pnDealId = ifnull(deal.get("Pre_Need_Deal").get("id"),"").toString();
+			// URL field (not a lookup -- Deals is at its lookup-field limit); the Deal id is the
+			// last part of the link, e.g. .../tab/Deals/6503357000083513326
+			pnUrl = ifnull(deal.get("Pre_Need_Deal_URL"),"").toString().trim();
+			if(pnUrl.contains("/Deals/"))
+			{
+				pnDealId = pnUrl.getSuffix("/Deals/").trim();
+				if(pnDealId.contains("?"))
+				{
+					pnDealId = pnDealId.getPrefix("?");
+				}
+			}
 		}
 		catch (ePnLk)
 		{
@@ -559,9 +570,7 @@ string button.getPreNeedInfo(String dealId)
 			fill.put("Product_Selection",allRows);
 		}
 		// link back to the Pre-Need Deal
-		pnLk = Map();
-		pnLk.put("id",pnDealId);
-		fill.put("Pre_Need_Deal",pnLk);
+		fill.put("Pre_Need_Deal_URL",orgUrl + pnDealId);
 		// ---- write 1: data only, NO workflows (Type change + SO come after) ----
 		upd1List = List();
 		upd1List.add(fill);
@@ -766,6 +775,33 @@ string button.getPreNeedInfo(String dealId)
 			catch (eNote)
 			{
 				info "getPreNeedInfo: note failed: " + eNote;
+			}
+			// back-link on the Pre-Need Deal (a lookup would have given a related list; the URL
+			// field does not, so a Note records where the plan was used)
+			backNote = Map();
+			backNote.put("Note_Title","Used for At-Need Deal");
+			backNote.put("Note_Content","This Pre-Need plan was pulled into At-Need Deal '" + ifnull(deal.get("Deal_Name"),"") + "' (" + orgUrl + dId + ") on " + zoho.currentdate.toString("yyyy-MM-dd") + ".");
+			backParent = Map();
+			backParent.put("module",noteParentModule);
+			backParent.put("id",pnDealId);
+			backNote.put("Parent_Id",backParent);
+			backList = List();
+			backList.add(backNote);
+			backBody = Map();
+			backBody.put("data",backList);
+			try
+			{
+				invokeurl
+				[
+					url :"https://www.zohoapis.com/crm/v8/Notes"
+					type :POST
+					parameters:backBody.toString()
+					connection:"zohooauth"
+				];
+			}
+			catch (eBackNote)
+			{
+				info "getPreNeedInfo: back-link note failed: " + eBackNote;
 			}
 		}
 		// ================= summary for the popup =================

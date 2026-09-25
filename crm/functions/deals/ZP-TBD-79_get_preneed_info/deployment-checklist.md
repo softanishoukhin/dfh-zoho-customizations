@@ -4,10 +4,9 @@ Order matters -- the function will not save without the field.
 
 ## 1. New Deals field
 Setup > Customization > Modules and Fields > Deals > layout **PC, HP** (and the Funeral / Cremation
-layouts, so it shows after the pipeline moves) > drag a **Lookup** field:
-- Label: `Pre-Need Deal`   -> confirm the API name is exactly **`Pre_Need_Deal`**
-- Lookup module: **Deals**
-- Related list label on the Pre-Need Deal: `At-Need Deals`
+layouts, so it shows after the pipeline moves) > drag a **URL** field (not a Lookup -- Deals is at
+its lookup-field limit):
+- Label: `Pre-Need Deal`   -> set / confirm the API name is exactly **`Pre_Need_Deal_URL`**
 - Read-only for users is fine (only the function writes it).
 
 ## 2. Function
@@ -39,5 +38,5 @@ Run `test-cases.md`. TC-01 (field API name) and TC-06 (price lands on contract p
 gate everything else.
 
 ## Rollback
-Remove the button, delete the function, then (optionally) delete the `Pre_Need_Deal` field. Data
+Remove the button, delete the function, then (optionally) delete the `Pre_Need_Deal_URL` field. Data
 already copied onto Deals stays -- it is ordinary field data and was only ever written to blank fields.
