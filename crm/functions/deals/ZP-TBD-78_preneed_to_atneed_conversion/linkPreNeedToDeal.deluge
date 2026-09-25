@@ -118,23 +118,39 @@ string standalone.linkPreNeedToDeal(String dealId, String preNeedAccountId)
 			return result.toString();
 		}
 		// ---- guard: no billing documents on the At-Need Deal yet ----
-		billingLists = {"Quotes","Sales_Orders","Invoices"};
+		// Related-list API names on Deals, confirmed live 2026-09-25 via getRelatedLists:
+		// Quotes, SalesOrders (NO underscore -- "Sales_Orders" is the module name, and as a
+		// relation name Zoho answers with an INVALID_DATA error Map, which the first version
+		// read as "has records" and wrongly blocked every link), Invoices.
+		billingLists = {"Quotes","SalesOrders","Invoices"};
+		billingLabels = {"Quotes":"Quotes","SalesOrders":"Sales Orders","Invoices":"Invoices"};
 		for each  bl in billingLists
 		{
+			realCount = 0;
 			try
 			{
 				billDocs = zoho.crm.getRelatedRecords(bl,"Deals",dId.toLong());
-				if(billDocs != null && billDocs.size() > 0)
+				// Count only real records (items carrying an id). An error reply is a Map, not
+				// a list of records, and must never be mistaken for billing documents.
+				for each  bd in billDocs
 				{
-					result.put("status","error");
-					result.put("message","This Deal already has " + bl.replaceAll("_"," ") + ". The Account cannot be swapped by the Link button once billing exists -- ask the developer to link it manually.");
-					return result.toString();
+					if(ifnull(bd.get("id"),"").toString() != "")
+					{
+						realCount = realCount + 1;
+					}
 				}
 			}
 			catch (eBill)
 			{
-				// related list unavailable / empty response: do not block on it
+				// related list unavailable / error reply: log it, do not block on it
 				info "linkPreNeedToDeal: billing check for " + bl + " skipped: " + eBill;
+				realCount = 0;
+			}
+			if(realCount > 0)
+			{
+				result.put("status","error");
+				result.put("message","This Deal already has " + billingLabels.get(bl) + ". The Account cannot be swapped by the Link button once billing exists -- ask the developer to link it manually.");
+				return result.toString();
 			}
 		}
 		// ---- already linked: just make the status right ----
