@@ -1,0 +1,269 @@
+
+/*This is a sample function. Uncomment to execute or make changes to this function.*/
+//preventSyncToCRMInvoice start
+paymentID = customer_payment.get("payment_id");
+organizationID = organization.get("organization_id");
+paymentDetails = zoho.books.getRecordsByID("customerpayments",organizationID,paymentID,"zohobooksconnection");
+paymentData = paymentDetails.get("payment");
+invoiceData = paymentData.get("invoices");
+info "paymentData";
+info paymentData;
+try
+{
+	paymentCreatedFrom = paymentData.get("custom_field_hash").get("cf_payment_created_from");
+}
+catch (e)
+{
+	paymentCreatedFrom = null;
+}
+if(paymentCreatedFrom == "CRM" || paymentCreatedFrom == "Fygaro")
+{
+	info invoiceData.get(0).get("invoice_id");
+	customFieldsList = list();
+	fieldMap4 = Map();
+	fieldMap4.put("api_name","cf_updated_from_crm");
+	fieldMap4.put("value",true);
+	customFieldsList.add(fieldMap4);
+	m = Map();
+	m.put("custom_fields",customFieldsList);
+	m.put("reason","Updated from CRM");
+	updateInvoice = zoho.books.updateRecord("Invoices",organizationID,invoiceData.get(0).get("invoice_id"),m,"zohobooksconnection");
+	info paymentDetails;
+}
+//preventSyncToCRMInvoice end
+//populatepayernameoncreateforanalytics start
+try
+{
+	getUrl("https://www.zohoapis.com/creator/custom/delapenhafuneralhome/Sleep_API?publickey=69fNOfX03TwjyaAgAYyRTJSBd&seconds=30");
+}
+catch (e)
+{
+	info e;
+}
+paymentID = customer_payment.get("payment_id");
+organizationID = organization.get("organization_id");
+try
+{
+	payerID = customer_payment.getJSON("custom_field_hash").get("cf_payer_unformatted");
+	payerDetails = zoho.crm.getRecordById("Contacts",payerID);
+	payerName = payerDetails.get("Full_Name");
+}
+catch (e)
+{
+	try
+	{
+		payerName = customer_payment.getJSON("custom_field_hash").get("cf_new_payer_name_if_not_found");
+	}
+	catch (e)
+	{
+		payerName = null;
+	}
+}
+info customer_payment;
+info "payerDetails";
+info payerDetails;
+finalPayerName = null;
+contactPersons = list();
+if(!isNull(payerName))
+{
+	finalPayerName = payerName;
+}
+else
+{
+	customerDetails = zoho.books.getRecordsByID("contacts",organizationID,customer_payment.get("customer_id"),"zohobooksconnection");
+	try
+	{
+		contactPersons = customerDetails.get("contact").get("contact_persons");
+		if(contactPersons.size() > 0)
+		{
+			for each  contactPerson in contactPersons
+			{
+				if(contactPerson.get("is_primary_contact") == true)
+				{
+					finalPayerName = contactPerson.get("first_name") + " " + contactPerson.get("last_name");
+					break;
+				}
+			}
+		}
+		else
+		{
+			finalPayerName = customer_payment.get("customer_name");
+		}
+	}
+	catch (e)
+	{
+		finalPayerName = customer_payment.get("customer_name");
+	}
+}
+try
+{
+	existingPayerName = ifnull(customer_payment.getJSON("custom_field_hash").get("cf_payer_name"),"");
+}
+catch (e)
+{
+	existingPayerName = "";
+}
+if(!isNull(finalPayerName) && finalPayerName != existingPayerName)
+{
+	paymentMap = Map();
+	customFieldsList = list();
+	fieldMap = Map();
+	fieldMap.put("api_name","cf_payer_name");
+	fieldMap.put("value",finalPayerName);
+	customFieldsList.add(fieldMap);
+	paymentMap.put("custom_fields",customFieldsList);
+	response = zoho.books.updateRecord("customerpayments",organizationID,paymentID,paymentMap,"zohobooksconnection");
+	info response;
+}
+info "contactPersons";
+info contactPersons;
+//populatepayernameoncreateforanalytics end
+//createmanualpaymenttocrminvoice start
+info "paymentCreatedFrom";
+info paymentCreatedFrom;
+if(paymentCreatedFrom == "Books")
+{
+	paymentID = customer_payment.get("payment_id");
+	organizationID = organization.get("organization_id");
+	paymentAccountInfo = invokeurl
+	[
+		url :"https://www.zohoapis.com/books/v3/settings/incomingwebhooks/iw_getpaymentcurrencycode/execute?auth_type=apikey&encapiKey=<BOOKS_WEBHOOK_ENCAPIKEY>&payment_id=" + paymentID
+		type :GET
+	];
+	info paymentAccountInfo;
+	paymentAccountUpdateMap = Map();
+	try
+	{
+		paymentAccountUpdateMap.put("account_id",paymentAccountInfo.get("response").get("account_id"));
+	}
+	catch (e)
+	{
+		paymentAccountUpdateMap.put("account_id","5830143000000594063");
+	}
+	info paymentAccountUpdateMap;
+	if(!isNull(paymentAccountUpdateMap.get("account_id")))
+	{
+		paymentUpdateResult = invokeurl
+		[
+			url :"https://www.zohoapis.com/books/v3/customerpayments/" + paymentID + "?organization_id=" + organizationID
+			type :PUT
+			parameters:paymentAccountUpdateMap.toString()
+			connection:"zohobooksconnection"
+		];
+		info "paymentUpdateResult";
+		info paymentUpdateResult;
+	}
+	paymentDetails = zoho.books.getRecordsByID("customerpayments",organizationID,paymentID,"zohobooksconnection");
+	info paymentDetails;
+	invoiceDetails = zoho.books.getRecordsByID("invoices",organizationID,paymentDetails.get("payment").get("invoices").get(0).get("invoice_id"),"zohobooksconnection");
+	info "invoiceDetails";
+	info invoiceDetails;
+	if(invoiceDetails.get("invoice").get("custom_field_hash").containKey("cf_crm_invoice_id"))
+	{
+		crmInvoiceId = invoiceDetails.get("invoice").get("custom_field_hash").get("cf_crm_invoice_id");
+		crmInvoiceDetails = zoho.crm.getRecordById("Invoices",crmInvoiceId);
+		//info crmInvoiceDetails;
+		payerMap = Map();
+		dealMap = Map();
+		payersList = list();
+		alreadyExistInCRMPayerList = false;
+		if(crmInvoiceDetails.get("Invoice_Payers").size() > 0)
+		{
+			payersList = crmInvoiceDetails.get("Invoice_Payers");
+			for each  payerList in payersList
+			{
+				if(payerList.get("Books_Payment_ID") == paymentID)
+				{
+					if(paymentDetails.get("payment").get("custom_field_hash").containKey("cf_payer_unformatted"))
+					{
+						payerList.put("Payer",paymentDetails.get("payment").get("custom_field_hash").get("cf_payer_unformatted"));
+					}
+					payerList.put("Amount_Paid",paymentDetails.get("payment").get("amount"));
+					payerList.put("Paid_Date",paymentDetails.get("payment").get("date"));
+					payerList.put("Payment_Mode",paymentDetails.get("payment").get("payment_mode"));
+					payerList.put("Account_Type",paymentDetails.get("payment").get("account_name"));
+					payerList.put("Books_Payment_ID",paymentID);
+					alreadyExistInCRMPayerList = true;
+					break;
+				}
+			}
+		}
+		// ----------------------------------------------------------------------
+		// IDEMPOTENCY GUARD (NEW): the old guard only checked whether THIS payment
+		// already appears in the CRM Invoice's Invoice_Payers list - a proxy on a
+		// DIFFERENT record, not the payment itself. If this function re-enters for
+		// the same payment before that CRM write lands, the old guard does not
+		// hold and iw_updatepaymentamount fires a second time, double-converting
+		// the amount. This checks a flag stamped directly on the payment record
+		// instead, and stamps it BEFORE calling the webhook so a second pass -
+		// however it is triggered - can never convert this payment again.
+		// ----------------------------------------------------------------------
+		alreadyConverted = false;
+		try
+		{
+			alreadyConverted = paymentDetails.get("payment").get("custom_field_hash").get("cf_amount_converted_unformatted") == true;
+		}
+		catch (eConvCheck)
+		{
+			alreadyConverted = false;
+		}
+		info "alreadyConverted";
+		info alreadyConverted;
+		if(alreadyExistInCRMPayerList == false && alreadyConverted == false)
+		{
+			info "alreadyConverted";
+			info alreadyConverted;
+			updatePaymentAmountBasedOnExchangeRate = invokeurl
+			[
+				url :"https://www.zohoapis.com/books/v3/settings/incomingwebhooks/iw_updatepaymentamount/execute?auth_type=apikey&encapiKey=<BOOKS_WEBHOOK_ENCAPIKEY>&payment_id=" + paymentID
+				type :GET
+			];
+			stampMap = Map();
+			stampCustomFieldsList = list();
+			stampFieldMap = Map();
+			stampFieldMap.put("api_name","cf_amount_converted");
+			stampFieldMap.put("value",true);
+			stampCustomFieldsList.add(stampFieldMap);
+			stampMap.put("custom_fields",stampCustomFieldsList);
+			try
+			{
+				zoho.books.updateRecord("customerpayments",organizationID,paymentID,stampMap,"zohobooksconnection");
+			}
+			catch (eStamp)
+			{
+				info eStamp;
+			}
+			try
+			{
+				getUrl("https://www.zohoapis.com/creator/custom/delapenhafuneralhome/Sleep_API?publickey=69fNOfX03TwjyaAgAYyRTJSBd&seconds=10");
+			}
+			catch (e)
+			{
+				info e;
+			}
+			paymentDetails = zoho.books.getRecordsByID("customerpayments",organizationID,paymentID,"zohobooksconnection");
+			if(paymentDetails.get("payment").get("custom_field_hash").containKey("cf_payer_unformatted"))
+			{
+				payerMap.put("Payer",paymentDetails.get("payment").get("custom_field_hash").get("cf_payer_unformatted"));
+			}
+			payerMap.put("Amount_Paid",paymentDetails.get("payment").get("amount"));
+			payerMap.put("Paid_Date",paymentDetails.get("payment").get("date"));
+			payerMap.put("Payment_Mode",paymentDetails.get("payment").get("payment_mode"));
+			payerMap.put("Account_Type",paymentDetails.get("payment").get("account_name"));
+			payerMap.put("Books_Payment_ID",paymentID);
+			payersList.add(payerMap);
+		}
+		info "payersList" + payersList;
+		dealMap.put("Invoice_Payers",payersList);
+		result = zoho.crm.updateRecord("Invoices",crmInvoiceId,dealMap);
+		//  info result;
+	}
+}
+//createmanualpaymenttocrminvoice end
+refundOverpaymentProcessToXero = invokeurl
+[
+	url :"https://www.zohoapis.com/books/v3/settings/incomingwebhooks/iw_createoverpaymentinxerofrom/execute?auth_type=apikey&encapiKey=<BOOKS_WEBHOOK_ENCAPIKEY>&payment_id=" + paymentID
+	type :GET
+];
+info "refundOverpaymentProcessToXero";
+info refundOverpaymentProcessToXero;
