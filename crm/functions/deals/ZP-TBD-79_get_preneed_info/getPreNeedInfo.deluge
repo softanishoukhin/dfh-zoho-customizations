@@ -1,0 +1,797 @@
+// ZP-TBD-79 -- "Get Pre Need Info" Deal button.
+// Carries everything from the person's Pre-Need plan onto the At-Need Deal and moves the
+// Deal into the real funeral type.
+//
+// CRM > Setup > Customization > Modules and Fields > Deals > Links and Buttons > New Button
+//   Button name  : Get Pre Need Info        Placement: Details page (top-right)
+//   Action       : Writing Function (Deluge)  -> category "button", name getPreNeedInfo
+//   Argument     : dealId = Deals - Deal Id
+//   Connection   : zohooauth (Deals/Accounts/Contacts/Products read, Deals write, Notes create,
+//                  Pre_Need_Questionnaire read, COQL)
+//
+// Requires: new Deals field `Pre_Need_Deal` (Lookup -> Deals, label "Pre-Need Deal").
+// Requires: ZP-TBD-78 already done on this Deal (Pre_Need_Status = "Matched"), so the
+//           Deal sits on the Pre-Need person's Account.
+//
+// DECISIONS (developer, 2026-09-25):
+//   * Existing values on the At-Need Deal are never overwritten -- BLANK FIELDS ONLY.
+//   * Products keep the PRE-NEED CONTRACT PRICE.
+//   * Burial -> "Funeral w/Burial";  Cremation -> "Cremation with Service" (for now -- the
+//     "Cremation Only" rule is pending Andrea).
+//   * Remaining Pre-Need installments / reminders are NOT stopped (pending Andrea).
+//   * Hospital / Police / First Call Deals are converted IN PLACE (same Deal), exactly like
+//     staff convert them today.
+//
+// WHAT IT DOES
+//   0. Guards: Deal Type is First Call / Hospital / Police (or already a funeral type, for a
+//      re-run); Pre_Need_Status = Matched; Deal has an Account.
+//   1. Finds the Pre-Need Deal (Type = "Pre Need", same Account; or the one already stored in
+//      Pre_Need_Deal) and its Pre_Need_Questionnaire record.
+//   2. Fills BLANK At-Need Deal fields from the Pre-Need Deal first (staff-entered contract
+//      data), then from the questionnaire (family's wishes). Questionnaire answers with no
+//      matching Deal field are combined into one labelled block in Funeral_Special_Instructions
+//      (and always written to a Note, so nothing is lost when that field is already filled).
+//   3. Adds the Pre-Need products to Product_Selection (skips a product already on the Deal).
+//      PRICE: the funeral Sales Order function (createSalesOrdersForShipIns) re-prices every
+//      line from the product CATALOGUE (Products.Unit_Price), not from the Deal row. So each
+//      new row gets Unit_Price = catalogue price and Discount = catalogue total - contract
+//      total, which makes the Quote, Sales Order and Invoice all land on the contract price.
+//      If the catalogue price is now LOWER than the contract, no discount is added and the
+//      row is listed as a warning (a surcharge cannot be expressed as a discount).
+//   4. Copies the Pre-Need Deal's Contact Roles (payer, beneficiary, NOK...) and the main
+//      Contact if the At-Need Deal has none.
+//   5. Sets Type (with workflows ON) -> the existing `updateDealPipelineOnTypeUpdate` workflow
+//      moves Pipeline / Layout / Stage exactly as a manual Type change does.
+//   6. If products were added, stamps Trigger_Based_On_Subform = now + 2 min through the same
+//      `standalone.getCurrentDateTime` the Product Selection client scripts use -> the existing
+//      "Create or Update Sales Order from Deals V2" rule builds the funeral Sales Order (by then
+//      the Pipeline has already moved).
+//   7. Notes on the Deal: what was pulled + payments already made (first run only).
+//
+// Safe to click again: blank-only fields, products de-duplicated by product id, Contact Roles
+// de-duplicated, Type only changed from First Call / Hospital / Police, Notes only on the first
+// run (Pre_Need_Deal empty before this run).
+//
+// Returns a plain-text summary for the button popup.
+string button.getPreNeedInfo(String dealId)
+{
+	nl = zoho.encryption.urlDecode("%0A");
+	orgUrl = "https://crm.zoho.com/crm/org871210233/tab/Deals/";
+	dId = ifnull(dealId,"").toString().trim();
+	if(dId == "")
+	{
+		return "Missing Deal id.";
+	}
+	warnings = List();
+	try
+	{
+		// ================= 0. read the At-Need Deal + guards =================
+		deal = Map();
+		dealResp = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v8/Deals/" + dId
+			type :GET
+			connection:"zohooauth"
+		];
+		try
+		{
+			deal = dealResp.get("data").get(0);
+		}
+		catch (eDeal)
+		{
+			deal = Map();
+		}
+		if(!deal.containKey("id"))
+		{
+			return "Could not read this Deal.";
+		}
+		dType = ifnull(deal.get("Type"),"").toString();
+		intakeTypes = {"First Call","Hospital","Police"};
+		funeralTypes = {"Funeral w/Burial","Cremation with Service","Cremation Only"};
+		if(!intakeTypes.contains(dType) && !funeralTypes.contains(dType))
+		{
+			return "Get Pre Need Info only works on First Call, Hospital or Police Deals (this Deal is '" + dType + "').";
+		}
+		if(ifnull(deal.get("Pre_Need_Status"),"").toString() != "Matched")
+		{
+			return "This Deal is not linked to a Pre-Need yet. Use 'Link Pre-Need' first (Pre-Need Status must be 'Matched').";
+		}
+		acctId = "";
+		try
+		{
+			acctId = ifnull(deal.get("Account_Name").get("id"),"").toString();
+		}
+		catch (eAcct)
+		{
+			acctId = "";
+		}
+		if(acctId == "")
+		{
+			return "This Deal has no Account, so its Pre-Need cannot be found.";
+		}
+		// ================= 1. find the Pre-Need Deal =================
+		pnDealId = "";
+		firstRun = true;
+		try
+		{
+			pnDealId = ifnull(deal.get("Pre_Need_Deal").get("id"),"").toString();
+		}
+		catch (ePnLk)
+		{
+			pnDealId = "";
+		}
+		if(pnDealId != "")
+		{
+			firstRun = false;
+		}
+		else
+		{
+			pnQ = Map();
+			pnQ.put("select_query","select id, Stage, Created_Time from Deals where Type = 'Pre Need' and Account_Name = '" + acctId + "' order by Created_Time desc limit 10");
+			pnResp = invokeurl
+			[
+				url :"https://www.zohoapis.com/crm/v7/coql"
+				type :POST
+				parameters:pnQ.toString()
+				connection:"zohooauth"
+			];
+			// COQL answers "no rows" with an EMPTY reply, not a Map -- read defensively.
+			pnRows = List();
+			try
+			{
+				pnRows = pnResp.get("data");
+			}
+			catch (ePnRows)
+			{
+				pnRows = List();
+			}
+			if(pnRows == null)
+			{
+				pnRows = List();
+			}
+			liveCount = 0;
+			for each  pnRow in pnRows
+			{
+				pnStage = ifnull(pnRow.get("Stage"),"").toString();
+				if(!pnStage.startsWith("Closed Lost"))
+				{
+					if(pnDealId == "")
+					{
+						pnDealId = ifnull(pnRow.get("id"),"").toString();
+					}
+					liveCount = liveCount + 1;
+				}
+			}
+			if(pnDealId == "" && pnRows.size() > 0)
+			{
+				// only Closed Lost plans exist -- still use the newest, but say so
+				pnDealId = ifnull(pnRows.get(0).get("id"),"").toString();
+				warnings.add("The only Pre-Need Deal on this Account is Closed Lost -- check it is the right plan.");
+			}
+			if(liveCount > 1)
+			{
+				warnings.add("This Account has " + liveCount + " open Pre-Need Deals. The newest one was used: " + orgUrl + pnDealId);
+			}
+		}
+		if(pnDealId == "")
+		{
+			return "No Pre-Need Deal was found on this Deal's Account.";
+		}
+		pn = Map();
+		pnDealResp = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v8/Deals/" + pnDealId
+			type :GET
+			connection:"zohooauth"
+		];
+		try
+		{
+			pn = pnDealResp.get("data").get(0);
+		}
+		catch (ePnDeal)
+		{
+			pn = Map();
+		}
+		if(!pn.containKey("id"))
+		{
+			return "Could not read the Pre-Need Deal " + pnDealId + ".";
+		}
+		// ---- the questionnaire (CRM module, lookup Deal_Name -> Pre-Need Deal) ----
+		qn = Map();
+		qQ = Map();
+		qQ.put("select_query","select id from Pre_Need_Questionnaire where Deal_Name = '" + pnDealId + "' order by Modified_Time desc limit 1");
+		qResp = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v7/coql"
+			type :POST
+			parameters:qQ.toString()
+			connection:"zohooauth"
+		];
+		qRows = List();
+		try
+		{
+			qRows = qResp.get("data");
+		}
+		catch (eQRows)
+		{
+			qRows = List();
+		}
+		if(qRows != null && qRows.size() > 0)
+		{
+			qnId = ifnull(qRows.get(0).get("id"),"").toString();
+			qnResp = invokeurl
+			[
+				url :"https://www.zohoapis.com/crm/v8/Pre_Need_Questionnaire/" + qnId
+				type :GET
+				connection:"zohooauth"
+			];
+			try
+			{
+				qn = qnResp.get("data").get(0);
+			}
+			catch (eQn)
+			{
+				qn = Map();
+			}
+		}
+		if(qn.isEmpty())
+		{
+			warnings.add("No Pre-Need Questionnaire was found -- only the Pre-Need Deal's own data was used.");
+		}
+		// ================= 2. blank-only field fill =================
+		fill = Map();
+		// 2a. from the Pre-Need Deal (same field on both Deals)
+		sameFields = {"Service_Type","Service_Format_Type","Casket_or_Urn","Casket_Type","Primary_Color","Secondary_Color","Handles","Special_Instructions1","Plot","Plot_No","Grave_Type","Church_Chapel","Place_of_Internment","Obituary","Obituary_Info","Flowers","Programmes","Headstone_Epitaph1","Headstone_Shape","Date_of_Birth","Place_of_Birth","City_of_Birth","Country_of_Birth","Sex","Marital_Status","Occupation","Parish","Case_Location","Currency_Used_for_this_Deal","Pre_Need_Specialist"};
+		for each  sf in sameFields
+		{
+			srcVal = ifnull(pn.get(sf),"").toString().trim();
+			dstVal = ifnull(deal.get(sf),"").toString().trim();
+			if(srcVal != "" && dstVal == "")
+			{
+				fill.put(sf,pn.get(sf));
+			}
+		}
+		if(pn.get("Hillview") == true && deal.get("Hillview") != true)
+		{
+			fill.put("Hillview",true);
+		}
+		// payments already made (snapshot -- the live value stays on the Pre-Need Deal)
+		pnPaid = 0;
+		try
+		{
+			pnPaid = ifnull(pn.get("Amount_Paid_To_Date"),0).toString().toDecimal();
+		}
+		catch (ePaid)
+		{
+			pnPaid = 0;
+		}
+		atPaid = 0;
+		try
+		{
+			atPaid = ifnull(deal.get("Amount_Paid_To_Date"),0).toString().toDecimal();
+		}
+		catch (eAtPaid)
+		{
+			atPaid = 0;
+		}
+		if(pnPaid > 0 && atPaid == 0)
+		{
+			fill.put("Amount_Paid_To_Date",pnPaid);
+		}
+		// 2b. from the questionnaire (only where 2a left the field blank)
+		disposition = "";
+		if(!qn.isEmpty())
+		{
+			disposition = ifnull(qn.get("Disposition_Preference"),"").toString().trim();
+			if(disposition == "-None-")
+			{
+				disposition = "";
+			}
+			qMap = Map();
+			qMap.put("Church_Chapel","Place_of_Worship");
+			qMap.put("Obituary_Info","Obituary_Information");
+			qMap.put("Flowers","Flowers");
+			qMap.put("Programmes","Programme_Style");
+			qMap.put("Headstone_Epitaph1","Inscription");
+			for each  dealField in qMap.keys()
+			{
+				qVal = ifnull(qn.get(qMap.get(dealField)),"").toString().trim();
+				dstVal = ifnull(deal.get(dealField),"").toString().trim();
+				if(qVal != "" && dstVal == "" && !fill.containKey(dealField))
+				{
+					fill.put(dealField,qVal);
+				}
+			}
+			// Place of internment = Cemetery + burial location lines
+			placeParts = List();
+			placeKeys = {"Cemetery","Burial_Location_Line_1","Burial_Location_Line_2","Burial_Location_City","Burial_Location_State","Burial_Location_Postal_Code"};
+			for each  pk in placeKeys
+			{
+				pv = ifnull(qn.get(pk),"").toString().trim();
+				if(pv != "")
+				{
+					placeParts.add(pv);
+				}
+			}
+			if(placeParts.size() > 0 && ifnull(deal.get("Place_of_Internment"),"").toString().trim() == "" && !fill.containKey("Place_of_Internment"))
+			{
+				fill.put("Place_of_Internment",placeParts.toString(", "));
+			}
+			// Service Type / Casket or Urn from the disposition
+			if(disposition != "" && ifnull(deal.get("Service_Type"),"").toString().trim() == "" && !fill.containKey("Service_Type"))
+			{
+				if(disposition == "Burial")
+				{
+					fill.put("Service_Type","Funeral with Burial");
+				}
+				else if(disposition == "Cremation")
+				{
+					fill.put("Service_Type","Cremation");
+				}
+			}
+			if(ifnull(deal.get("Casket_or_Urn"),"").toString().trim() == "" && !fill.containKey("Casket_or_Urn"))
+			{
+				intermentText = ifnull(qn.get("Interment_Type"),"").toString();
+				if(disposition == "Burial")
+				{
+					fill.put("Casket_or_Urn","Casket");
+				}
+				else if(disposition == "Cremation" && intermentText.contains("Urn"))
+				{
+					fill.put("Casket_or_Urn","Urn");
+				}
+			}
+		}
+		// 2c. the wishes block (answers with no matching Deal field)
+		wishLines = List();
+		pnFsi = ifnull(pn.get("Funeral_Special_Instructions"),"").toString().trim();
+		if(pnFsi != "")
+		{
+			wishLines.add(pnFsi);
+		}
+		if(!qn.isEmpty())
+		{
+			wishLabels = Map();
+			wishLabels.put("Ceremony_Preferences","Ceremony preferences");
+			wishLabels.put("Imagined_Service","Imagined service");
+			wishLabels.put("Songs","Songs");
+			wishLabels.put("Readings","Readings");
+			wishLabels.put("Prayers","Prayers");
+			wishLabels.put("Clothing_and_Accessories","Clothing and accessories");
+			wishLabels.put("Ashes_Instructions","Ashes instructions");
+			wishLabels.put("Interment_Description","Interment description");
+			wishLabels.put("Headstone_Type","Headstone type");
+			wishLabels.put("Additional_Instructions","Additional instructions");
+			for each  wk in wishLabels.keys()
+			{
+				wv = ifnull(qn.get(wk),"").toString().trim();
+				if(wv != "")
+				{
+					wishLines.add(wishLabels.get(wk) + ": " + wv);
+				}
+			}
+			// Interment Type is a multi-select -> comes back as a List
+			itText = "";
+			try
+			{
+				itList = qn.get("Interment_Type");
+				if(itList != null && itList.size() > 0)
+				{
+					itText = itList.toString(", ");
+				}
+			}
+			catch (eIt)
+			{
+				itText = ifnull(qn.get("Interment_Type"),"").toString().trim();
+			}
+			if(itText != "")
+			{
+				wishLines.add("Interment type: " + itText);
+			}
+			persons = List();
+			try
+			{
+				persons = ifnull(qn.get("Persons_Responsible"),List());
+			}
+			catch (ePersons)
+			{
+				persons = List();
+			}
+			personText = List();
+			for each  prs in persons
+			{
+				prName = ifnull(prs.get("Name1"),"").toString().trim();
+				if(prName != "")
+				{
+					prLine = prName;
+					prRel = ifnull(prs.get("Relationship"),"").toString().trim();
+					prPhone = ifnull(prs.get("Phone"),"").toString().trim();
+					if(prRel != "")
+					{
+						prLine = prLine + " (" + prRel + ")";
+					}
+					if(prPhone != "")
+					{
+						prLine = prLine + " " + prPhone;
+					}
+					personText.add(prLine);
+				}
+			}
+			if(personText.size() > 0)
+			{
+				wishLines.add("Persons responsible: " + personText.toString("; "));
+			}
+		}
+		wishBlock = "";
+		if(wishLines.size() > 0)
+		{
+			wishBlock = "PRE-NEED WISHES" + nl + wishLines.toString(nl);
+			if(ifnull(deal.get("Funeral_Special_Instructions"),"").toString().trim() == "")
+			{
+				fill.put("Funeral_Special_Instructions",wishBlock);
+			}
+		}
+		// main Contact
+		atContactId = "";
+		try
+		{
+			atContactId = ifnull(deal.get("Contact_Name").get("id"),"").toString();
+		}
+		catch (eAtCon)
+		{
+			atContactId = "";
+		}
+		if(atContactId == "")
+		{
+			try
+			{
+				pnContactId = ifnull(pn.get("Contact_Name").get("id"),"").toString();
+				if(pnContactId != "")
+				{
+					conLk = Map();
+					conLk.put("id",pnContactId);
+					fill.put("Contact_Name",conLk);
+				}
+			}
+			catch (ePnCon)
+			{
+			}
+		}
+		fieldsFilled = fill.size();
+		// ================= 3. products at the contract price =================
+		existingRows = ifnull(deal.get("Product_Selection"),List());
+		existingProductIds = List();
+		keepRows = List();
+		for each  er in existingRows
+		{
+			keepRow = Map();
+			keepRow.put("id",er.get("id"));
+			keepRows.add(keepRow);
+			try
+			{
+				existingProductIds.add(ifnull(er.get("Child_Product").get("id"),"").toString());
+			}
+			catch (eEr)
+			{
+			}
+		}
+		newRows = List();
+		productsAdded = 0;
+		productsSkipped = 0;
+		for each  pr in ifnull(pn.get("Product_Selection"),List())
+		{
+			childId = "";
+			try
+			{
+				childId = ifnull(pr.get("Child_Product").get("id"),"").toString();
+			}
+			catch (eChild)
+			{
+				childId = "";
+			}
+			if(childId == "")
+			{
+				continue;
+			}
+			if(existingProductIds.contains(childId))
+			{
+				productsSkipped = productsSkipped + 1;
+				continue;
+			}
+			qty = ifnull(pr.get("Quantity"),1).toString().toDecimal();
+			contractUnit = ifnull(pr.get("Unit_Price"),0).toString().toDecimal();
+			contractDisc = ifnull(pr.get("Discount"),0).toString().toDecimal();
+			contractTotal = contractUnit * qty - contractDisc;
+			catalogUnit = contractUnit;
+			try
+			{
+				prod = zoho.crm.getRecordById("Products",childId.toLong());
+				catalogUnit = ifnull(prod.get("Unit_Price"),contractUnit).toString().toDecimal();
+			}
+			catch (eProd)
+			{
+				catalogUnit = contractUnit;
+				warnings.add("Could not read the catalogue price of '" + pr.get("Child_Product").get("name") + "' -- check its line price.");
+			}
+			lineDisc = (catalogUnit * qty - contractTotal).round(2);
+			if(lineDisc < 0)
+			{
+				warnings.add("'" + pr.get("Child_Product").get("name") + "' now costs LESS than the Pre-Need contract (" + contractTotal + "), so it will bill at today's price.");
+				lineDisc = 0;
+			}
+			nr = Map();
+			childLk = Map();
+			childLk.put("id",childId);
+			nr.put("Child_Product",childLk);
+			try
+			{
+				parentId = ifnull(pr.get("Parent_Product").get("id"),"").toString();
+				if(parentId != "")
+				{
+					parentLk = Map();
+					parentLk.put("id",parentId);
+					nr.put("Parent_Product",parentLk);
+				}
+			}
+			catch (eParent)
+			{
+			}
+			if(ifnull(pr.get("Child_Category"),"").toString() != "")
+			{
+				nr.put("Child_Category",pr.get("Child_Category"));
+			}
+			if(ifnull(pr.get("Casket_Trim_Color"),"").toString() != "")
+			{
+				nr.put("Casket_Trim_Color",pr.get("Casket_Trim_Color"));
+			}
+			nr.put("Quantity",qty);
+			nr.put("Unit_Price",catalogUnit);
+			nr.put("Discount",lineDisc);
+			newRows.add(nr);
+			productsAdded = productsAdded + 1;
+		}
+		if(newRows.size() > 0)
+		{
+			// Existing rows MUST be sent back (id only) -- a subform write drops any row it omits.
+			allRows = List();
+			allRows.addAll(keepRows);
+			allRows.addAll(newRows);
+			fill.put("Product_Selection",allRows);
+		}
+		// link back to the Pre-Need Deal
+		pnLk = Map();
+		pnLk.put("id",pnDealId);
+		fill.put("Pre_Need_Deal",pnLk);
+		// ---- write 1: data only, NO workflows (Type change + SO come after) ----
+		upd1List = List();
+		upd1List.add(fill);
+		upd1Body = Map();
+		upd1Body.put("data",upd1List);
+		upd1Resp = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v8/Deals/" + dId
+			type :PUT
+			parameters:upd1Body.toString()
+			connection:"zohooauth"
+		];
+		// invokeurl does not throw on an API rejection -- read the code
+		upd1Code = "";
+		try
+		{
+			upd1Code = ifnull(upd1Resp.get("data").get(0).get("code"),"").toString();
+		}
+		catch (eUpd1)
+		{
+			upd1Code = "";
+		}
+		if(upd1Code != "SUCCESS")
+		{
+			return "Could not save the Pre-Need info on this Deal. Zoho said: " + upd1Resp.toString();
+		}
+		// ================= 4. Contact Roles =================
+		rolesAdded = 0;
+		atRoleIds = List();
+		try
+		{
+			atRolesResp = invokeurl
+			[
+				url :"https://www.zohoapis.com/crm/v8/Deals/" + dId + "/Contact_Roles?fields=Email"
+				type :GET
+				connection:"zohooauth"
+			];
+			for each  ar in atRolesResp.get("data")
+			{
+				atRoleIds.add(ifnull(ar.get("id"),"").toString());
+			}
+		}
+		catch (eAtRoles)
+		{
+			// no roles yet -> empty reply
+		}
+		try
+		{
+			pnRolesResp = invokeurl
+			[
+				url :"https://www.zohoapis.com/crm/v8/Deals/" + pnDealId + "/Contact_Roles?fields=Email"
+				type :GET
+				connection:"zohooauth"
+			];
+			for each  prl in pnRolesResp.get("data")
+			{
+				cId = ifnull(prl.get("id"),"").toString();
+				if(cId != "" && !atRoleIds.contains(cId) && prl.get("Contact_Role") != null)
+				{
+					roleRow = Map();
+					roleRow.put("Contact_Role",prl.get("Contact_Role"));
+					roleList = List();
+					roleList.add(roleRow);
+					roleBody = Map();
+					roleBody.put("data",roleList);
+					roleResp = invokeurl
+					[
+						url :"https://www.zohoapis.com/crm/v8/Deals/" + dId + "/Contact_Roles/" + cId
+						type :PUT
+						parameters:roleBody.toString()
+						connection:"zohooauth"
+					];
+					try
+					{
+						if(ifnull(roleResp.get("data").get(0).get("code"),"").toString() == "SUCCESS")
+						{
+							rolesAdded = rolesAdded + 1;
+						}
+					}
+					catch (eRoleResp)
+					{
+						info "getPreNeedInfo: contact role add failed: " + roleResp;
+					}
+				}
+			}
+		}
+		catch (ePnRoles)
+		{
+			// Pre-Need Deal has no Contact Roles -> empty reply
+		}
+		// ================= 5. Deal Type (workflows ON) =================
+		typeMsg = "";
+		newType = "";
+		if(disposition == "")
+		{
+			pnService = ifnull(pn.get("Service_Type"),"").toString();
+			if(pnService == "Funeral with Burial")
+			{
+				disposition = "Burial";
+			}
+			else if(pnService == "Cremation")
+			{
+				disposition = "Cremation";
+			}
+		}
+		if(disposition == "Burial")
+		{
+			newType = "Funeral w/Burial";
+		}
+		else if(disposition == "Cremation")
+		{
+			// "Cremation Only" rule pending Andrea -- every cremation plan is "with Service" for now
+			newType = "Cremation with Service";
+		}
+		if(intakeTypes.contains(dType))
+		{
+			if(newType == "")
+			{
+				typeMsg = "Type NOT changed: the Pre-Need does not say Burial or Cremation. Set the Type by hand.";
+				warnings.add(typeMsg);
+			}
+			else
+			{
+				typeUpd = Map();
+				typeUpd.put("Type",newType);
+				typeResp = zoho.crm.updateRecord("Deals",dId.toLong(),typeUpd,{"trigger":{"workflow"}});
+				if(ifnull(typeResp.get("id"),"").toString() != "")
+				{
+					typeMsg = "Type changed: " + dType + " -> " + newType + " (pipeline moves automatically).";
+				}
+				else
+				{
+					typeMsg = "Type could NOT be changed to " + newType + ": " + typeResp.toString();
+					warnings.add(typeMsg);
+				}
+			}
+		}
+		else
+		{
+			typeMsg = "Type left as '" + dType + "' (already a funeral Deal).";
+			if(newType != "" && newType != dType)
+			{
+				warnings.add("The Pre-Need plan points to '" + newType + "' but this Deal is '" + dType + "'. Check which is right.");
+			}
+		}
+		// ================= 6. Sales Order via the normal product trigger =================
+		if(productsAdded > 0)
+		{
+			// Same stamp the Product Selection client scripts use; +2 min so the pipeline
+			// move from step 5 has finished before "Create or Update Sales Order from Deals V2" runs.
+			standalone.getCurrentDateTime("Trigger_Based_On_Subform",dId.toLong(),"Deals",2);
+		}
+		// ================= 7. Notes (first run only) =================
+		if(firstRun)
+		{
+			noteLines = List();
+			noteLines.add("Pre-Need info pulled from " + orgUrl + pnDealId + " on " + zoho.currentdate.toString("yyyy-MM-dd") + ".");
+			noteLines.add("Fields filled (blank fields only): " + fieldsFilled);
+			noteLines.add("Products added at the Pre-Need contract price: " + productsAdded + " (already on the Deal: " + productsSkipped + ")");
+			noteLines.add("Contact Roles added: " + rolesAdded);
+			noteLines.add(typeMsg);
+			noteLines.add("");
+			noteLines.add("PAYMENTS ALREADY MADE");
+			noteLines.add("Contract value: " + ifnull(pn.get("Contract_Value"),"-"));
+			noteLines.add("Deposit: " + ifnull(pn.get("Pre_Need_Deposit_Amount"),"-"));
+			noteLines.add("Amount paid to date: " + ifnull(pn.get("Amount_Paid_To_Date"),"0"));
+			noteLines.add("Payment type: " + ifnull(pn.get("Payment_Type"),"-"));
+			noteLines.add("The Pre-Need retainer is applied when the at-need invoice is created. Remaining Pre-Need installments and reminders were NOT stopped.");
+			if(wishBlock != "")
+			{
+				noteLines.add("");
+				noteLines.add(wishBlock);
+			}
+			if(warnings.size() > 0)
+			{
+				noteLines.add("");
+				noteLines.add("CHECK: " + warnings.toString(nl + "CHECK: "));
+			}
+			noteMap = Map();
+			noteMap.put("Note_Title","Pre-Need info pulled");
+			noteMap.put("Note_Content",noteLines.toString(nl));
+			noteParent = Map();
+			noteParentModule = Map();
+			noteParentModule.put("api_name","Deals");
+			noteParent.put("module",noteParentModule);
+			noteParent.put("id",dId);
+			noteMap.put("Parent_Id",noteParent);
+			noteList = List();
+			noteList.add(noteMap);
+			noteBody = Map();
+			noteBody.put("data",noteList);
+			try
+			{
+				invokeurl
+				[
+					url :"https://www.zohoapis.com/crm/v8/Notes"
+					type :POST
+					parameters:noteBody.toString()
+					connection:"zohooauth"
+				];
+			}
+			catch (eNote)
+			{
+				info "getPreNeedInfo: note failed: " + eNote;
+			}
+		}
+		// ================= summary for the popup =================
+		summary = List();
+		summary.add("Pre-Need info pulled.");
+		summary.add("Fields filled: " + fieldsFilled + " (blank fields only)");
+		summary.add("Products added: " + productsAdded + " at the Pre-Need contract price" + " (already on the Deal: " + productsSkipped + ")");
+		summary.add("Contact Roles added: " + rolesAdded);
+		summary.add(typeMsg);
+		if(productsAdded > 0)
+		{
+			summary.add("The Sales Order will be built in about 2 minutes.");
+		}
+		if(warnings.size() > 0)
+		{
+			summary.add("");
+			summary.add("Please check:");
+			for each  w in warnings
+			{
+				summary.add("- " + w);
+			}
+		}
+		return summary.toString(nl);
+	}
+	catch (eOuter)
+	{
+		return "Get Pre Need Info failed: " + eOuter.toString();
+	}
+}
