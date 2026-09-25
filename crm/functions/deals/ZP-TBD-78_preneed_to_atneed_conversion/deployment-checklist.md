@@ -26,6 +26,10 @@ Nothing has been deployed. Every step is manual (no write API for CRM fields/rul
       `linkpreneedtodeal`. Connection `zohooauth` must have Accounts delete + Notes create scope; if the
       connection lacks them the function reports the failed step in its result / `info` log and the
       duplicate is left "flagged" instead of deleted.
+- [ ] **Both standalone functions above: ⋮ > REST API > enable OAuth2.** The Link Pre-Need widget
+      calls them with `ZOHO.CRM.FUNCTIONS.execute`, which only works when REST API (OAuth) is on --
+      with it off the widget just shows "Search failed." (found in testing 2026-09-25; same setting
+      `createpreneeddealfromcontact` already has).
 - [ ] New **Automation** `flagPossiblePreNeedMatch` -- paste `flagPossiblePreNeedMatch.deluge`.
       Argument `dealId` (String).
 - [ ] **Re-pull `onDeceasedPickupCreate` from live and diff it against
