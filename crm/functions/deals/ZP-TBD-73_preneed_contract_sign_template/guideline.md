@@ -161,3 +161,67 @@ proportion; no product has two taxes ticked; widget function name is correct; ex
 1. What is `Text - 4` on the contract; where does Package contents come from; is `Accounts.Deceased_TRN` the buyer's TRN?
 2. Should the contract be embedded / on-site signing (as drafted) or emailed to the buyer?
 3. Does an embedded signing link still open when the customer taps it minutes later (WhatsApp delivery)?
+
+---
+
+## 6. Contract description shows raw HTML on the contract (2026-09-25)
+
+**Problem:** `Deals.Pre_Need_Contract_Description` is a rich text field, so CRM returns it as HTML
+(`Hello,<br><span><br></span>this is a test line 1.<br><b>this is a test line 2.</b>`). Both live functions pass it
+straight into Sign field `Text - 28`, and Sign text fields are plain text only, so the tags print literally.
+
+**Functions to change (both, identical edit):** `sendPreNeedFuneralContract` (button),
+`sendPreNeedFuneralContractEmbedded` (standalone). Source for this guideline: live code pulled 2026-09-25.
+
+**Find this line:**
+
+```
+field_text_data.put("Text - 28",ifnull(recordInfo.get("Pre_Need_Contract_Description"),""));
+```
+
+**Replace with:**
+
+```
+// Pre_Need_Contract_Description is rich text (HTML) -- Sign text fields are plain text, so convert first
+// Deluge does not turn "\n" into a newline (replaceAll then outputs a literal "n"), so build a real one
+nl = zoho.encryption.urlDecode("%0A");
+descText = ifnull(recordInfo.get("Pre_Need_Contract_Description"),"").toString();
+descText = descText.replaceAll("(?i)<br[^>]*>",nl);
+descText = descText.replaceAll("(?i)</(p|div|li|h[1-6])>",nl);
+descText = descText.replaceAll("(?i)<li[^>]*>","- ");
+descText = descText.replaceAll("<[^>]*>","");
+descText = descText.replaceAll("&nbsp;"," ");
+descText = descText.replaceAll("&lt;","<");
+descText = descText.replaceAll("&gt;",">");
+descText = descText.replaceAll("&quot;","\"");
+descText = descText.replaceAll("&#39;","'");
+descText = descText.replaceAll("&amp;","&");
+descText = descText.trim();
+field_text_data.put("Text - 28",descText);
+```
+
+First test (2026-09-25) used `"\n"` as the replacement and printed `Hello,nnthis is...` -- Deluge passes `\n` through
+as backslash + n, and Java's `replaceAll` drops the backslash. `zoho.encryption.urlDecode("%0A")` yields a real newline.
+**Second test (2026-09-25): PASSED** -- contract shows `Hello,` / blank line / `this is a test line 1.` /
+`this is a test line 2.`, no tags, line breaks render in the Sign box.
+
+Order matters: line-break tags become a newline first, then every remaining tag is stripped, then entities are decoded
+(`&amp;` last so `&amp;lt;` doesn't double-decode). The sample above becomes:
+
+```
+Hello,
+
+this is a test line 1.
+this is a test line 2.
+```
+
+**Limits:**
+- **Bold/italic/colour are lost.** Sign prefill (`field_text_data`) accepts plain text only; there is no way to carry
+  formatting into a Sign text field.
+- **Line breaks depend on the `Text - 28` box in the Sign editor.** Make it tall enough for several lines. If the
+  test shows the lines joined or cut off, the box is single-line -- then set `nl = " ";` instead.
+
+**Test:** Deal with a multi-line, partly bold description -> send contract from both paths -> `Text - 28` shows clean
+text with no tags or `&nbsp;`. Also a Deal with a blank description -> box empty, no error.
+
+**Rollback:** put the single original line back.
