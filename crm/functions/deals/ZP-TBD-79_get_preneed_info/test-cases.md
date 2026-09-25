@@ -1,5 +1,9 @@
 # ZP-TBD-79 test cases
 
+Full tracked set (36 cases, sections D/G/F/P/C/T/N/R/E, with Status column):
+`D:\Office\Andrea_Projects\DFH\widgets\testCases\ZP-TBD-79_Get_PreNeed_Info_Test_Cases.xlsx`.
+The table below is the short version.
+
 Setup for all: a test Pre-Need Deal with a completed questionnaire (Disposition = Burial), 2+
 products in Product Selection, a Contact Role, and Amount Paid To Date > 0. Then a First Call Deal
 for the same person, linked with **Link Pre-Need** (Pre-Need Status = Matched).
