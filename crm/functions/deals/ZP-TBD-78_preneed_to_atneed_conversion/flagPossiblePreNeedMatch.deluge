@@ -165,21 +165,58 @@ void automation.flagPossiblePreNeedMatch(String dealId)
 			idx = idx + 1;
 		}
 		upd.put("Pre_Need_Status","Possible Match");
-		upd.put("Pre_Need_Possible_Matches",lines.toString("\n"));
+		// Deluge does NOT treat "\n" as a newline (it prints a literal backslash-n), so the
+		// line break is built from a URL-decoded %0A.
+		upd.put("Pre_Need_Possible_Matches",lines.toString(zoho.encryption.urlDecode("%0A")));
 	}
 	else
 	{
 		if(currentStatus == "Possible Match")
 		{
-			upd.put("Pre_Need_Status",null);
-			upd.put("Pre_Need_Possible_Matches","");
+			// Name/DOB no longer matches anything -> clear the alert. Done with a raw REST PUT
+			// and a real JSON null. zoho.crm.updateRecord with a Map holding null does not throw
+			// when Zoho rejects it, so the whole update was silently dropped and the old status
+			// + match text stayed (test case B-04). The response is checked and logged.
+			clearBody = "{\"data\":[{\"Pre_Need_Status\":null,\"Pre_Need_Possible_Matches\":\"\"}]}";
+			try
+			{
+				clearResp = invokeurl
+				[
+					url :"https://www.zohoapis.com/crm/v8/Deals/" + dId
+					type :PUT
+					parameters:clearBody
+					connection:"zohooauth"
+				];
+				clearCode = "";
+				try
+				{
+					clearCode = ifnull(clearResp.get("data").get(0).get("code"),"").toString();
+				}
+				catch (eClearCode)
+				{
+					clearCode = "";
+				}
+				if(clearCode != "SUCCESS")
+				{
+					info "flagPossiblePreNeedMatch: clearing Deal " + dId + " was not accepted: " + clearResp;
+				}
+			}
+			catch (eClear)
+			{
+				info "flagPossiblePreNeedMatch: could not clear Deal " + dId + ": " + eClear;
+			}
 		}
 	}
 	if(!upd.isEmpty())
 	{
 		try
 		{
-			zoho.crm.updateRecord("Deals",dId.toLong(),upd);
+			updResp = zoho.crm.updateRecord("Deals",dId.toLong(),upd);
+			// updateRecord does not throw when Zoho rejects a value -- make that visible.
+			if(ifnull(updResp.get("id"),"") == "")
+			{
+				info "flagPossiblePreNeedMatch: update of Deal " + dId + " was not accepted: " + updResp;
+			}
 		}
 		catch (eUpd)
 		{
