@@ -206,7 +206,22 @@ declared for) a plain `String`.
    that same Contact, so linking it is correct, not a risk. Fixed: in the `isPayerSame == "true"`
    branch, the payer's own Contact now gets `Account_Name` updated to the new Account.
 
-## Duplicate detection added (2026-09-16, during live testing)
+## Duplicate detection REVERSED (2026-09-24) — one Account per Deal
+
+Testing showed that creating a Contact with the same name and running the button twice produced two
+Pre-Need Deals sharing ONE Account (the name-based dedup below reused the first Account). That was
+never in the original brief (task6.txt: every run creates a new Account/Contact/Deal), and it is a
+risk: the Books retainer connects to the Deal's Account, so two Deals on one Account can put two
+retainers on the same Account; name-only matching also merges different people who share a name.
+Confirmed with the user, then removed both COQL searches from `createPreNeedDealFromContact` — the
+function now always creates a new beneficiary Account and, in Scenario 2, a new beneficiary Contact.
+Live source was pulled 2026-09-24 and matched this repo copy before editing. Test cases: TC-07b
+inverted (same-name run must create a NEW Account), TC-07c added for the Scenario 1 path, TC-12 note
+updated. **Deploy:** paste the updated function into CRM (no widget change, no new fields). The section
+below is kept as history only; it no longer describes current behavior. Existing Deals that already
+share an Account are not touched by this change.
+
+## Duplicate detection added (2026-09-16, during live testing) — SUPERSEDED, see above
 
 Live-testing TC-07 (Scenario 2) repeatedly showed every submission creating a brand-new beneficiary
 Account, even for the same person — the first build deliberately had no dedup, matching the
@@ -253,5 +268,5 @@ investigation. Fixed in two places:
 ## Status
 
 Investigation and first build complete 2026-09-16. Duplicate-detection added same day per user
-request during test review. Street Address 2 pre-fill/creation bug found and fixed same day. Not
+request during test review, then reversed 2026-09-24 (one Account per Deal — not deployed yet). Street Address 2 pre-fill/creation bug found and fixed same day. Not
 yet deployed or tested live.

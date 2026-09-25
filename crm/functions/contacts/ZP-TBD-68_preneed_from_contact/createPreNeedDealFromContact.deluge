@@ -42,18 +42,19 @@
 // fixing it wasn't asked for and is a separate call for Andrea/Dale once the
 // Lead flow's retirement is decided.
 //
-// DUPLICATE DETECTION (added 2026-09-16 after live testing of TC-07 showed
-// re-running the same beneficiary created a brand-new Account every time):
-// before creating the beneficiary Account, search Accounts by exact
-// Account_Name + Account_Type=Deceased and reuse a match instead of
-// creating another one (mirrors convertLeadOnChangingLeadStatus's own
-// search-then-create pattern for its IFR Account). Same idea for the
-// beneficiary Contact in Scenario 2 -- if the Account was reused, search
-// Contacts already linked to that Account (Account_Name = accountId) before
-// creating a new one. A fresh Account never matches, so this only changes
-// behavior on true re-runs with the same beneficiary. Contact_Type is set
-// via an explicit updateRecord after resolving the Contact either way, so a
-// reused older Contact still ends up correct even if it predates T-07.
+// NO ACCOUNT/CONTACT DEDUPLICATION (reversed 2026-09-24). A name-based
+// duplicate search was added 2026-09-16 (after TC-07 showed a re-run of the
+// same beneficiary creating another Account), but it was NOT part of the
+// original brief (task6.txt: every run creates a new Account, a new
+// beneficiary Contact and a Deal) and it caused a real problem: two Pre-Need
+// Deals for the same-named beneficiary ended up sharing ONE Account. The
+// Books retainer connects to the Deal's Account, so two Deals on one Account
+// risks two retainers landing on the same Account -- exactly what the brief
+// warned about -- and matching on name alone also merges two different
+// people who happen to share a name. Each run of this function therefore
+// always creates its own beneficiary Account (and, in Scenario 2, its own
+// beneficiary Contact). Contact_Type is still set via an explicit
+// updateRecord after the Contact is resolved.
 //
 // WHAT'S REUSED FROM convertLeadOnChangingLeadStatus, AS-IS:
 // - The Contact_Roles PUT mechanism: PUT /crm/v6/Deals/{dealId}/Contact_Roles/{contactId}
@@ -153,37 +154,17 @@ string standalone.createPreNeedDealFromContact(String payerContactId, String isP
 		// Accounts -- "Deceased_TRN" is a placeholder, not yet verified.
 		accountMap.put("Deceased_TRN",ifnull(beneficiaryTRN,""));
 
-		// DUPLICATE DETECTION (added on request, after live testing showed
-		// re-running the same beneficiary created a fresh Account every
-		// time): search for an existing Deceased Account with this exact
-		// name before creating a new one, mirroring the search-then-create
-		// pattern convertLeadOnChangingLeadStatus already uses for its IFR
-		// Account. If found, reuse it as-is (not updated) rather than
-		// overwriting whatever's already there.
-		accountSearchQuery = Map();
-		accountSearchQuery.put("select_query","select id from Accounts where Account_Name = '" + beneficiaryFullName + "' and Account_Type = 'Deceased' limit 1");
-		accountSearchResponse = invokeurl
-		[
-			url :"https://www.zohoapis.com/crm/v7/coql"
-			type :POST
-			parameters:accountSearchQuery.toString()
-			connection:"zohooauth"
-		];
-		if(!isNull(accountSearchResponse.get("data")) && accountSearchResponse.get("data").size() > 0)
+		// Always create a NEW Account -- one Account per Pre-Need Deal, even
+		// if an Account with the same name already exists (see the
+		// "NO ACCOUNT/CONTACT DEDUPLICATION" note at the top of this file).
+		accountResult = zoho.crm.createRecord("Accounts",accountMap);
+		if(isNull(accountResult.get("id")))
 		{
-			accountId = accountSearchResponse.get("data").get(0).get("id");
+			resultMap.put("status","error");
+			resultMap.put("message","Account creation failed: " + accountResult.toString());
+			return resultMap.toString();
 		}
-		else
-		{
-			accountResult = zoho.crm.createRecord("Accounts",accountMap);
-			if(isNull(accountResult.get("id")))
-			{
-				resultMap.put("status","error");
-				resultMap.put("message","Account creation failed: " + accountResult.toString());
-				return resultMap.toString();
-			}
-			accountId = accountResult.get("id");
-		}
+		accountId = accountResult.get("id");
 
 		// ==========================================
 		// DETERMINE THE BENEFICIARY CONTACT
@@ -233,44 +214,19 @@ string standalone.createPreNeedDealFromContact(String payerContactId, String isP
 			beneficiaryContactMap.put("Email",ifnull(beneficiaryEmail,""));
 			beneficiaryContactMap.put("Account_Name",accountId);
 
-			// DUPLICATE DETECTION (added on request): if the Account above
-			// was reused rather than freshly created, it may already have a
-			// beneficiary Contact linked to it from an earlier run -- reuse
-			// that Contact instead of creating another one on the same
-			// Account. A fresh Account (just created above) will never
-			// match here, so this only fires on true re-runs.
-			contactSearchQuery = Map();
-			contactSearchQuery.put("select_query","select id from Contacts where Account_Name = '" + accountId + "' limit 1");
-			contactSearchResponse = invokeurl
-			[
-				url :"https://www.zohoapis.com/crm/v7/coql"
-				type :POST
-				parameters:contactSearchQuery.toString()
-				connection:"zohooauth"
-			];
-			if(!isNull(contactSearchResponse.get("data")) && contactSearchResponse.get("data").size() > 0)
+			beneficiaryContactResult = zoho.crm.createRecord("Contacts",beneficiaryContactMap);
+			if(isNull(beneficiaryContactResult.get("id")))
 			{
-				beneficiaryContactId = contactSearchResponse.get("data").get(0).get("id");
+				resultMap.put("status","error");
+				resultMap.put("message","Beneficiary contact creation failed: " + beneficiaryContactResult.toString());
+				return resultMap.toString();
 			}
-			else
-			{
-				beneficiaryContactResult = zoho.crm.createRecord("Contacts",beneficiaryContactMap);
-				if(isNull(beneficiaryContactResult.get("id")))
-				{
-					resultMap.put("status","error");
-					resultMap.put("message","Beneficiary contact creation failed: " + beneficiaryContactResult.toString());
-					return resultMap.toString();
-				}
-				beneficiaryContactId = beneficiaryContactResult.get("id");
-			}
+			beneficiaryContactId = beneficiaryContactResult.get("id");
 
 			// T-07: beneficiary Contact_Type = "IFR" -- the actual role
 			// value, not the Pre_Need_Contact_Role answer ("For Self"/"For
 			// Spouse"/"For Family Member") that convertLeadOnChangingLeadStatus
-			// wrongly writes into this same field. Set unconditionally here
-			// (not just in beneficiaryContactMap above) so a reused Contact
-			// from an older run still ends up correct, not just a freshly
-			// created one.
+			// wrongly writes into this same field.
 			beneficiaryContactTypeMap = Map();
 			beneficiaryContactTypeMap.put("Contact_Type","IFR");
 			zoho.crm.updateRecord("Contacts",beneficiaryContactId,beneficiaryContactTypeMap);
