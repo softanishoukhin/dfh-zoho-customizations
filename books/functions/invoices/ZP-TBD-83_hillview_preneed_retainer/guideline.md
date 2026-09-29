@@ -11,8 +11,9 @@ Nothing live is modified. Everything below is new, so rollback = deactivate the 
 
 If Books gives a different api_name, change it in the function (search `cf_hillview_`) before saving.
 
-## 2. Clearing account (Dale)
-Accountant > Chart of Accounts > New Account, name exactly **`Hillview Pre-Need Clearing`** (type per Dale).
+## 2. Clearing account
+Banking > Add Bank Account (manual, no feed), name exactly **`Hillview Pre-Need Clearing`**, currency JMD.
+It must be a Bank-type account so it can be the "Deposit To" of the retainer payment.
 If the name differs, change `CLEARING_ACCOUNT_NAME` at the top of the function.
 Without this account the retainer is still created, but it is not marked paid (alert email instead).
 
@@ -30,9 +31,8 @@ Settings > Automation > Workflow Rules > New
 - Action: Custom Function `hillviewPreNeedRetainerSync`
 
 ## 5. Check before go-live
-- `syncretainerinvoicetoxero` and the Schedule `createRetainerInvoiceToXero` must still start with the
-  `cf_xero_bank_transaction_id` "already synced -> skip" check (they do as of 2026-09-29). That check is what
-  keeps the Hillview retainer out of Xero.
+- Tell Dale: each Hillview retainer posts a Receive Money into BNS DFH-Checking (coded PRE NEED) like other
+  retainers, on top of the At-Need invoice and its payment (decided 2026-09-29, see metadata.md).
 - Run the test set (TC-01 first: api names of the two new fields).
 
 ## Rollback

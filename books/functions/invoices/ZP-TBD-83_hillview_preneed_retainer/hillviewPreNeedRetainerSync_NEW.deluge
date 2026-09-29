@@ -23,10 +23,8 @@
 //   - cf_related_crm_deal_id is NOT set on the retainer (the payment workflow
 //     would overwrite the At-Need Deal's Amount_Paid_To_Date and run the
 //     Pre-Need contract check against it);
-//   - cf_xero_bank_transaction_id is pre-filled with a marker so that
-//     syncretainerinvoicetoxero AND its 7-minute catch-up Schedule both skip
-//     this retainer -- the cash already reaches Xero through the At-Need
-//     invoice, a Receive Money here would count it twice.
+// Xero: the retainer is left to syncretainerinvoicetoxero (and its catch-up
+// Schedule) exactly like every other retainer -- decision 2026-09-29.
 // ==========================================================================
 organizationID = organization.get("organization_id");
 invoiceID = invoice.get("invoice_id");
@@ -35,10 +33,11 @@ HILLVIEW_NAME_PREFIX = "preneed";
 HILLVIEW_NAME_KEYWORD = "hillview";
 CLEARING_ACCOUNT_NAME = "Hillview Pre-Need Clearing";
 PAYMENT_MODE = "Paid via At-Need Invoice";
-XERO_SKIP_MARKER = "NOT SYNCED - Hillview Pre-Need paid via At-Need invoice";
 ALERT_EMAIL = "softanis.noushadurrahman@gmail.com";
 BOOKS_API = "https://www.zohoapis.com/books/v3";
 SLEEP_API = "https://www.zohoapis.com/creator/custom/delapenhafuneralhome/Sleep_API?publickey=69fNOfX03TwjyaAgAYyRTJSBd&seconds=";
+NO_WORKFLOW_HEADER = Map();
+NO_WORKFLOW_HEADER.put("X-ZOHO-Execute-CustomFunction","false");
 // ==========================================================================
 // 1. CHEAP EXIT -- read only the webhook payload, no API calls
 // ==========================================================================
@@ -152,7 +151,16 @@ if(linkedRetainerID == "" || linkedRetainerID.startsWith("PENDING"))
 	lockMap = Map();
 	lockMap.put("custom_fields",lockFields);
 	lockMap.put("reason","Hillview Pre-Need retainer lock");
-	zoho.books.updateRecord("Invoices",organizationID,invoiceID,lockMap,"zohobooksconnection");
+	// X-ZOHO-Execute-CustomFunction:false -- a marker-only write must not re-run the invoice
+	// workflows (updateInvoiceToXero would otherwise re-sync the whole invoice to Xero).
+	invokeurl
+	[
+		url :BOOKS_API + "/invoices/" + invoiceID + "?organization_id=" + organizationID
+		type :PUT
+		parameters:lockMap.toString()
+		headers:NO_WORKFLOW_HEADER
+		connection:"zohobooksconnection"
+	];
 	try
 	{
 		getUrl(SLEEP_API + "5");
@@ -205,7 +213,6 @@ if(linkedRetainerID == "" || linkedRetainerID.startsWith("PENDING"))
 	retainerMap.put("notes",retainerNotes);
 	retainerCustomFields = list();
 	retainerCustomFields.add({"api_name":"cf_hillview_source_invoice_id","value":invoiceID});
-	retainerCustomFields.add({"api_name":"cf_xero_bank_transaction_id","value":XERO_SKIP_MARKER});
 	retainerMap.put("custom_fields",retainerCustomFields);
 	createResponse = zoho.books.createRecord("retainerinvoices",organizationID,retainerMap,"zohobooksconnection");
 	newRetainerID = "";
@@ -225,7 +232,14 @@ if(linkedRetainerID == "" || linkedRetainerID.startsWith("PENDING"))
 		unlockMap = Map();
 		unlockMap.put("custom_fields",unlockFields);
 		unlockMap.put("reason","Hillview Pre-Need retainer unlock");
-		zoho.books.updateRecord("Invoices",organizationID,invoiceID,unlockMap,"zohobooksconnection");
+		invokeurl
+		[
+			url :BOOKS_API + "/invoices/" + invoiceID + "?organization_id=" + organizationID
+			type :PUT
+			parameters:unlockMap.toString()
+			headers:NO_WORKFLOW_HEADER
+			connection:"zohobooksconnection"
+		];
 		sendmail
 		[
 			from :zoho.adminuserid
@@ -240,7 +254,14 @@ if(linkedRetainerID == "" || linkedRetainerID.startsWith("PENDING"))
 	linkMap = Map();
 	linkMap.put("custom_fields",linkFields);
 	linkMap.put("reason","Hillview Pre-Need retainer created");
-	zoho.books.updateRecord("Invoices",organizationID,invoiceID,linkMap,"zohobooksconnection");
+	invokeurl
+	[
+		url :BOOKS_API + "/invoices/" + invoiceID + "?organization_id=" + organizationID
+		type :PUT
+		parameters:linkMap.toString()
+		headers:NO_WORKFLOW_HEADER
+		connection:"zohobooksconnection"
+	];
 	commentMap = Map();
 	commentMap.put("description","Created automatically from At-Need invoice " + invoiceNumber + " (Hillview Pre-Need purchase). It will be marked paid automatically when that invoice is paid in full. Do not collect payment on this retainer and do not apply it to an invoice.");
 	invokeurl

@@ -11,17 +11,31 @@ Pre-Need item. When such a product is on the At-Need invoice:
 2. When the At-Need invoice is **paid in full**, the retainer must show the Hillview amount (incl. tax) as
    paid -- without staff collecting that money a second time.
 
+## Decisions (developer, 2026-09-29)
+| Question | Answer |
+|---|---|
+| Product rule: name starts with "Preneed" and contains "Hillview" (so `Hillview-Preneed- Regular` is excluded) | Confirmed |
+| Create the retainer while the At-Need invoice is still draft | Yes |
+| Create a CRM Pre-Need Deal as well | No -- scope is the At-Need Deal only |
+| Retainer to Xero | **Exactly like other retainers** (existing `syncretainerinvoicetoxero` + Schedule, Receive Money into BNS DFH-Checking coded to PRE NEED) |
+| At-Need payment later deleted/refunded | Not handled now |
+| Deposit account for the "mark paid" payment | "Hillview Pre-Need Clearing" -- see Setup |
+
 ## Design (Books-side, one new function, no changes to any live function)
 `hillviewPreNeedRetainerSync_NEW.deluge` -- Books custom function on **Invoice**, workflow rule on
 create + edit, no criteria (the function exits on the first loop when there is no Hillview line).
 
 | Event on the At-Need Books invoice | Result |
 |---|---|
-| Hillview Pre-Need line present, no retainer linked | Retainer created (same customer + contact persons, one line per Hillview line: amount after discount + the line's own tax), linked both ways, comment added |
+| Hillview Pre-Need line present (draft or not), no retainer linked | Retainer created (same customer + contact persons, one line per Hillview line: amount after discount + the line's own tax), linked both ways, comment added |
 | Hillview line edited, retainer unpaid | Retainer lines replaced to match |
 | Hillview line removed / invoice voided, retainer unpaid | Retainer voided |
 | Same, but retainer already paid | Nothing changed, alert email |
 | Invoice status becomes `paid` | Retainer marked sent (if draft) and paid with a Books payment: mode "Paid via At-Need Invoice", deposit account "Hillview Pre-Need Clearing", amount = retainer balance |
+
+The function's own writes to the invoice (lock + link fields) are sent with
+`X-ZOHO-Execute-CustomFunction: false` -- the same pattern `createinvoiceonxero` uses -- so they do not re-run
+`updateInvoiceToXero` (which otherwise re-syncs the whole invoice to Xero on every edit).
 
 ### Why Books-side and not a CRM "Retainer" invoice
 The org has a dormant CRM prototype for this (`standalone.createRetainerInvoiceForPlotItem`: "Retainer Sales
@@ -37,66 +51,44 @@ because a CRM Invoice on the At-Need Deal would:
 - **Product names:** the 13 live products are named `Preneed(2025) Hillview ...` (parent "Pre Need", Sales
   Account "PRE NEED", all **Tax Exempt 0%**). A literal "contains 'Preneed Hillview'" test matches none of
   them. Rule used: name lower-cased with spaces/hyphens removed **starts with `preneed` and contains
-  `hillview`**. This excludes `Non Taxable - Preneed(2025) Hillview Vault Reg` (zero-rated companion row) and
-  the at-need product `Hillview-Preneed- Regular` (parent "Hillview", Sales Account "Sales") -- confirm with
-  Andrea that the latter is really an at-need item.
-- **Tax:** because all Hillview Pre-Need products are Tax Exempt today, the "applicable sales tax" on the
-  retainer is $0. The code copies each line's own `tax_id`, so a taxed product would carry its tax.
-- **`syncretainerinvoicetoxero`** (workflow "Sync Retainer Invoice To Xero") posts a Xero Receive Money for the
-  full total of every new retainer, and the ZP-TBD-65 Schedule `createRetainerInvoiceToXero` does the same as a
-  7-minute catch-up. Both skip a retainer whose `cf_xero_bank_transaction_id` is filled. The new retainer is
-  created with that field pre-set to `NOT SYNCED - Hillview Pre-Need paid via At-Need invoice`, so neither posts
-  it -- the cash already reaches Xero through the At-Need invoice and its payment. No edit to either.
+  `hillview`** (also excludes the `Non Taxable - Preneed(2025) Hillview Vault Reg` companion row).
+- **Tax:** all Hillview Pre-Need products are Tax Exempt today, so the retainer's tax is $0. The code copies each
+  line's own `tax_id`, so a taxed product would carry its tax.
 - **`allprocessonpaymentcreateandupdate`** (every payment): for a retainer payment it reads
-  `cf_related_crm_deal_id` and overwrites that Deal's `Amount_Paid_To_Date` and runs the ZP-TBD-82 contract
-  check. The Hillview retainer does **not** get that field (the At-Need Deal id goes in the retainer notes).
-  Its "Books"/"CRM" blocks behave exactly as for today's CRM-created retainer payments (same payload shape as
+  `cf_related_crm_deal_id`, overwrites that Deal's `Amount_Paid_To_Date` and runs the ZP-TBD-82 contract check.
+  The Hillview retainer does **not** get that field (the At-Need Deal id goes in the retainer notes). Its
+  "Books"/"CRM" blocks behave as for today's CRM-created retainer payments (same payload shape as
   `createPaymentsOnBooksForRetainerInvoice`, `cf_payment_created_from` not set).
 - **`syncretainerinvoicestatusbetweencrmandxero`**: only acts when `cf_crm_invoice_id` is set -> no-op here.
 - **`addpreneeddifferenceandcreditnoteonretainerapply`** (every retainer edit, no criteria): exits when the
   retainer is not applied to an invoice -> no-op here. If staff ever *apply* the Hillview retainer to an
   invoice it would run the Pre-Need difference / credit-note logic -- hence the "do not apply" notes/comments.
-- **`updateInvoiceToXero`** fires `createinvoiceonxero` on every edit of an invoice that has a Xero id. This
-  function edits the invoice twice, once only per Hillview invoice (lock + link) -> 2 extra Xero re-syncs of
-  that invoice. Nothing is written to the invoice on the paid step.
+- **`createinvoiceonxero`** codes each At-Need invoice line to the Xero account with the same name as the Books
+  line's account -> the Hillview line goes to **PRE NEED 26100**.
 
-### Accounting effect (for Dale)
-- **Xero:** unchanged from today -- At-Need invoice line coded to PRE NEED (26100) via the product's Sales
-  Account, payment into the bank. The retainer never reaches Xero.
-- **Books:** the retainer payment is Dr "Hillview Pre-Need Clearing" / Cr retainer (unearned) and the At-Need
-  invoice line is Cr PRE NEED. The clearing account therefore carries a debit equal to the Hillview amounts --
-  Dale decides how he wants it (e.g. clear it periodically against PRE NEED). No money is counted twice in the
-  bank.
+### Accounting effect -- accepted as decided
+- **Xero:** the At-Need invoice (Hillview line -> PRE NEED) and its payment (-> bank) are unchanged. The retainer
+  additionally posts a Receive Money into **BNS DFH-Checking**, coded to PRE NEED, when it is created -- exactly
+  like other retainers. So in Xero the Hillview amount appears **twice** in BNS DFH-Checking and twice in PRE NEED
+  (26100), and the BNS bank reconciliation has one extra receipt per Hillview purchase. Chosen deliberately on
+  2026-09-29 over the clearing-account alternatives (Receive Money into a "Hillview Pre-Need Clearing" bank
+  account, with or without an automatic reversing journal). Dale should be told before go-live.
+- **Books:** the retainer payment is Dr "Hillview Pre-Need Clearing" / Cr retainer; no new money in a real bank.
 - The paid retainer stays as **unused retainer credit** on the customer. It must not be applied or refunded;
   the notes + comment say so.
 
-## New setup (manual)
+## Setup (manual)
 | Item | Detail |
 |---|---|
 | Books Invoice custom field | "Hillview Retainer ID", text, api_name `cf_hillview_retainer_id` |
 | Books Retainer Invoice custom field | "Hillview Source Invoice ID", text, api_name `cf_hillview_source_invoice_id` |
-| Books account | "Hillview Pre-Need Clearing" (type per Dale). Until it exists the retainer is created but not marked paid; an alert email says so |
+| Books account | **"Hillview Pre-Need Clearing"**, type **Bank** (so it can be the Deposit To of a payment), no bank feed. Holds only the "Paid via At-Need Invoice" payments. Until it exists the retainer is created but not marked paid (alert email). |
 | Books custom function | `hillviewPreNeedRetainerSync` (Invoice) |
 | Books workflow rule | "Hillview Pre-Need Retainer" -- Invoices, created or edited, no criteria, action = the function |
 
-## Open questions
-**Andrea**
-1. Confirm the name rule (starts with "Preneed", contains "Hillview"), and that `Hillview-Preneed- Regular` is
-   an at-need product (excluded).
-2. Should the retainer also be created while the At-Need invoice is still **draft**? (Built: yes -- it follows the
-   invoice and is voided if the line is removed.)
-3. Should the Hillview purchase also create a **Pre-Need Deal** in CRM? Without one, the ZP-TBD-78/79/80
-   conversion flow (Find Pre-Need matches / Get Pre Need Info) will not find this purchase when the plot is used.
-   Not built.
-
-**Dale**
-4. Deposit account for the "mark paid" payment -- name/type of "Hillview Pre-Need Clearing", and how it is
-   cleared.
-5. OK that the retainer never posts to Xero (Xero already has it through the At-Need invoice)?
-6. Invoice paid, then the payment is deleted/refunded -> retainer stays paid (not reversed automatically).
-
 ## Not covered
 - Partial payments on the At-Need invoice: the retainer is marked paid only when the invoice is fully paid.
+- At-Need payment deleted/refunded after the retainer was marked paid (decided: not now).
 - Currency: the retainer takes the customer's default currency (same as the At-Need invoice in normal cases).
 - Existing At-Need invoices that already hold a Hillview line get a retainer on their next edit (any save).
 
@@ -111,6 +103,6 @@ because a CRM Invoice on the At-Need Deal would:
 CRM: `getFunctions` (all 3 pages), `getFunctionCode` createretainerinvoiceforplotitem, createsalesordersforshipins,
 checkhillviewupgradefield, createpaymentsonbooksforretainerinvoice; Products (all 987), record counts for Retainer
 Sales Orders / Retainer Plot invoices. Books: custom function list; syncretainerinvoicetoxero,
-syncretainerinvoicestatusbetweencrmandxero, allprocessonpaymentcreateandupdate,
+syncretainerinvoicestatusbetweencrmandxero, allprocessonpaymentcreateandupdate, createinvoiceonxero,
 addpreneeddifferenceandcreditnoteonretainerapply; workflows updateInvoiceToXero,
 addPreNeedDifferenceAndCreditNoteOnRetainerApply. Repo: ZP-TBD-65 Schedule rebuild, ZP-TBD-74, ZP-TBD-80, ZP-TBD-56-2.
