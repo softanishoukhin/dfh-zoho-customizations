@@ -1,0 +1,414 @@
+// ==========================================================================
+// ZP-TBD-83 -- Hillview Pre-Need (vault / plot) bought on an At-Need invoice
+//
+// Books Custom Function, entity: Invoice (param name "invoice").
+// Workflow rule: "Hillview Pre-Need Retainer" -- Invoices, When: Created or Edited,
+// no criteria (this function filters itself and exits immediately when the
+// invoice has no Hillview Pre-Need line).
+//
+// What it does:
+//   1. A "Preneed(2025) Hillview ..." product is on the At-Need invoice
+//      -> create ONE Books Retainer Invoice for the same customer holding those
+//         lines (amount + the product's own tax), linked both ways.
+//   2. While that retainer is unpaid it follows the invoice: Hillview lines
+//      edited -> retainer lines updated; Hillview lines removed or the invoice
+//      voided -> retainer voided.
+//   3. At-Need invoice reaches status "paid" -> the retainer is marked paid with
+//      a Books payment deposited to the Hillview clearing account (no new money:
+//      the family already paid on the At-Need invoice).
+//
+// Deliberately NOT done here (see metadata.md for why):
+//   - no CRM Invoice record is created (it would count in the Deal amount, the
+//     "all invoices paid" stage logic, payment links and reminders);
+//   - cf_related_crm_deal_id is NOT set on the retainer (the payment workflow
+//     would overwrite the At-Need Deal's Amount_Paid_To_Date and run the
+//     Pre-Need contract check against it);
+//   - cf_xero_bank_transaction_id is pre-filled with a marker so that
+//     syncretainerinvoicetoxero AND its 7-minute catch-up Schedule both skip
+//     this retainer -- the cash already reaches Xero through the At-Need
+//     invoice, a Receive Money here would count it twice.
+// ==========================================================================
+organizationID = organization.get("organization_id");
+invoiceID = invoice.get("invoice_id");
+// ---- configuration ----
+HILLVIEW_NAME_PREFIX = "preneed";
+HILLVIEW_NAME_KEYWORD = "hillview";
+CLEARING_ACCOUNT_NAME = "Hillview Pre-Need Clearing";
+PAYMENT_MODE = "Paid via At-Need Invoice";
+XERO_SKIP_MARKER = "NOT SYNCED - Hillview Pre-Need paid via At-Need invoice";
+ALERT_EMAIL = "softanis.noushadurrahman@gmail.com";
+BOOKS_API = "https://www.zohoapis.com/books/v3";
+SLEEP_API = "https://www.zohoapis.com/creator/custom/delapenhafuneralhome/Sleep_API?publickey=69fNOfX03TwjyaAgAYyRTJSBd&seconds=";
+// ==========================================================================
+// 1. CHEAP EXIT -- read only the webhook payload, no API calls
+// ==========================================================================
+payloadHasHillview = false;
+for each  payloadLine in ifnull(invoice.get("line_items"),list())
+{
+	payloadName = ifnull(payloadLine.get("name"),"").toLowerCase().replaceAll(" ","").replaceAll("-","");
+	if(payloadName.startsWith(HILLVIEW_NAME_PREFIX) && payloadName.contains(HILLVIEW_NAME_KEYWORD))
+	{
+		payloadHasHillview = true;
+		break;
+	}
+}
+payloadLinkedRetainer = "";
+for each  payloadField in ifnull(invoice.get("custom_fields"),list())
+{
+	if(payloadField.get("api_name") == "cf_hillview_retainer_id")
+	{
+		payloadLinkedRetainer = ifnull(payloadField.get("value"),"").toString();
+		break;
+	}
+}
+if(payloadHasHillview == false && (payloadLinkedRetainer == "" || payloadLinkedRetainer == "null"))
+{
+	return;
+}
+// ==========================================================================
+// 2. FRESH READ OF THE AT-NEED INVOICE
+// ==========================================================================
+invoiceData = zoho.books.getRecordsByID("invoices",organizationID,invoiceID,"zohobooksconnection").get("invoice");
+invoiceNumber = invoiceData.get("invoice_number");
+invoiceStatus = invoiceData.get("status");
+linkedRetainerID = "";
+atNeedDealID = "";
+for each  invoiceField in ifnull(invoiceData.get("custom_fields"),list())
+{
+	if(invoiceField.get("api_name") == "cf_hillview_retainer_id")
+	{
+		linkedRetainerID = ifnull(invoiceField.get("value"),"").toString();
+	}
+	if(invoiceField.get("api_name") == "cf_related_crm_deal_id")
+	{
+		atNeedDealID = ifnull(invoiceField.get("value"),"").toString();
+	}
+}
+if(linkedRetainerID == "null")
+{
+	linkedRetainerID = "";
+}
+// Hillview lines as they should appear on the retainer: the line's own amount after
+// discount (item_total) as the rate, with the line's own tax so Books adds the tax.
+hillviewLines = list();
+hillviewSignature = list();
+for each  invoiceLine in ifnull(invoiceData.get("line_items"),list())
+{
+	lineName = ifnull(invoiceLine.get("name"),"");
+	normalizedName = lineName.toLowerCase().replaceAll(" ","").replaceAll("-","");
+	if(normalizedName.startsWith(HILLVIEW_NAME_PREFIX) && normalizedName.contains(HILLVIEW_NAME_KEYWORD))
+	{
+		lineAmount = ifnull(invoiceLine.get("item_total"),0).toDecimal().round(2);
+		lineTaxID = ifnull(invoiceLine.get("tax_id"),"").toString();
+		retainerLine = Map();
+		retainerLine.put("description",lineName + " (At-Need invoice " + invoiceNumber + ")");
+		retainerLine.put("rate",lineAmount);
+		if(lineTaxID != "" && lineTaxID != "null")
+		{
+			retainerLine.put("tax_id",lineTaxID);
+		}
+		if(!isNull(invoiceLine.get("account_id")))
+		{
+			retainerLine.put("account_id",invoiceLine.get("account_id"));
+		}
+		hillviewLines.add(retainerLine);
+		hillviewSignature.add(retainerLine.get("description") + "|" + lineAmount.toString());
+	}
+}
+// ==========================================================================
+// 3. NO RETAINER YET -> CREATE ONE
+// ==========================================================================
+if(linkedRetainerID == "" || linkedRetainerID.startsWith("PENDING"))
+{
+	if(hillviewLines.size() == 0 || invoiceStatus == "void")
+	{
+		return;
+	}
+	// ---- lock: a Books invoice is often saved twice within seconds (create + the
+	// CRM sync edit). Write our own token, wait, read it back; only the run whose
+	// token survived goes on. A PENDING token older than 10 minutes is treated as
+	// a crashed run and taken over.
+	if(linkedRetainerID.startsWith("PENDING"))
+	{
+		pendingParts = linkedRetainerID.toList(" ");
+		pendingAgeMinutes = 999;
+		try
+		{
+			pendingAgeMinutes = (zoho.currenttime.toLong() - pendingParts.get(1).toLong()) / 60000;
+		}
+		catch (ePending)
+		{
+			pendingAgeMinutes = 999;
+		}
+		if(pendingAgeMinutes < 10)
+		{
+			info "ZP-TBD-83: retainer for " + invoiceNumber + " is being created by another run - skipping";
+			return;
+		}
+	}
+	lockToken = "PENDING " + zoho.currenttime.toLong() + " " + randomNumber(1,999999);
+	lockFields = list();
+	lockFields.add({"api_name":"cf_hillview_retainer_id","value":lockToken});
+	lockMap = Map();
+	lockMap.put("custom_fields",lockFields);
+	lockMap.put("reason","Hillview Pre-Need retainer lock");
+	zoho.books.updateRecord("Invoices",organizationID,invoiceID,lockMap,"zohobooksconnection");
+	try
+	{
+		getUrl(SLEEP_API + "5");
+	}
+	catch (eSleep)
+	{
+		info eSleep;
+	}
+	lockCheck = "";
+	for each  lockField in ifnull(zoho.books.getRecordsByID("invoices",organizationID,invoiceID,"zohobooksconnection").get("invoice").get("custom_fields"),list())
+	{
+		if(lockField.get("api_name") == "cf_hillview_retainer_id")
+		{
+			lockCheck = ifnull(lockField.get("value"),"").toString();
+			break;
+		}
+	}
+	if(lockCheck != lockToken)
+	{
+		info "ZP-TBD-83: another run owns the retainer lock for " + invoiceNumber + " - skipping";
+		return;
+	}
+	// ---- build the retainer
+	retainerMap = Map();
+	retainerMap.put("customer_id",invoiceData.get("customer_id"));
+	retainerMap.put("date",zoho.currentdate.toString("yyyy-MM-dd"));
+	retainerMap.put("reference_number",invoiceNumber);
+	retainerMap.put("line_items",hillviewLines);
+	contactPersonIDs = list();
+	for each  invoiceContactPerson in ifnull(invoiceData.get("contact_persons"),list())
+	{
+		if(invoiceContactPerson.toString().contains("contact_person_id"))
+		{
+			contactPersonIDs.add(invoiceContactPerson.get("contact_person_id"));
+		}
+		else
+		{
+			contactPersonIDs.add(invoiceContactPerson);
+		}
+	}
+	if(contactPersonIDs.size() > 0)
+	{
+		retainerMap.put("contact_persons",contactPersonIDs);
+	}
+	retainerNotes = "Hillview Pre-Need purchase. Paid through At-Need invoice " + invoiceNumber + ". Do NOT collect payment on this retainer and do NOT apply it to an invoice.";
+	if(atNeedDealID != "" && atNeedDealID != "null")
+	{
+		retainerNotes = retainerNotes + " At-Need CRM Deal: " + atNeedDealID + ".";
+	}
+	retainerMap.put("notes",retainerNotes);
+	retainerCustomFields = list();
+	retainerCustomFields.add({"api_name":"cf_hillview_source_invoice_id","value":invoiceID});
+	retainerCustomFields.add({"api_name":"cf_xero_bank_transaction_id","value":XERO_SKIP_MARKER});
+	retainerMap.put("custom_fields",retainerCustomFields);
+	createResponse = zoho.books.createRecord("retainerinvoices",organizationID,retainerMap,"zohobooksconnection");
+	newRetainerID = "";
+	try
+	{
+		newRetainerID = createResponse.get("retainerinvoice").get("retainerinvoice_id");
+	}
+	catch (eCreate)
+	{
+		newRetainerID = "";
+	}
+	if(isNull(newRetainerID) || newRetainerID == "")
+	{
+		// release the lock so the next save of the invoice retries
+		unlockFields = list();
+		unlockFields.add({"api_name":"cf_hillview_retainer_id","value":""});
+		unlockMap = Map();
+		unlockMap.put("custom_fields",unlockFields);
+		unlockMap.put("reason","Hillview Pre-Need retainer unlock");
+		zoho.books.updateRecord("Invoices",organizationID,invoiceID,unlockMap,"zohobooksconnection");
+		sendmail
+		[
+			from :zoho.adminuserid
+			to :ALERT_EMAIL
+			subject :"ZP-TBD-83: Hillview retainer NOT created for " + invoiceNumber
+			message :createResponse.toString()
+		]
+		return;
+	}
+	linkFields = list();
+	linkFields.add({"api_name":"cf_hillview_retainer_id","value":newRetainerID});
+	linkMap = Map();
+	linkMap.put("custom_fields",linkFields);
+	linkMap.put("reason","Hillview Pre-Need retainer created");
+	zoho.books.updateRecord("Invoices",organizationID,invoiceID,linkMap,"zohobooksconnection");
+	commentMap = Map();
+	commentMap.put("description","Created automatically from At-Need invoice " + invoiceNumber + " (Hillview Pre-Need purchase). It will be marked paid automatically when that invoice is paid in full. Do not collect payment on this retainer and do not apply it to an invoice.");
+	invokeurl
+	[
+		url :BOOKS_API + "/retainerinvoices/" + newRetainerID + "/comments?organization_id=" + organizationID
+		type :POST
+		parameters:commentMap.toString()
+		connection:"zohobooksconnection"
+	];
+	info "ZP-TBD-83: created Hillview retainer " + newRetainerID + " for " + invoiceNumber;
+	linkedRetainerID = newRetainerID;
+}
+// ==========================================================================
+// 4. RETAINER EXISTS -> KEEP IT IN STEP WITH THE INVOICE
+// ==========================================================================
+retainerData = zoho.books.getRecordsByID("retainerinvoices",organizationID,linkedRetainerID,"zohobooksconnection").get("retainerinvoice");
+retainerStatus = retainerData.get("status");
+retainerNumber = retainerData.get("retainerinvoice_number");
+retainerPaid = ifnull(retainerData.get("payment_made"),0).toDecimal();
+if(retainerStatus == "void")
+{
+	return;
+}
+// ---- invoice voided, or every Hillview line removed -> void the retainer (only if unpaid)
+if(invoiceStatus == "void" || hillviewLines.size() == 0)
+{
+	if(retainerPaid == 0)
+	{
+		invokeurl
+		[
+			url :BOOKS_API + "/retainerinvoices/" + linkedRetainerID + "/status/void?organization_id=" + organizationID
+			type :POST
+			connection:"zohobooksconnection"
+		];
+		voidComment = Map();
+		voidComment.put("description","Voided automatically: the Hillview Pre-Need line is no longer on At-Need invoice " + invoiceNumber + " (or that invoice was voided).");
+		invokeurl
+		[
+			url :BOOKS_API + "/retainerinvoices/" + linkedRetainerID + "/comments?organization_id=" + organizationID
+			type :POST
+			parameters:voidComment.toString()
+			connection:"zohobooksconnection"
+		];
+		info "ZP-TBD-83: voided Hillview retainer " + retainerNumber;
+	}
+	else
+	{
+		sendmail
+		[
+			from :zoho.adminuserid
+			to :ALERT_EMAIL
+			subject :"ZP-TBD-83: check Hillview retainer " + retainerNumber
+			message :"At-Need invoice " + invoiceNumber + " was voided or lost its Hillview Pre-Need line, but retainer " + retainerNumber + " is already marked paid. Nothing was changed automatically -- needs a manual decision."
+		]
+	}
+	return;
+}
+// ---- Hillview lines edited while the retainer is still unpaid -> copy the new lines over
+retainerSignature = list();
+for each  existingLine in ifnull(retainerData.get("line_items"),list())
+{
+	retainerSignature.add(ifnull(existingLine.get("description"),"") + "|" + ifnull(existingLine.get("rate"),0).toDecimal().round(2).toString());
+}
+if(retainerSignature.toString() != hillviewSignature.toString())
+{
+	if(retainerPaid == 0)
+	{
+		updateRetainerMap = Map();
+		updateRetainerMap.put("line_items",hillviewLines);
+		updateRetainerMap.put("reason","Hillview line changed on At-Need invoice " + invoiceNumber);
+		zoho.books.updateRecord("retainerinvoices",organizationID,linkedRetainerID,updateRetainerMap,"zohobooksconnection");
+		retainerData = zoho.books.getRecordsByID("retainerinvoices",organizationID,linkedRetainerID,"zohobooksconnection").get("retainerinvoice");
+		retainerStatus = retainerData.get("status");
+		info "ZP-TBD-83: updated lines on Hillview retainer " + retainerNumber;
+	}
+	else
+	{
+		sendmail
+		[
+			from :zoho.adminuserid
+			to :ALERT_EMAIL
+			subject :"ZP-TBD-83: check Hillview retainer " + retainerNumber
+			message :"The Hillview Pre-Need line on At-Need invoice " + invoiceNumber + " changed after retainer " + retainerNumber + " was already marked paid. Nothing was changed automatically."
+		]
+	}
+}
+// ==========================================================================
+// 5. AT-NEED INVOICE PAID IN FULL -> MARK THE RETAINER PAID
+// ==========================================================================
+retainerBalance = ifnull(retainerData.get("balance"),0).toDecimal();
+if(invoiceStatus != "paid" || retainerStatus == "paid" || retainerBalance <= 0)
+{
+	return;
+}
+clearingAccountID = "";
+chartResponse = invokeurl
+[
+	url :BOOKS_API + "/chartofaccounts?organization_id=" + organizationID
+	type :GET
+	connection:"zohobooksconnection"
+];
+for each  chartAccount in ifnull(chartResponse.get("chartofaccounts"),list())
+{
+	if(chartAccount.get("account_name").toLowerCase() == CLEARING_ACCOUNT_NAME.toLowerCase())
+	{
+		clearingAccountID = chartAccount.get("account_id");
+		break;
+	}
+}
+if(clearingAccountID == "")
+{
+	sendmail
+	[
+		from :zoho.adminuserid
+		to :ALERT_EMAIL
+		subject :"ZP-TBD-83: Hillview retainer " + retainerNumber + " NOT marked paid"
+		message :"At-Need invoice " + invoiceNumber + " is paid, but no Books account named '" + CLEARING_ACCOUNT_NAME + "' exists, so retainer " + retainerNumber + " could not be marked paid. Create the account, then save the invoice again (any edit) to retry."
+	]
+	return;
+}
+if(retainerStatus == "draft")
+{
+	invokeurl
+	[
+		url :BOOKS_API + "/retainerinvoices/" + linkedRetainerID + "/status/sent?organization_id=" + organizationID
+		type :POST
+		connection:"zohobooksconnection"
+	];
+}
+paymentMap = Map();
+paymentMap.put("customer_id",invoiceData.get("customer_id"));
+paymentMap.put("payment_mode",PAYMENT_MODE);
+paymentMap.put("date",zoho.currentdate.toString("yyyy-MM-dd"));
+paymentMap.put("amount",retainerBalance.round(2));
+paymentMap.put("account_id",clearingAccountID);
+paymentMap.put("reference_number",invoiceNumber);
+paymentMap.put("description","Hillview Pre-Need amount collected on At-Need invoice " + invoiceNumber + " - no new money received.");
+paymentMap.put("retainerinvoice_id",linkedRetainerID);
+appliedRetainers = list();
+appliedRetainers.add({"retainerinvoice_id":linkedRetainerID,"amount_applied":retainerBalance.round(2)});
+paymentMap.put("retainerinvoices",appliedRetainers);
+paymentResponse = invokeurl
+[
+	url :BOOKS_API + "/customerpayments?organization_id=" + organizationID
+	type :POST
+	parameters:paymentMap.toString()
+	connection:"zohobooksconnection"
+];
+if(paymentResponse.containKey("payment"))
+{
+	paidComment = Map();
+	paidComment.put("description","Marked paid automatically: At-Need invoice " + invoiceNumber + " was paid in full, and it included this Hillview Pre-Need amount. No new money was received on this retainer.");
+	invokeurl
+	[
+		url :BOOKS_API + "/retainerinvoices/" + linkedRetainerID + "/comments?organization_id=" + organizationID
+		type :POST
+		parameters:paidComment.toString()
+		connection:"zohobooksconnection"
+	];
+	info "ZP-TBD-83: Hillview retainer " + retainerNumber + " marked paid from " + invoiceNumber;
+}
+else
+{
+	sendmail
+	[
+		from :zoho.adminuserid
+		to :ALERT_EMAIL
+		subject :"ZP-TBD-83: Hillview retainer " + retainerNumber + " payment failed"
+		message :paymentMap.toString() + " --> " + paymentResponse.toString()
+	]
+}
