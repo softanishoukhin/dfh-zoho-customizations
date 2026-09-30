@@ -23,12 +23,20 @@ Settings > Automation > Custom Functions > New
 - Paste the body of `hillviewPreNeedRetainerSync_NEW.deluge`
 - Uses the existing connection `zohobooksconnection` (same as the other Books functions)
 
-## 4. Workflow rule
-Settings > Automation > Workflow Rules > New
-- Name `Hillview Pre-Need Retainer`, Module **Invoice**
-- When: **Created or Edited**, "any field is updated", execute every time the rule is triggered
-- Criteria: none
-- Action: Custom Function `hillviewPreNeedRetainerSync`
+## 4. Attach to an existing Invoice workflow rule
+The Books Invoice module is at its workflow-rule limit (2026-09-30), so no new rule is created. Instead add the
+function as an **extra action** on an existing Invoice rule:
+- The rule must fire on **Created or Edited**, with no criteria (or criteria every At-Need invoice meets).
+- Candidates: `triggerOnInvoiceUpdate`, `Sync Invoice between CRM and Books` -- use whichever matches the above.
+  Not `updateInvoiceToXero` (edit only, needs a Xero invoice id + CRM invoice id).
+- Open the rule > Add Action > Custom Function > `hillviewPreNeedRetainerSync` > Save.
+The function filters itself (exits immediately when the invoice has no Hillview Pre-Need line), so running on every
+invoice save is safe.
+
+If no rule fits, fallback = convert the function to an incoming webhook and call it from an existing invoice function.
+
+**Watch in TC-14:** if recording the payment does not count as an invoice edit, the retainer is only marked paid on
+the next save of the invoice. If so, add a call from `allprocessonpaymentcreateandupdate` (runs on every payment).
 
 ## 5. Check before go-live
 - Tell Dale: each Hillview retainer posts a Receive Money into BNS DFH-Checking (coded PRE NEED) like other
@@ -36,5 +44,5 @@ Settings > Automation > Workflow Rules > New
 - Run the test set (TC-01 first: api names of the two new fields).
 
 ## Rollback
-Deactivate the workflow rule `Hillview Pre-Need Retainer`. Retainers already created stay; void any that
+Remove the `hillviewPreNeedRetainerSync` action from the host Invoice workflow rule (leave the rule's own action as is). Retainers already created stay; void any that
 are not wanted by hand (and delete their "Paid via At-Need Invoice" payment first if one was recorded).
