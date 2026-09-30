@@ -23,17 +23,28 @@ Settings > Automation > Custom Functions > New
 - Paste the body of `hillviewPreNeedRetainerSync_NEW.deluge`
 - Uses the existing connection `zohobooksconnection` (same as the other Books functions)
 
-## 4. Attach to an existing Invoice workflow rule
-The Books Invoice module is at its workflow-rule limit (2026-09-30), so no new rule is created. Instead add the
-function as an **extra action** on an existing Invoice rule:
-- The rule must fire on **Created or Edited**, with no criteria (or criteria every At-Need invoice meets).
-- Candidates: `triggerOnInvoiceUpdate`, `Sync Invoice between CRM and Books` -- use whichever matches the above.
-  Not `updateInvoiceToXero` (edit only, needs a Xero invoice id + CRM invoice id).
-- Open the rule > Add Action > Custom Function > `hillviewPreNeedRetainerSync` > Save.
+## 4. Workflow rule -- reuse the inactive `addPreNeedDifferenceLineOnRetainerApply`
+The Books Invoice module is at its workflow-rule limit (2026-09-30), so no new rule can be created. Checked live
+2026-09-30:
+
+| Rule | Trigger | Criteria | Fit |
+|---|---|---|---|
+| `addPreNeedDifferenceLineOnRetainerApply` (id 5830143000035961690) | Created or Edited, any field | none | **Use this** -- INACTIVE, only action is the superseded ZP-TBD-65 invoice-side function |
+| `triggerOnInvoiceUpdate` | Edited, `invoice_balance` changes | none | Backup -- misses invoice creation |
+| `Sync Invoice between CRM and Books` | Edited | 3 sub-rules with criteria | No |
+| `syncStatusBetweenCRMandBooks` | Edited, `status` changes | none | No -- misses creation + line changes |
+
+Steps:
+1. Settings > Automation > Workflow Rules > `addPreNeedDifferenceLineOnRetainerApply` > Edit.
+2. Rename to `Hillview Pre-Need Retainer`.
+3. Remove the action `addpreneeddifferencelineonretainerapply`; add Custom Function `hillviewPreNeedRetainerSync`.
+4. Keep When = Created or Edited, any field, no criteria. Save and **Activate**.
+
 The function filters itself (exits immediately when the invoice has no Hillview Pre-Need line), so running on every
 invoice save is safe.
 
-If no rule fits, fallback = convert the function to an incoming webhook and call it from an existing invoice function.
+Backup: add the function as a 2nd action on `triggerOnInvoiceUpdate` (then the retainer appears on the first balance
+change -- a payment or a line change -- instead of on invoice creation).
 
 **Watch in TC-14:** if recording the payment does not count as an invoice edit, the retainer is only marked paid on
 the next save of the invoice. If so, add a call from `allprocessonpaymentcreateandupdate` (runs on every payment).
@@ -44,5 +55,5 @@ the next save of the invoice. If so, add a call from `allprocessonpaymentcreatea
 - Run the test set (TC-01 first: api names of the two new fields).
 
 ## Rollback
-Remove the `hillviewPreNeedRetainerSync` action from the host Invoice workflow rule (leave the rule's own action as is). Retainers already created stay; void any that
+Deactivate the rule `Hillview Pre-Need Retainer` (it was inactive before this ticket). Retainers already created stay; void any that
 are not wanted by hand (and delete their "Paid via At-Need Invoice" payment first if one was recorded).
