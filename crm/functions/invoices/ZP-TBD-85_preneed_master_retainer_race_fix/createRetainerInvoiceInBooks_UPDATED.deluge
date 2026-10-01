@@ -1,0 +1,522 @@
+void automation.createRetainerInvoiceInBooks(Int crmid)
+{
+try
+{
+	getUrl("https://www.zohoapis.com/creator/custom/delapenhafuneralhome/Sleep_API?publickey=69fNOfX03TwjyaAgAYyRTJSBd&seconds=10");
+}
+catch (e)
+{
+	info e;
+}
+recordDetails = invokeurl
+[
+	url :"https://www.zohoapis.com/crm/v7/Invoices/" + crmid
+	type :GET
+	connection:"zohooauth"
+];
+recordInfo = recordDetails.get("data").get(0);
+//info recordInfo;
+dealId = "";
+if(!isNull(recordInfo.get("Deal_Name__s")))
+{
+	dealId = recordInfo.get("Deal_Name__s").get("id");
+	standalone.updateDealAmount(dealId);
+}
+// ==========================================================================
+// ZP-TBD-74 -- Pre-Need Deposit + Installment 1/2/3 invoices share ONE Books
+// retainer per Deal, instead of each one creating its own. See guideline.md
+// in this folder for the full design and the known Xero-sync gap this leaves.
+// ==========================================================================
+preNeedInvoiceForValues = List();
+preNeedInvoiceForValues.add("Deposit");
+preNeedInvoiceForValues.add("Installment 1");
+preNeedInvoiceForValues.add("Installment 2");
+preNeedInvoiceForValues.add("Installment 3");
+isPreNeedInstallmentInvoice = false;
+if(dealId != "" && preNeedInvoiceForValues.contains(recordInfo.get("Invoice_For")))
+{
+	isPreNeedInstallmentInvoice = true;
+}
+dealProductRowsForMaster = list();
+preNeedMasterTotal = 0.0;
+if(isPreNeedInstallmentInvoice == true)
+{
+	if(!isNull(recordInfo.get("Books_Invoice_ID")))
+	{
+		// Already linked to (or synced with) a Books retainer. The master's line items are fixed
+		// at creation time from the Deal's full product selection -- a later edit of one slice
+		// invoice must never overwrite them.
+		info "Invoice " + crmid + " already has a Books retainer linked - skipping re-sync";
+		return;
+	}
+	// ZP-TBD-85 -- only ONE invoice per Deal may create the master; every other sibling waits for it.
+	// ZP-TBD-81 creates the Deposit + Installment 1 + Installment 2 invoices a few seconds apart, so all
+	// three copies of this function wake from the 10s sleep above at about the same moment. Under
+	// ZP-TBD-74 alone none of them saw a sibling with a Books_Invoice_ID yet, so each one created its
+	// own full-contract "master" (3 retainers on Preneed ZZTEST Buyer 0929-1944, 2026-09-29).
+	// Election rule: the OLDEST active Deposit/Installment invoice on the Deal creates the master
+	// (Created_Time, then Deposit < Installment 1 < 2 < 3, then record id). Safe without a lock: the
+	// oldest invoice always exists before any younger one is created, so every younger sibling sees it
+	// and waits for it, while the oldest one elects itself even if it sees no sibling at all.
+	// Deliberately NOT COQL: COQL reads the search index, which can lag behind a just-written record.
+	relatedInvoicesOnDeal = zoho.crm.getRelatedRecords("Invoices","Deals",dealId);
+	masterBooksInvoiceID = "";
+	masterBooksInvoiceNumber = "";
+	// Created_Time "2026-09-29T19:24:37-05:00" -> 20260929192437 (every record carries the same org offset)
+	myCreatedKey = recordInfo.get("Created_Time").toString().subString(0,19).replaceAll("-","").replaceAll("T","").replaceAll(":","").toLong();
+	electedInvoiceId = crmid.toString();
+	electedCreatedKey = myCreatedKey;
+	electedRank = preNeedInvoiceForValues.indexOf(recordInfo.get("Invoice_For"));
+	for each  relatedInvoice in relatedInvoicesOnDeal
+	{
+		siblingId = relatedInvoice.get("id").toString();
+		if(siblingId == crmid.toString())
+		{
+			continue;
+		}
+		if(ifnull(relatedInvoice.get("Retainer_Invoice"),false).toString() != "true")
+		{
+			continue;
+		}
+		if(!preNeedInvoiceForValues.contains(relatedInvoice.get("Invoice_For")))
+		{
+			continue;
+		}
+		siblingStatus = ifnull(relatedInvoice.get("Status"),"");
+		if(siblingStatus == "Void" || siblingStatus == "Cancelled")
+		{
+			continue;
+		}
+		if(!isNull(relatedInvoice.get("Books_Invoice_ID")))
+		{
+			// The master already exists - link to it (below).
+			masterBooksInvoiceID = relatedInvoice.get("Books_Invoice_ID");
+			masterBooksInvoiceNumber = relatedInvoice.get("Books_Invoice_Number");
+			break;
+		}
+		siblingCreatedKey = relatedInvoice.get("Created_Time").toString().subString(0,19).replaceAll("-","").replaceAll("T","").replaceAll(":","").toLong();
+		siblingRank = preNeedInvoiceForValues.indexOf(relatedInvoice.get("Invoice_For"));
+		siblingIsOlder = false;
+		if(siblingCreatedKey < electedCreatedKey)
+		{
+			siblingIsOlder = true;
+		}
+		else if(siblingCreatedKey == electedCreatedKey)
+		{
+			if(siblingRank < electedRank)
+			{
+				siblingIsOlder = true;
+			}
+			else if(siblingRank == electedRank && siblingId.toLong() < electedInvoiceId.toLong())
+			{
+				siblingIsOlder = true;
+			}
+		}
+		if(siblingIsOlder == true)
+		{
+			electedInvoiceId = siblingId;
+			electedCreatedKey = siblingCreatedKey;
+			electedRank = siblingRank;
+		}
+	}
+	if(masterBooksInvoiceID == "" && electedInvoiceId != crmid.toString())
+	{
+		// An older sibling is creating the master right now - wait for it (up to 12 x 10s = 2 minutes)
+		// instead of creating a second one.
+		info "Invoice " + crmid + " waits for sibling invoice " + electedInvoiceId + " to create the Pre-Need master retainer on Deal " + dealId;
+		for each  waitAttempt in {1,2,3,4,5,6,7,8,9,10,11,12}
+		{
+			try
+			{
+				getUrl("https://www.zohoapis.com/creator/custom/delapenhafuneralhome/Sleep_API?publickey=69fNOfX03TwjyaAgAYyRTJSBd&seconds=10");
+			}
+			catch (eWait)
+			{
+				info eWait;
+			}
+			electedDetails = invokeurl
+			[
+				url :"https://www.zohoapis.com/crm/v7/Invoices/" + electedInvoiceId
+				type :GET
+				connection:"zohooauth"
+			];
+			electedData = electedDetails.get("data");
+			if(isNull(electedData) || electedData.size() == 0)
+			{
+				// The elected sibling was deleted while we waited.
+				break;
+			}
+			electedRecord = electedData.get(0);
+			if(!isNull(electedRecord.get("Books_Invoice_ID")))
+			{
+				masterBooksInvoiceID = electedRecord.get("Books_Invoice_ID");
+				masterBooksInvoiceNumber = electedRecord.get("Books_Invoice_Number");
+				break;
+			}
+		}
+		if(masterBooksInvoiceID == "")
+		{
+			// Never fall back to creating a second master here - that is the exact bug this fix removes.
+			// Leave a Note so staff can see the invoice is unlinked.
+			timeoutNote = Map();
+			timeoutNote.put("Parent_Id",crmid);
+			timeoutNote.put("se_module","Invoices");
+			timeoutNote.put("Note_Title","Books retainer not linked");
+			timeoutNote.put("Note_Content","This invoice was not linked to the Pre-Need master retainer in Books. Invoice " + electedInvoiceId + " on the same Deal was due to create the master but still had no Books retainer after 2 minutes. No new retainer was created. Check invoice " + electedInvoiceId + " first, then re-run createRetainerInvoiceInBooks for this invoice.");
+			zoho.crm.createRecord("Notes",timeoutNote);
+			info "Invoice " + crmid + " NOT linked - sibling " + electedInvoiceId + " had no Books retainer after 2 minutes; no retainer created";
+			return;
+		}
+	}
+	if(masterBooksInvoiceID != "")
+	{
+		// A master retainer already exists for this Deal - link this invoice to it, no new Books document.
+		linkMap = Map();
+		linkMap.put("Books_Invoice_ID",masterBooksInvoiceID);
+		linkMap.put("Books_Invoice_Number",masterBooksInvoiceNumber);
+		zoho.crm.updateRecord("Invoices",crmid,linkMap);
+		info "Linked Invoice " + crmid + " to existing Pre-Need master retainer " + masterBooksInvoiceID + " on Deal " + dealId;
+		return;
+	}
+	// No master yet - this invoice becomes the master, sized to the Deal's FULL product selection
+	// (not just this invoice's own slice), so deposit + every installment pays down one retainer.
+	dealDetailsForMaster = invokeurl
+	[
+		url :"https://www.zohoapis.com/crm/v8/Deals/" + dealId
+		type :GET
+		connection:"zohooauth"
+	];
+	dealRecordForMaster = dealDetailsForMaster.get("data").get(0);
+	dealProductRowsForMaster = ifnull(dealRecordForMaster.get("Product_Selection"),list());
+}
+//Application_Type  = recordInfo.get("Application_Type");
+// 	===========================Boooks Invoice============================
+if(recordInfo.get("Invoice_For") == "Police" || recordInfo.get("Invoice_For") == "Hospital")
+{
+	Contact_id = recordInfo.get("Parent_Account").get("id");
+	relatedContact = zoho.crm.getRelatedRecords("Contacts","Accounts",Contact_id);
+	Main_Contact_person_id = relatedContact.get(0).get("id");
+}
+else
+{
+	Contact_id = recordInfo.get("Account_Name").get("id");
+	Main_Contact_person_id = recordInfo.get("Contact_Name").get("id");
+}
+orgID = "872327358";
+chartOfAccounts = invokeurl
+[
+	url :"https://www.zohoapis.com/books/v3/chartofaccounts?organization_id=" + orgID
+	type :GET
+	connection:"zohooauth"
+];
+listChartOfAccounts = chartOfAccounts.get("chartofaccounts");
+taxes = invokeurl
+[
+	url :"https://www.zohoapis.com/books/v3/settings/taxes?organization_id=" + orgID
+	type :GET
+	connection:"zohooauth"
+];
+listTaxes = taxes.get("taxes");
+books_con = zoho.books.getRecords("Contacts",orgID,"zcrm_account_id=" + Contact_id,"zohooauth");
+//info books_con;
+if(isPreNeedInstallmentInvoice == true && dealProductRowsForMaster.size() > 0)
+{
+	// Build Books line items from the Deal's FULL product selection at full price (not this
+	// invoice's own partial slice), so the one master retainer represents the whole contract.
+	products = list();
+	for each  dealRow in dealProductRowsForMaster
+	{
+		rowQuantity = dealRow.get("Quantity");
+		if(isNull(rowQuantity) || rowQuantity == 0)
+		{
+			rowQuantity = 1;
+		}
+		rowTotal = rowQuantity * ifnull(dealRow.get("Unit_Price"),0) - ifnull(dealRow.get("Discount"),0);
+		preNeedMasterTotal = preNeedMasterTotal + rowTotal;
+		productRowMap = Map();
+		productRowMap.put("Product_Name",dealRow.get("Child_Product"));
+		productRowMap.put("Total",rowTotal);
+		dealChildProductDetails = zoho.crm.getRecordById("Products",dealRow.get("Child_Product").get("id"));
+		dealTaxList = dealChildProductDetails.get("Tax");
+		if(dealTaxList != null && dealTaxList.size() > 0)
+		{
+			dealTaxEntry = Map();
+			dealTaxEntry.put("name",dealTaxList.get(0).toList(" - ").get(0).trim());
+			productRowMap.put("Line_Tax",{dealTaxEntry});
+		}
+		else
+		{
+			productRowMap.put("Line_Tax",list());
+		}
+		products.add(productRowMap);
+	}
+}
+else
+{
+	products = recordInfo.get("Invoiced_Items");
+}
+if(isBlank(books_con.get("contacts")))
+{
+	headers = Map();
+	headers.put("X-com-zoho-invoice-organizationid",orgID);
+	contact_response = invokeurl
+	[
+		url :"https://books.zoho.com/api/v3/crm/account/" + Contact_id.toLong() + "/import"
+		type :POST
+		headers:headers
+		connection:"zohooauth"
+	];
+	info contact_response;
+	books_contact_id = contact_response.get("data").getJSON("customer_id");
+}
+else
+{
+	books_contact_id = books_con.get("contacts").getJSON("contact_id");
+}
+bcon_details = zoho.books.getRecordsByID("contacts",orgID,books_contact_id,"zohooauth");
+primary_contact_id = bcon_details.get("contact").getJSON("primary_contact_id");
+productsList = list();
+// info primary_contact_id;
+//info bcon_details;
+cusMap = Map();
+contactPS = bcon_details.get("contact").getJSON("contact_persons").toList();
+// info contactPS;
+cpListForInvoice = list();
+if(!isNull(books_contact_id))
+{
+	Clist = List();
+	for each  CP in contactPS
+	{
+		Cmap = Map();
+		contact_person_id = CP.getJSON("contact_person_id");
+		contact_data = zoho.crm.getRecordById("Contacts",CP.getJSON("zcrm_contact_id"));
+		if(CP.getJSON("zcrm_contact_id") == Main_Contact_person_id)
+		{
+			Cmap.put("contact_person_id",contact_person_id);
+			Cmap.put("is_primary_contact",true);
+			Clist.add(Cmap);
+			cpListForInvoice.add(contact_person_id);
+			primary_contact_id = contact_person_id;
+		}
+		else
+		{
+			Cmap.put("contact_person_id",contact_person_id);
+			//cpListForInvoice.add(contact_person_id);
+			Clist.add(Cmap);
+		}
+	}
+	// 	info Clist;
+	cusMap.put("contact_persons",Clist);
+}
+update = zoho.books.updateRecord("Contacts",orgID,books_contact_id,cusMap,"zohooauth");
+chartOfAccountID = "";
+for each  item in products
+{
+	//info item;
+	item_id = item.get("Product_Name").get("id");
+	item_name = item.get("Product_Name").get("name");
+	item_total = item.get("Total");
+	crmProduct = zoho.crm.getRecordById("Products",item_id);
+	//info crmProduct;
+	itemTaxInfo = null;
+	if(item.containKey("Line_Tax") && item.get("Line_Tax").size() > 0)
+	{
+		itemTaxInfo = item.get("Line_Tax").get(0).get("name").trim();
+	}
+	p = Map();
+	for each  chartOfAccount in listChartOfAccounts
+	{
+		//info chartOfAccount.get("account_name").toLowerCase();
+		if(!isNull(crmProduct.get("Sales_Account")) && chartOfAccount.get("account_name").toLowerCase() == crmProduct.get("Sales_Account").toLowerCase())
+		{
+			p.put("account_id",chartOfAccount.get("account_id"));
+			break;
+		}
+	}
+	for each  tax in listTaxes
+	{
+		//info chartOfAccount.get("account_name").toLowerCase();
+		if(!isNull(itemTaxInfo) && tax.get("tax_name").toLowerCase() == itemTaxInfo.toLowerCase())
+		{
+			p.put("tax_id",tax.get("tax_id"));
+			break;
+		}
+	}
+	customFieldsListItem = list();
+	if(!isNull(item.get("Revenue_centers")))
+	{
+		fieldMapItem = Map();
+		fieldMapItem.put("api_name","cf_revenue_centers");
+		fieldMapItem.put("value",item.get("Revenue_centers"));
+		customFieldsListItem.add(fieldMapItem);
+	}
+	if(!isNull(item.get("Motor_Vehicle")))
+	{
+		fieldMapItem = Map();
+		fieldMapItem.put("api_name","cf_motor_vehicle");
+		fieldMapItem.put("value",item.get("Motor_Vehicle"));
+		customFieldsListItem.add(fieldMapItem);
+	}
+	// 	fieldMapItem = Map();
+	// 	fieldMapItem.put("api_name","cf_crm_invoice_row_id");
+	// 	fieldMapItem.put("value",item.get("id"));
+	// 	customFieldsListItem.add(fieldMapItem);
+	p.put("item_custom_fields",customFieldsListItem);
+	books_product = zoho.books.getRecords("items",orgID,"zcrm_product_id=" + item_id.toLong(),"zohooauth");
+	//books_product = zoho.books.getRecords("items",orgID,"SKU=Non Taxable - CASKETMCMOS","zohooauth");
+	info "books_product";
+	info books_product;
+	info "item_id";
+	info item_id;
+	if(books_product.get("items").size() > 0)
+	{
+		book_p_id = books_product.get("items").getJSON("item_id");
+		if(books_product.get("items").getJSON("status") == "inactive")
+		{
+			response = invokeurl
+			[
+				url :"https://www.zohoapis.com/books/v3/items/" + book_p_id + "/active?organization_id=" + orgID
+				type :POST
+				connection:"zohooauth"
+			];
+		}
+	}
+	else
+	{
+		headers = Map();
+		headers.put("X-com-zoho-invoice-organizationid",orgID);
+		product_response = invokeurl
+		[
+			url :"https://books.zoho.com/api/v3/crm/item/" + item_id.toLong() + "/import"
+			type :POST
+			headers:headers
+			connection:"zohooauth"
+		];
+		info product_response;
+		book_p_id = product_response.get("item").getJSON("item_id");
+	}
+	p.put("description",item_name);
+	p.put("rate",item_total);
+	//p.put("quantity",item.get("Quantity"));
+	productsList.add(p);
+}
+m = Map();
+m.put("customer_id",books_contact_id);
+m.put("date",recordInfo.get("Invoice_Date"));
+m.put("due_date",recordInfo.get("Due_Date"));
+// if(isNull(recordInfo.get("Books_Invoice_ID")))
+// {
+m.put("line_items",productsList);
+// }
+// if(!isNull(primary_contact_id))
+// {
+// 	cplist = list();
+// 	cplist.add(primary_contact_id);
+// 	m.put("contact_persons",cplist);
+// }
+m.put("contact_persons",cpListForInvoice);
+usdExchangeRateResponse = invokeurl
+[
+	url :"https://www.zohoapis.com/books/v3/settings/currencies/5830143000000000097/exchangerates?organization_id=" + orgID
+	type :GET
+	connection:"zohooauth"
+];
+if(isPreNeedInstallmentInvoice == true && dealProductRowsForMaster.size() > 0)
+{
+	amountDueInJMD = preNeedMasterTotal;
+}
+else
+{
+	amountDueInJMD = recordInfo.get("Grand_Total");
+}
+amountDueInUSD = amountDueInJMD / usdExchangeRateResponse.get("exchange_rates").get(0).get("rate");
+// info amountDueInUSD;
+customFieldsList = list();
+fieldMap = Map();
+fieldMap.put("api_name","cf_crm_invoice_id");
+fieldMap.put("value",crmid);
+customFieldsList.add(fieldMap);
+fieldMap1 = Map();
+fieldMap1.put("api_name","cf_amount_due_in_jmd");
+fieldMap1.put("value",amountDueInJMD);
+customFieldsList.add(fieldMap1);
+fieldMap2 = Map();
+fieldMap2.put("api_name","cf_amount_due_in_usd");
+fieldMap2.put("value",amountDueInUSD.round(2));
+customFieldsList.add(fieldMap2);
+fieldMap3 = Map();
+fieldMap3.put("api_name","cf_crm_payer_id");
+fieldMap3.put("value",Main_Contact_person_id);
+customFieldsList.add(fieldMap3);
+fieldMap7 = Map();
+fieldMap7.put("api_name","cf_edit_status");
+fieldMap7.put("value","Updated");
+customFieldsList.add(fieldMap7);
+fieldMap8 = Map();
+fieldMap8.put("api_name","cf_edit_timestamp");
+fieldMap8.put("value",zoho.currenttime.toString("yyyy-MM-dd HH:mm"));
+customFieldsList.add(fieldMap8);
+fieldMap9 = Map();
+fieldMap9.put("api_name","cf_related_crm_deal_id");
+fieldMap9.put("value",dealId);
+customFieldsList.add(fieldMap9);
+m.put("custom_fields",customFieldsList);
+m.put("zcrm_potential_id",dealId);
+// pops = {"payment_gateways":{{"gateway_name":"stripe"}}};
+// m.put("payment_options",pops);
+//m.put("send",true);
+// info "mapping";
+info m;
+isUpdate = false;
+if(!isNull(recordInfo.get("Books_Invoice_ID")))
+{
+	isUpdate = true;
+	m.put("reason","Updated from CRM");
+	createInvoice = zoho.books.updateRecord("retainerinvoices",orgID,recordInfo.get("Books_Invoice_ID"),m,"zohooauth");
+}
+else
+{
+	createInvoice = zoho.books.createRecord("retainerinvoices",orgID,m,"zohooauth");
+}
+info createInvoice;
+invoice_id = createInvoice.get("retainerinvoice").getJSON("retainerinvoice_id");
+invoice_number = createInvoice.get("retainerinvoice").getJSON("retainerinvoice_number");
+if(!isNull(invoice_id))
+{
+	invoiceMap = Map();
+	invoiceMap.put("Books_Invoice_ID",invoice_id);
+	invoiceMap.put("Books_Invoice_Number",invoice_number);
+	updateCRMInvoice = zoho.crm.updateRecord("Invoices",crmid,invoiceMap);
+	// ZP-TBD-85 -- this invoice just created the Pre-Need master: link every unlinked Deposit/Installment
+	// sibling to it right away, so a sibling that is still waiting (or times out) ends up linked anyway.
+	if(isPreNeedInstallmentInvoice == true && isUpdate == false)
+	{
+		siblingsAfterCreate = zoho.crm.getRelatedRecords("Invoices","Deals",dealId);
+		for each  siblingInvoice in siblingsAfterCreate
+		{
+			if(siblingInvoice.get("id").toString() == crmid.toString())
+			{
+				continue;
+			}
+			if(ifnull(siblingInvoice.get("Retainer_Invoice"),false).toString() != "true")
+			{
+				continue;
+			}
+			if(!preNeedInvoiceForValues.contains(siblingInvoice.get("Invoice_For")))
+			{
+				continue;
+			}
+			siblingStatusAfter = ifnull(siblingInvoice.get("Status"),"");
+			if(siblingStatusAfter == "Void" || siblingStatusAfter == "Cancelled")
+			{
+				continue;
+			}
+			if(isNull(siblingInvoice.get("Books_Invoice_ID")))
+			{
+				zoho.crm.updateRecord("Invoices",siblingInvoice.get("id"),invoiceMap);
+				info "Linked sibling Invoice " + siblingInvoice.get("id") + " to new Pre-Need master retainer " + invoice_id;
+			}
+		}
+	}
+}
+}
