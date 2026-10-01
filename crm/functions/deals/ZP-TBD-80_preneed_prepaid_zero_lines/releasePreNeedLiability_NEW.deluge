@@ -1,0 +1,248 @@
+// ZP-TBD-80 -- release a converted Pre-Need's payments from Xero "PRE NEED" liability (26100) to revenue.
+//
+// Why: Pre-Need payments land in Xero account 26100 (Liability) via the Receive Money sync (ZP-TBD-65 Stage 1).
+// ZP-TBD-65 Stage 2 moved that money out only when the retainer was APPLIED to an at-need invoice. With the
+// prepaid products now at $0 on the At-Need Deal (ZP-TBD-80), no retainer is ever applied, so this function
+// posts one Xero Manual Journal instead:  Dr 26100 PRE NEED  /  Cr <revenue account>  for the amount paid.
+//
+// CRM > Setup > Developer Hub > Functions > New Function > category Standalone, Deluge
+//   Function name : releasePreNeedLiability
+//   Arguments     : preNeedDealId (String), atNeedDealId (String), amountText (String, JMD base-currency amount)
+//   Connection    : zohooauth -- needs ZohoCRM.settings.variables.ALL (to save the rotated Xero refresh token)
+//                   and System_Data read/create. Called only by button.getPreNeedInfo.
+//
+// Idempotent: a System_Data row Name = "Pre_Need_Liability_Released", Module_ID = <Pre-Need Deal id> is written
+// after a successful journal, and the function returns "already ..." when that row exists. Nothing is written on
+// failure, so the caller can simply retry (Get Pre Need Info retries on every click until it succeeds).
+//
+// Xero token: same pattern as the Books Xero functions (org variable xeroRefreshToken, one-time-use refresh token
+// rotated and saved back on every call). If the new token cannot be saved the whole Xero integration would stop,
+// so that case retries once and then emails an URGENT alert.
+//
+// Returns: "released: <ManualJournalID>" | "already released: <info>" | "nothing to release" |
+//          "not configured: ..." | "failed: <reason>"
+string standalone.releasePreNeedLiability(String preNeedDealId, String atNeedDealId, String amountText)
+{
+// ---- CONFIG ----
+// Xero account CODE to credit (revenue). 40000 "Sales" = DFH's normal income account, the same one the
+// "Pre-Need Difference" product uses (ZP-TBD-65). "" = the function refuses to post.
+revenueAccountCode = "40000";
+// Xero "PRE NEED" liability account, confirmed live 2026-09-09 (Type Liability, Tax Exempt 0%)
+liabilityAccountCode = "26100";
+xeroTenantId = "879c4d25-cee8-46c1-89f9-80dcfe572eb2";
+xeroClientId = "6793DCCECBC842A78F4823D608636FFD";
+// copy the client secret from the live Books function syncretainerinvoicetoxero (masked in the repo)
+xeroClientSecret = "PASTE_FROM_LIVE_syncretainerinvoicetoxero";
+xeroRefreshTokenVarId = "6503357000009423001";
+alertEmail = "softanis.noushadurrahman@gmail.com";
+// ----------------
+pnId = ifnull(preNeedDealId,"").toString().trim();
+atId = ifnull(atNeedDealId,"").toString().trim();
+amount = 0;
+try
+{
+	amount = ifnull(amountText,"0").toString().trim().toDecimal().round(2);
+}
+catch (eAmt)
+{
+	return "failed: amount '" + amountText + "' is not a number";
+}
+if(pnId == "")
+{
+	return "failed: no Pre-Need Deal id";
+}
+if(amount <= 0)
+{
+	return "nothing to release";
+}
+// ---- 1. already done? ----
+try
+{
+	doneRows = standalone.COQLQuery("select System_Info from System_Data where Module_Name = 'Deals' and Module_ID = '" + pnId + "' and Name = 'Pre_Need_Liability_Released' limit 1");
+	if(doneRows.size() > 0)
+	{
+		return "already released: " + ifnull(doneRows.toList().get(0).get("System_Info"),"");
+	}
+}
+catch (eDone)
+{
+	return "failed: could not check whether it was already released (" + eDone.toString() + ")";
+}
+if(revenueAccountCode == "")
+{
+	return "not configured: the Xero revenue account for Pre-Need releases is not set yet";
+}
+// ---- 2. Xero token (rotate + save) ----
+accessToken = "";
+newRefreshToken = "";
+try
+{
+	xeroRefreshToken = zoho.crm.getOrgVariable("xeroRefreshToken");
+	tokenResponse = invokeurl
+	[
+		url :"https://identity.xero.com/connect/token"
+		type :POST
+		parameters:{"grant_type":"refresh_token","refresh_token":xeroRefreshToken,"client_id":xeroClientId,"client_secret":xeroClientSecret}
+		headers:{"Content-Type":"application/x-www-form-urlencoded"}
+	];
+	accessToken = ifnull(tokenResponse.get("access_token"),"").toString();
+	newRefreshToken = ifnull(tokenResponse.get("refresh_token"),"").toString();
+}
+catch (eTok)
+{
+	accessToken = "";
+}
+if(accessToken == "" || newRefreshToken == "")
+{
+	sendmail
+	[
+		from :zoho.adminuserid
+		to :alertEmail
+		subject :"ZP-TBD-80: Xero token refresh failed (Pre-Need liability release)"
+		message :"Pre-Need Deal " + pnId + " / At-Need Deal " + atId + ": Xero token refresh failed, journal not posted. It will be retried on the next Get Pre Need Info click."
+	]
+	return "failed: Xero token refresh failed";
+}
+varRow = Map();
+varRow.put("id",xeroRefreshTokenVarId);
+varRow.put("value",newRefreshToken);
+varList = List();
+varList.add(varRow);
+varBody = Map();
+varBody.put("variables",varList);
+tokenSaved = false;
+attempts = {1,2};
+for each  attempt in attempts
+{
+	if(!tokenSaved)
+	{
+		try
+		{
+			varResp = invokeurl
+			[
+				url :"https://www.zohoapis.com/crm/v7/settings/variables"
+				type :PUT
+				parameters:varBody.toString()
+				connection:"zohooauth"
+			];
+			if(ifnull(varResp.get("variables").get(0).get("code"),"").toString() == "SUCCESS")
+			{
+				tokenSaved = true;
+			}
+		}
+		catch (eVar)
+		{
+			tokenSaved = false;
+		}
+	}
+}
+if(!tokenSaved)
+{
+	sendmail
+	[
+		from :zoho.adminuserid
+		to :alertEmail
+		subject :"URGENT ZP-TBD-80: rotated Xero refresh token was NOT saved"
+		message :"releasePreNeedLiability (Pre-Need Deal " + pnId + ") refreshed the Xero token but could not save the new refresh token to the CRM org variable xeroRefreshToken. All Xero syncs will fail until Xero is re-authorised. Check the zohooauth connection has ZohoCRM.settings.variables.ALL."
+	]
+	// the access token still works for this call -- carry on so at least this journal is posted
+}
+xeroHeaders = Map();
+xeroHeaders.put("xero-tenant-id",xeroTenantId);
+xeroHeaders.put("Authorization","Bearer " + accessToken);
+xeroHeaders.put("Accept","application/json");
+xeroHeaders.put("Content-Type","application/json");
+// ---- 3. the manual journal: Dr liability (positive) / Cr revenue (negative) ----
+dealName = "";
+try
+{
+	pnDeal = zoho.crm.getRecordById("Deals",pnId.toLong());
+	dealName = ifnull(pnDeal.get("Deal_Name"),"").toString();
+}
+catch (eName)
+{
+	dealName = "";
+}
+lineText = "Pre-Need payments applied to funeral - " + dealName;
+debitLine = Map();
+debitLine.put("LineAmount",amount);
+debitLine.put("AccountCode",liabilityAccountCode);
+debitLine.put("Description",lineText);
+creditLine = Map();
+creditLine.put("LineAmount",0 - amount);
+creditLine.put("AccountCode",revenueAccountCode);
+creditLine.put("Description",lineText);
+journalLines = List();
+journalLines.add(debitLine);
+journalLines.add(creditLine);
+journal = Map();
+journal.put("Narration","Pre-Need liability released to revenue. Pre-Need Deal " + pnId + " (" + dealName + ") used for At-Need Deal " + atId + ". ZP-TBD-80.");
+journal.put("Date",zoho.currentdate.toString("yyyy-MM-dd"));
+journal.put("Status","POSTED");
+journal.put("LineAmountTypes","NoTax");
+journal.put("JournalLines",journalLines);
+journalList = List();
+journalList.add(journal);
+journalBody = Map();
+journalBody.put("ManualJournals",journalList);
+journalId = "";
+journalResp = Map();
+try
+{
+	journalResp = invokeurl
+	[
+		url :"https://api.xero.com/api.xro/2.0/ManualJournals"
+		type :POST
+		body:journalBody.toString()
+		headers:xeroHeaders
+	];
+	journalId = ifnull(journalResp.get("ManualJournals").get(0).get("ManualJournalID"),"").toString();
+}
+catch (eJournal)
+{
+	journalId = "";
+}
+if(journalId == "")
+{
+	sendmail
+	[
+		from :zoho.adminuserid
+		to :alertEmail
+		subject :"ZP-TBD-80: Xero manual journal failed (Pre-Need liability release)"
+		message :"Pre-Need Deal " + pnId + " / At-Need Deal " + atId + ", amount " + amount + ". Xero said: " + journalResp.toString()
+	]
+	return "failed: Xero did not accept the journal";
+}
+// ---- 4. remember it (makes the function idempotent) ----
+doneMap = Map();
+doneMap.put("Name","Pre_Need_Liability_Released");
+doneMap.put("Module_Name","Deals");
+doneMap.put("Module_ID",pnId);
+doneMap.put("System_Info","Xero journal " + journalId + " | amount " + amount + " | At-Need Deal " + atId + " | " + zoho.currentdate.toString("yyyy-MM-dd"));
+doneSaved = false;
+try
+{
+	// createRecord does not throw on a rejection -- it returns the error map, so check for the new id
+	doneResp = zoho.crm.createRecord("System_Data",doneMap);
+	if(ifnull(doneResp.get("id"),"").toString() != "")
+	{
+		doneSaved = true;
+	}
+}
+catch (eDoneMap)
+{
+	doneSaved = false;
+}
+if(!doneSaved)
+{
+	// the journal IS posted -- a retry would post it twice, so say so loudly
+	sendmail
+	[
+		from :zoho.adminuserid
+		to :alertEmail
+		subject :"ZP-TBD-80: journal posted but NOT recorded -- risk of a duplicate"
+		message :"Xero journal " + journalId + " was posted for Pre-Need Deal " + pnId + " but the System_Data record failed. Create it by hand (Name Pre_Need_Liability_Released, Module_Name Deals, Module_ID " + pnId + ") before anyone clicks Get Pre Need Info again."
+	]
+}
+return "released: Xero journal " + journalId;
+}
