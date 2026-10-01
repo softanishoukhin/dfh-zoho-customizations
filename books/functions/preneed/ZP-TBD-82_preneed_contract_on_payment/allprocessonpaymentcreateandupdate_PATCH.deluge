@@ -1,0 +1,53 @@
+//ZP-TBD-82 start -- after every payment, send the Pre-Need contract the Deal is now due for
+// (1-page once the 50% deposit is paid, full contract once everything is paid / the Lump Sum is paid).
+// Works for every payment route: Fygaro, cash/check entered on the CRM invoice, and payments entered in Books.
+// The CRM function decides and sends; it does nothing for non-Pre-Need Deals or when nothing new is due.
+try
+{
+	contractDealIds = list();
+	contractRetainerIds = list();
+	directRetainerId = ifnull(paymentData.get("retainerinvoice_id"),"");
+	if(directRetainerId != "")
+	{
+		contractRetainerIds.add(directRetainerId);
+	}
+	for each  contractRetainer in ifnull(paymentData.get("retainerinvoices"),list())
+	{
+		if(!contractRetainerIds.contains(contractRetainer.get("retainerinvoice_id")))
+		{
+			contractRetainerIds.add(contractRetainer.get("retainerinvoice_id"));
+		}
+	}
+	for each  contractRetainerId in contractRetainerIds
+	{
+		contractRetainerData = zoho.books.getRecordsByID("retainerinvoices",organizationID,contractRetainerId,"zohobooksconnection").get("retainerinvoice");
+		contractDealId = ifnull(contractRetainerData.get("custom_field_hash").get("cf_related_crm_deal_id"),"");
+		if(contractDealId != "" && contractDealId != "null" && !contractDealIds.contains(contractDealId))
+		{
+			contractDealIds.add(contractDealId);
+		}
+	}
+	for each  contractInvoice in ifnull(paymentData.get("invoices"),list())
+	{
+		contractInvoiceData = zoho.books.getRecordsByID("invoices",organizationID,contractInvoice.get("invoice_id"),"zohobooksconnection").get("invoice");
+		contractDealId = ifnull(contractInvoiceData.get("custom_field_hash").get("cf_related_crm_deal_id"),"");
+		if(contractDealId != "" && contractDealId != "null" && !contractDealIds.contains(contractDealId))
+		{
+			contractDealIds.add(contractDealId);
+		}
+	}
+	for each  dealIdToCheck in contractDealIds
+	{
+		contractResult = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v7/functions/autosendpreneedcontract/actions/execute?auth_type=apikey&zapikey=<CRM_ZAPIKEY>&crmid=" + dealIdToCheck
+			type :GET
+		];
+		info "ZP-TBD-82 contract check for Deal " + dealIdToCheck + ": " + contractResult;
+	}
+}
+catch (eContract)
+{
+	info "ZP-TBD-82 contract check failed: " + eContract;
+}
+//ZP-TBD-82 end

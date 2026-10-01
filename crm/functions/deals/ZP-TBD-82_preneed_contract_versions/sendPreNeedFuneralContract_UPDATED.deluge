@@ -1,0 +1,7 @@
+string button.sendPreNeedFuneralContract(String crmid)
+{
+// ZP-TBD-82: the send logic moved to standalone.sendPreNeedFuneralContractEmail so the automatic send
+// can reuse it. The contract version (Full / One Page) follows the Deal's payment status.
+sendResult = standalone.sendPreNeedFuneralContractEmail(crmid).toMap();
+return sendResult.get("message");
+}

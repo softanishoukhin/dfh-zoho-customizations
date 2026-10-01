@@ -1,0 +1,183 @@
+string standalone.getPreNeedContractType(String crmid)
+{
+// ZP-TBD-82: decides which Pre-Need contract version a Deal is due for, from what has been paid in Books.
+//   Lump Sum     : Lump Sum invoice paid                                        -> Full
+//   Installments : paid on the plan retainer(s) >= Contract_Value (or all paid)  -> Full
+//                  paid on the plan retainer(s) >= Pre_Need_Deposit_Amount       -> One Page
+//   anything else                                                                -> "" (no contract yet, message says why)
+// Installments: the Deposit and Installment CRM invoices all point to ONE master Books retainer for the whole
+// contract (ZP-TBD-74), so that retainer is only "paid" at the very end -- the deposit is recognised by the
+// amount paid on it (payment_made), not by its status.
+// Used by every send point: the Send Pre Need Funeral Contract button, the WhatsApp widget's
+// "Add contract link" (sendPreNeedFuneralContractEmbedded) and the automatic send (autoSendPreNeedContract).
+// Returns a JSON string -- callers use .toMap().
+FULL_TEMPLATE_ID = "441773000001137101";
+ONE_PAGE_TEMPLATE_ID = "441773000001155005";
+organizationID = "872327358";
+// Books rounds retainer totals to 0.125, so a payment can land a few cents under the CRM amount
+ROUNDING_TOLERANCE = 1.0;
+result = Map();
+result.put("contract_type","");
+result.put("template_id","");
+result.put("message","");
+getRecordInfo = invokeurl
+[
+	url :"https://www.zohoapis.com/crm/v8/Deals/" + crmid
+	type :GET
+	connection:"zohooauth"
+];
+recordInfo = getRecordInfo.get("data").get(0);
+if(recordInfo.get("Pipeline") != "Pre Need")
+{
+	result.put("message","The Pre-Need contract only applies to Pre Need Deals.");
+	return result.toString();
+}
+paymentType = ifnull(recordInfo.get("Payment_Type"),"");
+if(paymentType != "Lump Sum" && paymentType != "Installments")
+{
+	result.put("message","Select a Payment Type (Lump Sum or Installments) first.");
+	return result.toString();
+}
+// Lump Sum invoice = Invoice_For 'Other' or blank (same test as setupPreNeedPaymentPlan, ZP-TBD-81);
+// plan invoices = Invoice_For 'Deposit' / 'Installment N'. Void / Cancelled invoices are ignored.
+lumpSumCount = 0;
+lumpSumUnpaid = 0;
+planInvoiceCount = 0;
+planRetainerIds = list();
+invoiceList = zoho.crm.getRelatedRecords("Invoices","Deals",crmid.toLong());
+for each  inv in invoiceList
+{
+	invStatus = ifnull(inv.get("Status"),"");
+	if(invStatus == "Void" || invStatus == "Cancelled")
+	{
+		continue;
+	}
+	invoiceFor = ifnull(inv.get("Invoice_For"),"");
+	booksId = ifnull(inv.get("Books_Invoice_ID"),"");
+	if(invoiceFor == "Deposit" || invoiceFor.startsWith("Installment"))
+	{
+		planInvoiceCount = planInvoiceCount + 1;
+		if(booksId != "" && !planRetainerIds.contains(booksId))
+		{
+			planRetainerIds.add(booksId);
+		}
+	}
+	else if(invoiceFor == "Other" || invoiceFor == "")
+	{
+		lumpSumCount = lumpSumCount + 1;
+		// Lump Sum = its own Books document -> paid when that document is paid
+		isPaid = false;
+		if(booksId != "")
+		{
+			try
+			{
+				if(inv.get("Retainer_Invoice") == true)
+				{
+					booksData = zoho.books.getRecordsByID("retainerinvoices",organizationID,booksId,"zohooauth").get("retainerinvoice");
+				}
+				else
+				{
+					booksData = zoho.books.getRecordsByID("invoices",organizationID,booksId,"zohooauth").get("invoice");
+				}
+				booksStatus = ifnull(booksData.get("status"),"");
+				booksBalance = ifnull(booksData.get("balance"),0).toDecimal();
+				booksTotal = ifnull(booksData.get("total"),0).toDecimal();
+				if(booksStatus == "paid")
+				{
+					isPaid = true;
+				}
+				else if(booksBalance <= 0 && booksTotal > 0 && booksStatus != "draft" && booksStatus != "void")
+				{
+					isPaid = true;
+				}
+			}
+			catch (eBooks)
+			{
+				info "ZP-TBD-82: could not read Books document " + booksId + ": " + eBooks;
+			}
+		}
+		if(!isPaid)
+		{
+			lumpSumUnpaid = lumpSumUnpaid + 1;
+		}
+	}
+}
+if(paymentType == "Lump Sum")
+{
+	if(lumpSumCount > 0 && lumpSumUnpaid == 0)
+	{
+		result.put("contract_type","Full");
+		result.put("template_id",FULL_TEMPLATE_ID);
+	}
+	else if(lumpSumCount == 0)
+	{
+		result.put("message","No Lump Sum invoice on this Deal yet.");
+	}
+	else
+	{
+		result.put("message","The Lump Sum invoice is not paid yet. The contract is sent once it is paid.");
+	}
+	return result.toString();
+}
+// Installments -- add up what has been paid on the plan's Books retainer(s)
+if(planInvoiceCount == 0)
+{
+	result.put("message","No Deposit invoice on this Deal yet.");
+	return result.toString();
+}
+totalPaid = 0.0;
+allRetainersPaid = planRetainerIds.size() > 0;
+for each  retainerId in planRetainerIds
+{
+	try
+	{
+		retainerData = zoho.books.getRecordsByID("retainerinvoices",organizationID,retainerId,"zohooauth").get("retainerinvoice");
+		retainerStatus = ifnull(retainerData.get("status"),"");
+		info "ZP-TBD-82: retainer " + retainerId + " status " + retainerStatus + ", payment_made " + retainerData.get("payment_made");
+		if(retainerStatus != "void")
+		{
+			totalPaid = totalPaid + ifnull(retainerData.get("payment_made"),0).toDecimal();
+			if(retainerStatus != "paid")
+			{
+				allRetainersPaid = false;
+			}
+		}
+	}
+	catch (eRet)
+	{
+		allRetainersPaid = false;
+		info "ZP-TBD-82: could not read Books retainer " + retainerId + ": " + eRet;
+	}
+}
+contractValue = ifnull(recordInfo.get("Contract_Value"),0).toDecimal();
+depositAmount = ifnull(recordInfo.get("Pre_Need_Deposit_Amount"),0).toDecimal();
+if(depositAmount <= 0)
+{
+	// ZP-TBD-81 always sets the deposit to 50% -- fall back to that if the field is blank
+	depositAmount = (contractValue * 0.5).round(2);
+}
+fullyPaid = false;
+if(allRetainersPaid)
+{
+	fullyPaid = true;
+}
+else if(contractValue > 0 && totalPaid >= contractValue - ROUNDING_TOLERANCE)
+{
+	fullyPaid = true;
+}
+if(fullyPaid)
+{
+	result.put("contract_type","Full");
+	result.put("template_id",FULL_TEMPLATE_ID);
+}
+else if(depositAmount > 0 && totalPaid >= depositAmount - ROUNDING_TOLERANCE)
+{
+	result.put("contract_type","One Page");
+	result.put("template_id",ONE_PAGE_TEMPLATE_ID);
+}
+else
+{
+	result.put("message","The 50% deposit is not paid yet (paid " + totalPaid.round(2) + " of " + depositAmount.round(2) + "). The 1-page contract is sent once it is paid.");
+}
+return result.toString();
+}

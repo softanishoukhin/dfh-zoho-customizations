@@ -1,0 +1,50 @@
+string standalone.autoSendPreNeedContract(String crmid)
+{
+// ZP-TBD-82: called from Books (allprocessonpaymentcreateandupdate) after every customer payment,
+// through this function's REST API key URL. Sends the contract version the Deal is now due for:
+//   Installments: 50% deposit paid -> 1-page contract; everything paid -> full contract
+//   Lump Sum:     Lump Sum invoice paid -> full contract
+// Each version goes out automatically once only: skipped when its Sent At field on the Deal is filled.
+// The buttons can still resend at any time.
+contractTypeInfo = standalone.getPreNeedContractType(crmid).toMap();
+contractType = ifnull(contractTypeInfo.get("contract_type"),"");
+if(contractType == "")
+{
+	info contractTypeInfo.get("message");
+	return contractTypeInfo.get("message");
+}
+dealInfo = zoho.crm.getRecordById("Deals",crmid.toLong());
+fullSentAt = ifnull(dealInfo.get("Full_Contract_Sent_At"),"");
+onePageSentAt = ifnull(dealInfo.get("One_Page_Contract_Sent_At"),"");
+if(contractType == "Full" && fullSentAt != "")
+{
+	return "Full contract already sent on " + fullSentAt + ".";
+}
+if(contractType == "One Page" && (onePageSentAt != "" || fullSentAt != ""))
+{
+	return "1-page contract already sent.";
+}
+// Stamp BEFORE sending: Books can run the payment function twice for one payment (create + its own
+// payment edits), and a second run must not send a second copy. Cleared again if the send fails.
+if(contractType == "Full")
+{
+	sentAtField = "Full_Contract_Sent_At";
+}
+else
+{
+	sentAtField = "One_Page_Contract_Sent_At";
+}
+stampMap = Map();
+stampMap.put(sentAtField,zoho.currenttime.toString("yyyy-MM-dd'T'HH:mm:ss","America/Jamaica"));
+zoho.crm.updateRecord("Deals",crmid.toLong(),stampMap);
+sendResult = standalone.sendPreNeedFuneralContractEmail(crmid).toMap();
+info sendResult;
+if(sendResult.get("status") == "success")
+{
+	return contractType + " contract sent automatically.";
+}
+clearMap = Map();
+clearMap.put(sentAtField,null);
+zoho.crm.updateRecord("Deals",crmid.toLong(),clearMap);
+return "Automatic contract send failed: " + sendResult.get("message");
+}
