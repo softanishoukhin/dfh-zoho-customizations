@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Create Pre-Need Deal</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+    margin: 0;
+    padding: 20px;
+    color: #2b2b2b;
+    background: #fafafa;
+  }
+  h2 { font-size: 18px; margin: 0 0 4px; }
+  .subtitle { color: #6b6b6b; font-size: 13px; margin: 0 0 20px; }
+  .card {
+    background: #fff;
+    border: 1px solid #e2e2e2;
+    border-radius: 8px;
+    padding: 18px;
+    margin-bottom: 16px;
+  }
+  .field { margin-bottom: 14px; }
+  .field:last-child { margin-bottom: 0; }
+  label {
+    display: block;
+    font-size: 12px;
+    font-weight: 600;
+    color: #444;
+    margin-bottom: 4px;
+  }
+  label .req { color: #c0392b; }
+  input[type="text"], input[type="date"], input[type="email"], input[type="tel"], select {
+    width: 100%;
+    padding: 8px 10px;
+    border: 1px solid #ccc;
+    border-radius: 5px;
+    font-size: 13px;
+  }
+  input:focus, select:focus { outline: none; border-color: #2e7d32; }
+  .row { display: flex; gap: 12px; }
+  .row .field { flex: 1; }
+  .yesno {
+    display: flex;
+    gap: 10px;
+  }
+  .yesno button {
+    flex: 1;
+    padding: 10px;
+    border-radius: 6px;
+    border: 1px solid #ccc;
+    background: #fff;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .yesno button.selected {
+    background: #2e7d32;
+    color: #fff;
+    border-color: #2e7d32;
+  }
+  #beneficiarySection { display: none; }
+  #beneficiarySection.visible { display: block; }
+  .section-label {
+    font-size: 13px;
+    font-weight: 700;
+    margin: 4px 0 12px;
+    color: #2b2b2b;
+  }
+  .hint { font-size: 12px; color: #6b6b6b; margin-top: 4px; }
+  .actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 4px; }
+  button.primary {
+    background: #2e7d32;
+    color: #fff;
+    border: none;
+    padding: 10px 20px;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  button.primary:disabled { background: #a5c9a7; cursor: not-allowed; }
+  button.secondary {
+    background: #fff;
+    border: 1px solid #ccc;
+    padding: 10px 16px;
+    border-radius: 6px;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  #statusBanner {
+    display: none;
+    padding: 10px 14px;
+    border-radius: 6px;
+    font-size: 13px;
+    margin-bottom: 14px;
+  }
+  #statusBanner.error { display: block; background: #fdecea; color: #b71c1c; border: 1px solid #f5c6cb; }
+  #statusBanner.success { display: block; background: #e8f5e9; color: #1b5e20; border: 1px solid #c8e6c9; }
+  #statusBanner.loading { display: block; background: #eef2f7; color: #333; border: 1px solid #d6dee7; }
+</style>
+</head>
+<body>
+
+  <h2>Create Pre-Need Deal</h2>
+  <p class="subtitle" id="payerNameSubtitle">Starting a new Pre-Need from this Contact.</p>
+
+  <div id="statusBanner"></div>
+
+  <div class="card">
+    <div class="field">
+      <label>Is the payer also the person the funeral is for? <span class="req">*</span></label>
+      <div class="yesno">
+        <button type="button" id="btnYes" onclick="setPayerSame(true)">Yes</button>
+        <button type="button" id="btnNo" onclick="setPayerSame(false)">No</button>
+      </div>
+      <div class="hint" id="payerSameHint"></div>
+    </div>
+  </div>
+
+  <div class="card" id="beneficiarySection">
+    <div class="section-label">Who is the funeral for?</div>
+
+    <div class="row">
+      <div class="field">
+        <label>First Name <span class="req">*</span></label>
+        <input type="text" id="benFirstName">
+      </div>
+      <div class="field">
+        <label>Last Name <span class="req">*</span></label>
+        <input type="text" id="benLastName">
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="field">
+        <label>Date of Birth <span class="req">*</span></label>
+        <input type="date" id="benDOB">
+      </div>
+      <div class="field">
+        <label>TRN</label>
+        <input type="text" id="benTRN" placeholder="e.g. 123-456-789">
+      </div>
+    </div>
+
+    <div class="field">
+      <label>Street Address</label>
+      <input type="text" id="benStreet">
+    </div>
+    <div class="field">
+      <label>Street Address 2</label>
+      <input type="text" id="benStreet2">
+    </div>
+
+    <div class="row">
+      <div class="field">
+        <label>City</label>
+        <input type="text" id="benCity">
+      </div>
+      <div class="field">
+        <label>State</label>
+        <input type="text" id="benState">
+      </div>
+    </div>
+    <div class="row">
+      <div class="field">
+        <label>Zip Code</label>
+        <input type="text" id="benZip">
+      </div>
+      <div class="field">
+        <label>Country</label>
+        <input type="text" id="benCountry">
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="field">
+        <label>Phone</label>
+        <input type="tel" id="benPhone">
+      </div>
+      <div class="field">
+        <label>Email</label>
+        <input type="email" id="benEmail">
+      </div>
+    </div>
+  </div>
+
+  <div class="actions">
+    <button type="button" class="secondary" id="cancelBtn">Cancel</button>
+    <button type="button" class="primary" id="submitBtn" disabled>Create Pre-Need Deal</button>
+  </div>
+
+<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+<script src="https://live.zwidgets.com/js-sdk/1.2/ZohoEmbededAppSDK.min.js"></script>
+<script>
+  // ZP-TBD-68 -- Pre-Need from Contact widget.
+  // Triggered by a "Create Pre-Need Deal" Widget-type custom button on the
+  // Contacts module. Collects the beneficiary's details and whether the
+  // payer (the Contact this button was clicked from) is also the person the
+  // funeral is for, then calls the createpreneeddealfromcontact CRM
+  // function to do the actual Account/Contact/Deal creation and Contact
+  // Role assignment -- see the ZP-TBD-68 repo guideline for that function's
+  // full logic and the reasoning behind each decision (lifted from
+  // convertLeadOnChangingLeadStatus per the developer brief, with the known
+  // Account_Type bug deliberately NOT copied).
+  //
+  // Built with jQuery (matches NOKIntake's convention: jquery-3.7.1 from
+  // code.jquery.com) per the developer's explicit request, rather than
+  // vanilla JS.
+
+  var payerContactId = null;
+  var payerContact = null;
+  var isPayerSame = null;
+
+  var $benFields = null; // set once the DOM is ready
+
+  $(function () {
+    $benFields = $("#benFirstName, #benLastName, #benDOB, #benTRN, #benStreet, " +
+      "#benStreet2, #benCity, #benState, #benZip, #benCountry, #benPhone, #benEmail");
+
+    $("#btnYes").on("click", function () { setPayerSame(true); });
+    $("#btnNo").on("click", function () { setPayerSame(false); });
+    $("#submitBtn").on("click", submitPreNeedDeal);
+    $("#cancelBtn").on("click", closeWidget);
+    $("#benFirstName, #benLastName").on("input", validateForm);
+    $("#benDOB").on("input change", validateForm);
+
+    ZOHO.embeddedApp.on("PageLoad", function (data) {
+      // data.EntityId is always an array in the CRM widget SDK (it supports
+      // bulk/multi-record button contexts), even for a single record --
+      // confirmed live 2026-09-16: passing the array straight through to the
+      // CRM function caused zoho.crm.getRecordById to fail with a BIGINT
+      // type-mismatch, since it received a list instead of a plain id
+      // string. Always take the first element.
+      payerContactId = $.isArray(data.EntityId) ? data.EntityId[0] : data.EntityId;
+      loadPayerContact();
+    });
+    ZOHO.embeddedApp.init();
+  });
+
+  function loadPayerContact() {
+    ZOHO.CRM.API.getRecord({ Entity: "Contacts", RecordID: payerContactId }).then(function (response) {
+      payerContact = response.data[0];
+      var name = $.trim((payerContact.First_Name || "") + " " + (payerContact.Last_Name || ""));
+      $("#payerNameSubtitle").text("Payer: " + name + " (this Contact). Choose who the funeral is for below.");
+    }).catch(function (err) {
+      showStatus("error", "Could not load this Contact's details: " + JSON.stringify(err));
+    });
+  }
+
+  function setPayerSame(same) {
+    isPayerSame = same;
+    $("#btnYes").toggleClass("selected", same === true);
+    $("#btnNo").toggleClass("selected", same === false);
+    $("#beneficiarySection").addClass("visible");
+
+    if (same) {
+      $("#payerSameHint").text(
+        "The Deal, Account, and Contact Role will be created for " + payerNameOrFallback() + " as both payer and beneficiary."
+      );
+      prefillFromPayer();
+    } else {
+      $("#payerSameHint").text(
+        payerNameOrFallback() + " will remain the payer (Primary Contact). Enter the beneficiary's own details below -- a new Account and Contact will be created for them (role: IFR)."
+      );
+      clearBeneficiaryFields();
+    }
+    validateForm();
+  }
+
+  function payerNameOrFallback() {
+    if (!payerContact) { return "the payer"; }
+    return $.trim((payerContact.First_Name || "") + " " + (payerContact.Last_Name || ""));
+  }
+
+  function prefillFromPayer() {
+    if (!payerContact) { return; }
+    $("#benFirstName").val(payerContact.First_Name || "");
+    $("#benLastName").val(payerContact.Last_Name || "");
+    $("#benDOB").val(payerContact.Date_of_Birth || "");
+    $("#benStreet").val(payerContact.Mailing_Street || "");
+    $("#benStreet2").val(payerContact.Mailing_Street_2 || "");
+    $("#benCity").val(payerContact.Mailing_City || "");
+    $("#benState").val(payerContact.Mailing_State || "");
+    $("#benZip").val(payerContact.Mailing_Zip || "");
+    $("#benCountry").val(payerContact.Mailing_Country || "");
+    $("#benPhone").val(payerContact.Phone || payerContact.Mobile || "");
+    $("#benEmail").val(payerContact.Email || "");
+    // TRN is intentionally left blank -- Contacts has no existing TRN field
+    // to pull from (confirmed live 2026-09-16, see the repo guideline).
+  }
+
+  function clearBeneficiaryFields() {
+    $benFields.val("");
+  }
+
+  function validateForm() {
+    var firstName = $.trim($("#benFirstName").val());
+    var lastName = $.trim($("#benLastName").val());
+    // ZP-TBD-86: DOB is required -- it is half of the key used to match this Pre-Need at at-need.
+    var dob = $.trim($("#benDOB").val());
+    var ready = isPayerSame !== null && firstName !== "" && lastName !== "" && dob !== "" && dob <= todayIso();
+    $("#submitBtn").prop("disabled", !ready);
+  }
+
+  function todayIso() {
+    var d = new Date();
+    return d.getFullYear() + "-" + ("0" + (d.getMonth() + 1)).slice(-2) + "-" + ("0" + d.getDate()).slice(-2);
+  }
+
+  function showStatus(type, message) {
+    $("#statusBanner").attr("class", type).text(message);
+  }
+
+  function submitPreNeedDeal() {
+    var firstName = $.trim($("#benFirstName").val());
+    var lastName = $.trim($("#benLastName").val());
+    var dob = $.trim($("#benDOB").val());
+    if (isPayerSame === null || firstName === "" || lastName === "" || dob === "") {
+      showStatus("error", "Please answer the payer question and enter the first name, last name and date of birth.");
+      return;
+    }
+    if (dob > todayIso()) {
+      showStatus("error", "The date of birth can't be in the future.");
+      return;
+    }
+
+    $("#submitBtn").prop("disabled", true);
+    showStatus("loading", "Creating the Pre-Need Deal...");
+
+    var funcArgs = {
+      payerContactId: payerContactId,
+      isPayerSame: isPayerSame ? "true" : "false",
+      beneficiaryFirstName: firstName,
+      beneficiaryLastName: lastName,
+      beneficiaryDOB: $("#benDOB").val(),
+      beneficiaryStreet: $("#benStreet").val(),
+      beneficiaryStreet2: $("#benStreet2").val(),
+      beneficiaryCity: $("#benCity").val(),
+      beneficiaryState: $("#benState").val(),
+      beneficiaryZip: $("#benZip").val(),
+      beneficiaryCountry: $("#benCountry").val(),
+      beneficiaryPhone: $("#benPhone").val(),
+      beneficiaryEmail: $("#benEmail").val(),
+      beneficiaryTRN: $("#benTRN").val()
+    };
+
+    ZOHO.CRM.FUNCTIONS.execute("createpreneeddealfromcontact", { arguments: JSON.stringify(funcArgs) })
+      .then(function (response) {
+        var raw = response && response.details && response.details.output;
+        var result = null;
+        try { result = JSON.parse(raw); } catch (e) { result = null; }
+
+        if (result && result.status === "success") {
+          showStatus("success", "Pre-Need Deal created successfully.");
+          setTimeout(function () {
+            ZOHO.CRM.UI.Popup.closeReload();
+          }, 1200);
+        } else {
+          var msg = (result && result.message) ? result.message : (raw || "Unknown error creating the Deal.");
+          showStatus("error", msg);
+          $("#submitBtn").prop("disabled", false);
+        }
+      })
+      .catch(function (err) {
+        showStatus("error", "Function call failed: " + JSON.stringify(err));
+        $("#submitBtn").prop("disabled", false);
+      });
+  }
+
+  function closeWidget() {
+    ZOHO.CRM.UI.Popup.closeReload();
+  }
+</script>
+</body>
+</html>

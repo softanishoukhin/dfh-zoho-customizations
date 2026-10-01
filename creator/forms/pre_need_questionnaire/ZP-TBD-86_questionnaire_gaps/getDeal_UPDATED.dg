@@ -1,0 +1,192 @@
+string getDeal(String deal_id)
+{
+	result = Map();
+	try 
+	{
+		dId = ifnull(deal_id,"").trim();
+		if(dId == "")
+		{
+			result.put("status","error");
+			result.put("message","deal_id is required");
+			return result.toString();
+		}
+		dealResp = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v7/Deals/" + dId
+			type :GET
+			connection:"zohocrm_connection"
+		];
+		dealData = Map();
+		try 
+		{
+			dealData = dealResp.get("data").get(0);
+		}		catch (eParse)
+		{
+			dealData = Map();
+		}
+		editUrl = ifnull(dealData.get("Pre_Need_Questionnaire_Edit_URL"),"");
+		dealName = ifnull(dealData.get("Deal_Name"),"");
+		plannerName = "";
+		plannerAddress = Map();
+		contactId = "";
+		payerAccountId = "";
+		try 
+		{
+			contactInfo = dealData.get("Contact_Name");
+			if(contactInfo != null)
+			{
+				contactId = ifnull(contactInfo.get("id"),"");
+			}
+		}		catch (eContact)
+		{
+			contactId = "";
+		}
+		if(contactId != "")
+		{
+			try 
+			{
+				conResp = invokeurl
+				[
+					url :"https://www.zohoapis.com/crm/v7/Contacts/" + contactId
+					type :GET
+					connection:"zohocrm_connection"
+				];
+				conData = conResp.get("data").get(0);
+				plannerFirst = ifnull(conData.get("First_Name"),"");
+				plannerLast = ifnull(conData.get("Last_Name"),"");
+				plannerName = (plannerFirst + " " + plannerLast).trim();
+				plannerAddress.put("address_line_1",ifnull(conData.get("Mailing_Street"),""));
+				plannerAddress.put("address_line_2",ifnull(conData.get("Mailing_Street_2"),""));
+				plannerAddress.put("district_city",ifnull(conData.get("Mailing_City"),""));
+				plannerAddress.put("state_province",ifnull(conData.get("Mailing_State"),""));
+				// key must be lowercase "postal_code" -- app.js's setAddr() reads
+				// a.postal_code for this specific fallback-prefill path (it also
+				// serves the genuine Creator/CRM composite-Address readback path,
+				// which uses that same lowercase key per Zoho's own convention).
+				// A capital-C "postal_Code" here silently mismatched and left the
+				// field blank, confirmed live.
+				plannerAddress.put("postal_code",ifnull(conData.get("Mailing_Zip"),""));
+				plannerAddress.put("country",ifnull(conData.get("Mailing_Country"),""));
+				try 
+				{
+					payerAccountInfo = conData.get("Account_Name");
+					if(payerAccountInfo != null)
+					{
+						payerAccountId = ifnull(payerAccountInfo.get("id"),"");
+					}
+				}				catch (ePayerAcc)
+				{
+					payerAccountId = "";
+				}
+			}			catch (eCon)
+			{
+				plannerName = "";
+			}
+		}
+		// ---- ZP-TBD-XX: IFR name from the Deal's Account ----
+		dealAccountId = "";
+		try 
+		{
+			dealAccountInfo = dealData.get("Account_Name");
+			if(dealAccountInfo != null)
+			{
+				dealAccountId = ifnull(dealAccountInfo.get("id"),"");
+			}
+		}		catch (eDealAcc)
+		{
+			dealAccountId = "";
+		}
+		ifrFirstName = "";
+		ifrLastName = "";
+		// ZP-TBD-86: the IFR's DOB lives on the Deal's Account (Accounts.Date_of_Birth -- the field the
+		// at-need Pre-Need match reads). Returned so the questionnaire can prefill it.
+		ifrDateOfBirth = "";
+		if(dealAccountId != "")
+		{
+			try 
+			{
+				accResp = invokeurl
+				[
+					url :"https://www.zohoapis.com/crm/v7/Accounts/" + dealAccountId
+					type :GET
+					connection:"zohocrm_connection"
+				];
+				accData = accResp.get("data").get(0);
+				ifrFirstName = ifnull(accData.get("Deceased_First_Name"),"");
+				ifrLastName = ifnull(accData.get("Deceased_Last_Name"),"");
+				ifrDateOfBirth = ifnull(accData.get("Date_of_Birth"),"").toString();
+				if(ifrFirstName == "" && ifrLastName == "")
+				{
+					// Older Accounts may only have Account_Name -- split on the first space.
+					accName = ifnull(accData.get("Account_Name"),"").trim();
+					if(accName.contains(" "))
+					{
+						ifrFirstName = accName.getPrefix(" ");
+						ifrLastName = accName.getSuffix(" ").trim();
+					}
+					else
+					{
+						ifrLastName = accName;
+					}
+				}
+			}			catch (eIfr)
+			{
+				ifrFirstName = "";
+				ifrLastName = "";
+			}
+		}
+		// ---- ZP-TBD-XX: was the payer also the IFR? (see header) ----
+		hasIfrRole = false;
+		try 
+		{
+			rolesResp = invokeurl
+			[
+				url :"https://www.zohoapis.com/crm/v7/Deals/" + dId + "/Contact_Roles?fields=Contact_Role,First_Name,Last_Name"
+				type :GET
+				connection:"zohocrm_connection"
+			];
+			roleRows = rolesResp.get("data");
+			if(roleRows != null)
+			{
+				for each  roleRow in roleRows
+				{
+					roleInfo = roleRow.get("Contact_Role");
+					if(roleInfo != null)
+					{
+						if(ifnull(roleInfo.get("name"),"") == "IFR")
+						{
+							hasIfrRole = true;
+						}
+					}
+				}
+			}
+		}		catch (eRoles)
+		{
+			hasIfrRole = false;
+		}
+		payerIsIfr = "";
+		if(hasIfrRole)
+		{
+			payerIsIfr = "false";
+		}
+		else if(dealAccountId != "" && payerAccountId == dealAccountId)
+		{
+			payerIsIfr = "true";
+		}
+		result.put("status","success");
+		result.put("deal_id",dId);
+		result.put("dealName",dealName);
+		result.put("editUrl",editUrl);
+		result.put("plannerName",plannerName);
+		result.put("plannerAddress",plannerAddress);
+		result.put("ifrFirstName",ifrFirstName);
+		result.put("ifrLastName",ifrLastName);
+		result.put("payerIsIfr",payerIsIfr);
+		result.put("ifrDateOfBirth",ifrDateOfBirth);
+	}	catch (eOuter)
+	{
+		result.put("status","error");
+		result.put("message","Unexpected error: " + eOuter.toString());
+	}
+	return result.toString();
+}

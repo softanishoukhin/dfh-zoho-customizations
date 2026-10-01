@@ -1,0 +1,366 @@
+string submitFinalWishes(String deal_id, String data, String crm_record_id)
+{
+	result = Map();
+	try 
+	{
+		dId = ifnull(deal_id,"").trim();
+		rawData = ifnull(data,"").trim();
+		if(dId == "" || rawData == "")
+		{
+			result.put("status","error");
+			result.put("message","deal_id and data are required");
+			return result.toString();
+		}
+		dataMap = rawData.toMap();
+		plannerName = ifnull(dataMap.get("Pre_Planner_Name"),Map());
+		plannerAddr = ifnull(dataMap.get("Pre_Planner_Address"),Map());
+		burialLoc = ifnull(dataMap.get("Burial_Location"),Map());
+		personsList = ifnull(dataMap.get("Persons_Responsible"),List());
+		// ---- 1) Final_Wishes_Form (Creator form, native insert-into syntax) ----
+		personsRows = Collection();
+		for each  p in personsList
+		{
+			pRow = Final_Wishes_Form.Persons_Responsible();
+			pName = ifnull(p.get("Name"),Map());
+			pRow.Name.first_name=ifnull(pName.get("first_name"),"");
+			pRow.Name.last_name=ifnull(pName.get("last_name"),"");
+			pRow.Relationship=ifnull(p.get("Relationship"),"");
+			pRow.Phone=ifnull(p.get("Phone"),"");
+			personsRows.insert(pRow);
+		}
+		newId = insert into Final_Wishes_Form
+		[
+			Deal_ID=dId
+			Pre_Planner_Name.first_name=ifnull(plannerName.get("first_name"),"")
+			Pre_Planner_Name.last_name=ifnull(plannerName.get("last_name"),"")
+			Pre_Planner_Address.address_line_1=ifnull(plannerAddr.get("address_line_1"),"")
+			Pre_Planner_Address.address_line_2=ifnull(plannerAddr.get("address_line_2"),"")
+			Pre_Planner_Address.district_city=ifnull(plannerAddr.get("district_city"),"")
+			Pre_Planner_Address.state_province=ifnull(plannerAddr.get("state_province"),"")
+			Pre_Planner_Address.postal_Code=ifnull(plannerAddr.get("postal_Code"),"")
+			Pre_Planner_Address.country=ifnull(plannerAddr.get("country"),"")
+			Persons_Responsible=personsRows
+			Disposition_Preference=ifnull(dataMap.get("Disposition_Preference"),"")
+			Cemetery=ifnull(dataMap.get("Cemetery"),"")
+			Burial_Location.address_line_1=ifnull(burialLoc.get("address_line_1"),"")
+			Burial_Location.address_line_2=ifnull(burialLoc.get("address_line_2"),"")
+			Burial_Location.district_city=ifnull(burialLoc.get("district_city"),"")
+			Burial_Location.state_province=ifnull(burialLoc.get("state_province"),"")
+			Burial_Location.postal_Code=ifnull(burialLoc.get("postal_Code"),"")
+			Ashes_Instructions=ifnull(dataMap.get("Ashes_Instructions"),"")
+			Place_of_Worship=ifnull(dataMap.get("Place_of_Worship"),"")
+			Ceremony_Preferences=ifnull(dataMap.get("Ceremony_Preferences"),"")
+			Obituary_Information=ifnull(dataMap.get("Obituary_Information"),"")
+			Clothing_and_Accessories=ifnull(dataMap.get("Clothing_and_Accessories"),"")
+			Flowers=ifnull(dataMap.get("Flowers"),"")
+			Songs=ifnull(dataMap.get("Songs"),"")
+			Readings=ifnull(dataMap.get("Readings"),"")
+			Prayers=ifnull(dataMap.get("Prayers"),"")
+			Imagined_Service=ifnull(dataMap.get("Imagined_Service"),"")
+			Interment_Type=ifnull(dataMap.get("Interment_Type"),List())
+			Interment_Description=ifnull(dataMap.get("Interment_Description"),"")
+			Programme_Style=ifnull(dataMap.get("Programme_Style"),"")
+			Headstone_Type=ifnull(dataMap.get("Headstone_Type"),"")
+			Inscription=ifnull(dataMap.get("Inscription"),"")
+			Additional_Instructions=ifnull(dataMap.get("Additional_Instructions"),"")
+			Added_User=zoho.loginuser
+		];
+		result.put("status","success");
+		result.put("recordId",newId.toString());
+		// ---- 2) CRM module Pre_Need_Questionnaire (flat fields, upsert by Deal) ----
+		try 
+		{
+			plannerFullName = (ifnull(plannerName.get("first_name"),"") + " " + ifnull(plannerName.get("last_name"),"")).trim();
+			crmRecordName = "Pre-Need Questionnaire";
+			if(plannerFullName != "")
+			{
+				crmRecordName = plannerFullName + " - Pre-Need Questionnaire";
+			}
+			crmMap = Map();
+			crmMap.put("Name",crmRecordName);
+			crmMap.put("Deal_Name",dId);
+			crmMap.put("Pre_Planner_First_Name",ifnull(plannerName.get("first_name"),""));
+			crmMap.put("Pre_Planner_Last_Name",ifnull(plannerName.get("last_name"),""));
+			crmMap.put("Pre_Planner_Address_Line_1",ifnull(plannerAddr.get("address_line_1"),""));
+			crmMap.put("Pre_Planner_Address_Line_2",ifnull(plannerAddr.get("address_line_2"),""));
+			crmMap.put("Pre_Planner_City",ifnull(plannerAddr.get("district_city"),""));
+			crmMap.put("Pre_Planner_State",ifnull(plannerAddr.get("state_province"),""));
+			crmMap.put("Pre_Planner_Postal_Code",ifnull(plannerAddr.get("postal_Code"),""));
+			crmMap.put("Pre_Planner_Country",ifnull(plannerAddr.get("country"),""));
+			crmMap.put("Disposition_Preference",ifnull(dataMap.get("Disposition_Preference"),""));
+			crmMap.put("Cemetery",ifnull(dataMap.get("Cemetery"),""));
+			crmMap.put("Burial_Location_Line_1",ifnull(burialLoc.get("address_line_1"),""));
+			crmMap.put("Burial_Location_Line_2",ifnull(burialLoc.get("address_line_2"),""));
+			crmMap.put("Burial_Location_City",ifnull(burialLoc.get("district_city"),""));
+			crmMap.put("Burial_Location_State",ifnull(burialLoc.get("state_province"),""));
+			crmMap.put("Burial_Location_Postal_Code",ifnull(burialLoc.get("postal_Code"),""));
+			crmMap.put("Ashes_Instructions",ifnull(dataMap.get("Ashes_Instructions"),""));
+			crmMap.put("Place_of_Worship",ifnull(dataMap.get("Place_of_Worship"),""));
+			crmMap.put("Ceremony_Preferences",ifnull(dataMap.get("Ceremony_Preferences"),""));
+			crmMap.put("Obituary_Information",ifnull(dataMap.get("Obituary_Information"),""));
+			crmMap.put("Clothing_and_Accessories",ifnull(dataMap.get("Clothing_and_Accessories"),""));
+			crmMap.put("Flowers",ifnull(dataMap.get("Flowers"),""));
+			crmMap.put("Songs",ifnull(dataMap.get("Songs"),""));
+			crmMap.put("Readings",ifnull(dataMap.get("Readings"),""));
+			crmMap.put("Prayers",ifnull(dataMap.get("Prayers"),""));
+			crmMap.put("Imagined_Service",ifnull(dataMap.get("Imagined_Service"),""));
+			crmMap.put("Interment_Type",ifnull(dataMap.get("Interment_Type"),List()));
+			crmMap.put("Interment_Description",ifnull(dataMap.get("Interment_Description"),""));
+			crmMap.put("Programme_Style",ifnull(dataMap.get("Programme_Style"),""));
+			crmMap.put("Headstone_Type",ifnull(dataMap.get("Headstone_Type"),""));
+			crmMap.put("Inscription",ifnull(dataMap.get("Inscription"),""));
+			crmMap.put("Additional_Instructions",ifnull(dataMap.get("Additional_Instructions"),""));
+			crmPersonsRows = List();
+			for each  p in personsList
+			{
+				pName = ifnull(p.get("Name"),Map());
+				pFirst = ifnull(pName.get("first_name"),"");
+				pLast = ifnull(pName.get("last_name"),"");
+				pFull = (pFirst + " " + pLast).trim();
+				crmRow = Map();
+				crmRow.put("Name1",pFull);
+				crmRow.put("Relationship",ifnull(p.get("Relationship"),""));
+				crmRow.put("Phone",ifnull(p.get("Phone"),""));
+				crmPersonsRows.add(crmRow);
+			}
+			crmMap.put("Persons_Responsible",crmPersonsRows);
+			existingCrmId = ifnull(crm_record_id,"").trim();
+			// ---- ZP-TBD-86: the family's IFR answer + the Beneficiary's DOB ----
+			isIfrAnswer = ifnull(dataMap.get("Pre_Planner_Is_IFR"),"").toString().trim();
+			if(isIfrAnswer == "Yes" || isIfrAnswer == "No")
+			{
+				crmMap.put("Pre_Planner_Is_IFR",isIfrAnswer);
+			}
+			benDob = ifnull(dataMap.get("Beneficiary_Date_of_Birth"),"").toString().trim();
+			if(benDob != "")
+			{
+				// <input type="date"> sends yyyy-MM-dd, the format CRM date fields take
+				crmMap.put("Beneficiary_Date_of_Birth",benDob);
+			}
+			// What this record said BEFORE this submission -- so the Deal Note below is only
+			// written when an answer actually changed, not on every resubmission.
+			previousIsIfr = "";
+			previousDob = "";
+			if(existingCrmId != "")
+			{
+				try
+				{
+					previousRec = zoho.crm.getRecordById("Pre_Need_Questionnaire",existingCrmId.toLong());
+					previousIsIfr = ifnull(previousRec.get("Pre_Planner_Is_IFR"),"").toString();
+					previousDob = ifnull(previousRec.get("Beneficiary_Date_of_Birth"),"").toString();
+				}
+				catch (ePrev)
+				{
+					previousIsIfr = "";
+					previousDob = "";
+				}
+			}
+			// ---- retry the actual CRM write up to 3 times before giving up ----
+			// (fixes a silent-failure gap Andrea flagged: Final_Wishes_Form saving
+			// while the CRM record quietly never gets created/updated looked to the
+			// family like a successful submission with nobody the wiser).
+			crmSucceeded = false;
+			lastCrmError = "";
+			newCrmId = "";
+			// Deluge has no counting "for" loop at all -- confirmed. Retrying via
+			// for-each + break over a fixed 3-element list instead, both of which
+			// are proven constructs already used elsewhere in this org.
+			attemptList = List();
+			attemptList.add(1);
+			attemptList.add(2);
+			attemptList.add(3);
+			for each  attempt in attemptList
+			{
+				if(crmSucceeded)
+				{
+					break;
+				}
+				try 
+				{
+					if(existingCrmId != "")
+					{
+						crmUpdateResp = zoho.crm.updateRecord("Pre_Need_Questionnaire",existingCrmId.toLong(),crmMap);
+						newCrmId = existingCrmId;
+						crmSucceeded = true;
+						result.put("crmResponse",crmUpdateResp);
+					}
+					else
+					{
+						crmCreateResp = zoho.crm.createRecord("Pre_Need_Questionnaire",crmMap);
+						newCrmId = ifnull(crmCreateResp.get("id"),"");
+						if(newCrmId != "")
+						{
+							crmSucceeded = true;
+						}
+						else
+						{
+							lastCrmError = "createRecord returned no id: " + crmCreateResp.toString();
+						}
+						result.put("crmResponse",crmCreateResp);
+					}
+				}				catch (eCrmAttempt)
+				{
+					lastCrmError = eCrmAttempt.toString();
+				}
+			}
+			if(crmSucceeded)
+			{
+				result.put("crmQuestionnaireId",newCrmId);
+				// clear any earlier failure flag now that this Deal is syncing fine again
+				try 
+				{
+					clearMap = Map();
+					clearMap.put("Pre_Need_CRM_Sync_Status","-None-");
+					clearMap.put("Pre_Need_CRM_Sync_Error","");
+					zoho.crm.updateRecord("Deals",dId.toLong(),clearMap);
+				}				catch (eClear)
+				{
+					// non-fatal, purely cosmetic if this particular update doesn't take
+				}
+				// ---- ZP-TBD-86: DOB -> the Deal's Account, and flag an IFR answer that disagrees with staff ----
+				// Non-fatal: the questionnaire itself is already saved above.
+				try
+				{
+					nl = zoho.encryption.urlDecode("%0A");
+					noteLines = List();
+					dealResp2 = invokeurl
+					[
+						url :"https://www.zohoapis.com/crm/v7/Deals/" + dId + "?fields=Account_Name,Pre_Need_Payer_Or_Beneficiary"
+						type :GET
+						connection:"zohocrm_connection"
+					];
+					dealRow2 = dealResp2.get("data").get(0);
+					// (a) Accounts.Date_of_Birth is half of the at-need Pre-Need match key. Fill it only when it
+					// is blank -- never overwrite a DOB staff already entered; a different one is flagged instead.
+					if(benDob != "")
+					{
+						accId2 = "";
+						try
+						{
+							accId2 = ifnull(dealRow2.get("Account_Name").get("id"),"").toString();
+						}
+						catch (eAcc2)
+						{
+							accId2 = "";
+						}
+						if(accId2 != "")
+						{
+							accResp2 = invokeurl
+							[
+								url :"https://www.zohoapis.com/crm/v7/Accounts/" + accId2 + "?fields=Date_of_Birth"
+								type :GET
+								connection:"zohocrm_connection"
+							];
+							accDob = ifnull(accResp2.get("data").get(0).get("Date_of_Birth"),"").toString();
+							if(accDob == "")
+							{
+								accUpd = Map();
+								accUpd.put("Date_of_Birth",benDob);
+								accUpdList = List();
+								accUpdList.add(accUpd);
+								accUpdBody = Map();
+								accUpdBody.put("data",accUpdList);
+								accUpdResp = invokeurl
+								[
+									url :"https://www.zohoapis.com/crm/v7/Accounts/" + accId2
+									type :PUT
+									parameters:accUpdBody.toString()
+									connection:"zohocrm_connection"
+								];
+								result.put("accountDobResponse",accUpdResp);
+							}
+							else if(accDob != benDob && benDob != previousDob)
+							{
+								noteLines.add("Date of birth: the family entered " + benDob + ", but the Account already has " + accDob + ". The Account was NOT changed -- please check which is right.");
+							}
+						}
+					}
+					// (b) The staff answered "is the payer also the IFR?" on the Contact 'Create Pre-Need Deal'
+					// button (saved in Pre_Need_Payer_Or_Beneficiary). That answer decided whether a second
+					// Contact/Account was created. If the family now says otherwise, staff must look at it.
+					staffAnswer = ifnull(dealRow2.get("Pre_Need_Payer_Or_Beneficiary"),"").toString();
+					expectedIsIfr = "";
+					if(staffAnswer == "Beneficiary / IFR")
+					{
+						expectedIsIfr = "Yes";
+					}
+					else if(staffAnswer == "Payer")
+					{
+						expectedIsIfr = "No";
+					}
+					if(expectedIsIfr != "" && isIfrAnswer != "" && isIfrAnswer != expectedIsIfr && isIfrAnswer != previousIsIfr)
+					{
+						if(isIfrAnswer == "Yes")
+						{
+							noteLines.add("IFR: the family says the Pre-Planner IS the person the funeral is for, but the Deal was set up as 'Payer' (a separate IFR Contact/Account was created). Please check the Contacts and Account on this Deal.");
+						}
+						else
+						{
+							noteLines.add("IFR: the family says the Pre-Planner is NOT the person the funeral is for, but the Deal was set up as 'Beneficiary / IFR' (no separate IFR Contact was created). Please check the Contacts and Account on this Deal.");
+						}
+					}
+					if(noteLines.size() > 0)
+					{
+						noteMap2 = Map();
+						noteMap2.put("Note_Title","Pre-Need Questionnaire: please check");
+						noteMap2.put("Note_Content",noteLines.toString(nl));
+						noteModule2 = Map();
+						noteModule2.put("api_name","Deals");
+						noteParent2 = Map();
+						noteParent2.put("module",noteModule2);
+						noteParent2.put("id",dId);
+						noteMap2.put("Parent_Id",noteParent2);
+						noteList2 = List();
+						noteList2.add(noteMap2);
+						noteBody2 = Map();
+						noteBody2.put("data",noteList2);
+						noteResp2 = invokeurl
+						[
+							url :"https://www.zohoapis.com/crm/v8/Notes"
+							type :POST
+							parameters:noteBody2.toString()
+							connection:"zohocrm_connection"
+						];
+						result.put("dealNoteResponse",noteResp2);
+					}
+				}				catch (eZp86)
+				{
+					result.put("zp86Error",eZp86.toString());
+				}
+			}
+			else
+			{
+				result.put("crmError",lastCrmError);
+				// ---- flag the Deal + email so a failed sync doesn't go unnoticed ----
+				try 
+				{
+					todayTime = zoho.currenttime.toString("yyyy-MM-dd HH:mm");
+					failMap = Map();
+					failMap.put("Pre_Need_CRM_Sync_Status","Failed");
+					failMap.put("Pre_Need_CRM_Sync_Error",todayTime + " -- " + lastCrmError);
+					zoho.crm.updateRecord("Deals",dId.toLong(),failMap);
+					sendmail
+					[
+						from :zoho.adminuserid
+						to :"info@dfhja.com"
+						subject :"Pre-Need Questionnaire failed to sync to CRM"
+						message :"A family's Pre-Need Questionnaire submission saved successfully, but the linked CRM record (Pre_Need_Questionnaire) failed to create/update after 3 attempts." + "\n\n" + "Deal ID: " + dId + "\n" + "Time: " + todayTime + "\n" + "Error: " + lastCrmError + "\n\n" + "The submission itself is safe (Final_Wishes_Form record " + newId.toString() + "). Use the \"Retry Questionnaire CRM Sync\" button on the Deal once the underlying issue has cleared."
+					]
+				}				catch (eNotify)
+				{
+					// if even the failure-flag/email itself fails, there's nothing further
+					// to do here -- the crmError is still in this function's own response
+				}
+			}
+		}		catch (eCrm)
+		{
+			// non-fatal -- Final_Wishes_Form (the primary store) already succeeded above
+			result.put("crmError",eCrm.toString());
+		}
+	}	catch (eOuter)
+	{
+		result.put("status","error");
+		result.put("message","Unexpected error: " + eOuter.toString());
+	}
+	return result.toString();
+}
