@@ -1,0 +1,482 @@
+// ==========================================================================
+// ZP-TBD-93 -- Retainer invoice payment -> one Xero Receive Money per payment
+//
+// Books Custom Function "createretainerpaymentinxero", entity: Customer Payment
+// (param name "customer_payment").
+// Workflow rule: "Retainer Payment To Xero" -- Customer Payments, Created or Edited,
+// criteria: Xero Bank Transaction ID is empty.
+//
+// Replaces the old model where syncretainerinvoicetoxero (and its catch-up
+// Schedule) posted ONE Receive Money for the retainer's full total when the
+// retainer was created. Now each payment on a retainer posts its own Receive Money:
+//   - amount / date        = the payment's amount / date
+//   - bank account         = the Xero bank account with the same name as the
+//                            payment's Books "Deposit To" account; Hillview clearing
+//                            or no match -> BNS DFH-Checking (no match also emails)
+//   - lines                = the retainer's lines, pro-rata to this payment, same
+//                            PRE NEED (26100) account and tax codes as the old lump,
+//                            sent tax-inclusive so the total equals the payment exactly
+// Skipped (never posted):
+//   - invoice payments and payments not on a retainer
+//   - retainers already in Xero the old way: cf_xero_bank_transaction_id (lump)
+//     or cf_xero_invoice_id (pre-2026-09-09 Invoice+Payment) is set on the retainer
+//   - payments not in JMD (alert email instead)
+// The payment's cf_xero_bank_transaction_id is the done-flag. It is also used as a
+// claim ("PENDING|...") so two runs started by the same save can't both post.
+// ==========================================================================
+organizationID = organization.get("organization_id");
+paymentID = customer_payment.get("payment_id");
+// ---- configuration ----
+ALERT_EMAIL = "softanis.noushadurrahman@gmail.com";
+BOOKS_API = "https://www.zohoapis.com/books/v3";
+SLEEP_API = "https://www.zohoapis.com/creator/custom/delapenhafuneralhome/Sleep_API?publickey=69fNOfX03TwjyaAgAYyRTJSBd&seconds=";
+MASTER_DATA_URL = "https://www.zohoapis.com/books/v3/settings/incomingwebhooks/iw_getxeromasterdata/execute?auth_type=apikey&encapiKey=<BOOKS_WEBHOOK_ENCAPIKEY_GETXEROMASTERDATA>";
+XERO_TENANT_ID = "879c4d25-cee8-46c1-89f9-80dcfe572eb2";
+XERO_CLIENT_ID = "6793DCCECBC842A78F4823D608636FFD";
+XERO_CLIENT_SECRET = "<XERO_CLIENT_SECRET>";
+XERO_REFRESH_TOKEN_VAR_ID = "6503357000009423001";
+DEFAULT_BANK_ACCOUNT_ID = "AB461C09-78F6-4BFC-AF77-D045F5EEEB07";
+// BNS DFH-Checking -- same account the old lump used
+PRE_NEED_FALLBACK_ACCOUNT_ID = "d82dba9b-5cd3-41a9-97c8-d3a3ceb98c5a";
+HILLVIEW_CLEARING_ACCOUNT_NAME = "hillview pre-need clearing";
+CLAIM_PREFIX = "PENDING|";
+NO_WORKFLOW_HEADER = Map();
+NO_WORKFLOW_HEADER.put("X-ZOHO-Execute-CustomFunction","false");
+// ==========================================================================
+// 1. CHEAP EXIT -- invoice payments never reach Xero from here
+// ==========================================================================
+if(ifnull(customer_payment.get("invoices"),list()).size() > 0)
+{
+	return;
+}
+// ==========================================================================
+// 2. WAIT, THEN RE-READ
+// allprocessonpaymentcreateandupdate corrects the payment's Deposit To account
+// ~30-35 s after a Books-entered payment is saved; read the payment after that.
+// ==========================================================================
+try
+{
+	getUrl(SLEEP_API + "45");
+}
+catch (e)
+{
+	info e;
+}
+paymentData = zoho.books.getRecordsByID("customerpayments",organizationID,paymentID,"zohobooksconnection").get("payment");
+retainerID = ifnull(paymentData.get("retainerinvoice_id"),"").toString();
+if(retainerID == "" || retainerID == "null")
+{
+	info "Not a retainer payment -- nothing to do.";
+	return;
+}
+existingStamp = ifnull(paymentData.get("custom_field_hash").get("cf_xero_bank_transaction_id"),"").toString();
+if(existingStamp != "" && existingStamp != "null")
+{
+	info "Payment already posted to Xero, or another run is posting it: " + existingStamp;
+	return;
+}
+// ==========================================================================
+// 3. RETAINER CHECKS
+// ==========================================================================
+retainerData = zoho.books.getRecordsByID("retainerinvoices",organizationID,retainerID,"zohobooksconnection").get("retainerinvoice");
+retainerNumber = retainerData.get("retainerinvoice_number");
+lumpID = ifnull(retainerData.get("custom_field_hash").get("cf_xero_bank_transaction_id"),"").toString();
+oldXeroInvoiceID = ifnull(retainerData.get("custom_field_hash").get("cf_xero_invoice_id"),"").toString();
+if((lumpID != "" && lumpID != "null") || (oldXeroInvoiceID != "" && oldXeroInvoiceID != "null"))
+{
+	info "Retainer " + retainerNumber + " was already posted to Xero in full (old model) -- payment not posted again.";
+	return;
+}
+paymentCurrency = ifnull(paymentData.get("currency_code"),"JMD");
+if(paymentCurrency != "JMD")
+{
+	sendmail
+	[
+		from :zoho.adminuserid
+		to :ALERT_EMAIL
+		subject :"Retainer payment to Xero -- not JMD, not posted"
+		message :"Payment " + paymentData.get("payment_number") + " on " + retainerNumber + " is in " + paymentCurrency + ". Only JMD retainer payments are posted automatically. Post it in Xero by hand."
+	]
+	return;
+}
+// ==========================================================================
+// 4. CLAIM -- only one run may post this payment
+// ==========================================================================
+claimToken = CLAIM_PREFIX + zoho.currenttime.toLong() + "|" + randomNumber(1,999999);
+claimMap = Map();
+claimMap.put("custom_fields",{{"api_name":"cf_xero_bank_transaction_id","value":claimToken}});
+invokeurl
+[
+	url :BOOKS_API + "/customerpayments/" + paymentID + "?organization_id=" + organizationID
+	type :PUT
+	parameters:claimMap.toString()
+	headers:NO_WORKFLOW_HEADER
+	connection:"zohobooksconnection"
+];
+try
+{
+	getUrl(SLEEP_API + "5");
+}
+catch (e)
+{
+	info e;
+}
+recheckData = zoho.books.getRecordsByID("customerpayments",organizationID,paymentID,"zohobooksconnection").get("payment");
+recheckStamp = ifnull(recheckData.get("custom_field_hash").get("cf_xero_bank_transaction_id"),"").toString();
+if(recheckStamp != claimToken)
+{
+	info "Another run claimed this payment -- exiting.";
+	return;
+}
+// From here on, any failure must release the claim (set the field back to "")
+// so the next edit of the payment retries.
+releaseMap = Map();
+releaseMap.put("custom_fields",{{"api_name":"cf_xero_bank_transaction_id","value":""}});
+// ==========================================================================
+// 5. XERO TOKEN + MASTER DATA (cached Accounts / TaxRates / Tracking)
+// ==========================================================================
+try
+{
+	xeroRefreshToken = zoho.crm.getOrgVariable("xeroRefreshToken");
+	tokenResponse = invokeurl
+	[
+		url :"https://identity.xero.com/connect/token"
+		type :POST
+		parameters:{"grant_type":"refresh_token","refresh_token":xeroRefreshToken,"client_id":XERO_CLIENT_ID,"client_secret":XERO_CLIENT_SECRET}
+		headers:{"Content-Type":"application/x-www-form-urlencoded"}
+	];
+	tokenVariable = Map();
+	tokenVariable.put("id",XERO_REFRESH_TOKEN_VAR_ID);
+	tokenVariable.put("value",tokenResponse.get("refresh_token"));
+	tokenParam = Map();
+	tokenParam.put("variables",{tokenVariable});
+	invokeurl
+	[
+		url :"https://www.zohoapis.com/crm/v7/settings/variables"
+		type :PUT
+		parameters:tokenParam.toString()
+		connection:"zohocrmconnection"
+	];
+	accessToken = tokenResponse.get("access_token");
+	masterData = invokeurl
+	[
+		url :MASTER_DATA_URL
+		type :GET
+	];
+	masterData = masterData.get("response");
+	xeroAccountsMap = masterData.get("accounts");
+	xeroTaxesMap = masterData.get("taxes");
+	xeroTrackingMap = masterData.get("trackingCategories");
+}
+catch (e)
+{
+	invokeurl
+	[
+		url :BOOKS_API + "/customerpayments/" + paymentID + "?organization_id=" + organizationID
+		type :PUT
+		parameters:releaseMap.toString()
+		headers:NO_WORKFLOW_HEADER
+		connection:"zohobooksconnection"
+	];
+	sendmail
+	[
+		from :zoho.adminuserid
+		to :ALERT_EMAIL
+		subject :"Retainer payment to Xero -- token / master data error"
+		message :"Payment " + paymentData.get("payment_number") + " (" + retainerNumber + "): " + e.toString()
+	]
+	return;
+}
+xeroHeaders = Map();
+xeroHeaders.put("xero-tenant-id",XERO_TENANT_ID);
+xeroHeaders.put("Authorization","Bearer " + accessToken);
+xeroHeaders.put("Accept","application/json");
+xeroHeaders.put("Content-Type","application/json");
+// ==========================================================================
+// 6. XERO CONTACT -- reuse the Books customer's cf_xero_contact_id when set
+// ==========================================================================
+customerID = paymentData.get("customer_id");
+customerName = paymentData.get("customer_name");
+customerData = zoho.books.getRecordsByID("contacts",organizationID,customerID,"zohobooksconnection").get("contact");
+xeroContactID = "";
+for each  customerField in ifnull(customerData.get("custom_fields"),list())
+{
+	if(customerField.get("api_name") == "cf_xero_contact_id")
+	{
+		xeroContactID = ifnull(customerField.get("value"),"").toString();
+		break;
+	}
+}
+if(xeroContactID == "" || xeroContactID == "null")
+{
+	xeroContactID = "";
+	contactBody = Map();
+	contactBody.put("Name",customerName);
+	try
+	{
+		createContactResponse = invokeurl
+		[
+			url :"https://api.xero.com/api.xro/2.0/Contacts"
+			type :POST
+			body:contactBody.toString()
+			headers:xeroHeaders
+		];
+		if(createContactResponse.containKey("Contacts") && createContactResponse.get("Contacts").size() > 0)
+		{
+			xeroContactID = createContactResponse.get("Contacts").get(0).get("ContactID");
+		}
+	}
+	catch (e)
+	{
+		info e;
+	}
+	if(xeroContactID == "")
+	{
+		// name already used in Xero -> look the contact up by name
+		try
+		{
+			findContactResponse = invokeurl
+			[
+				url :"https://api.xero.com/api.xro/2.0/Contacts?where=" + zoho.encryption.urlEncode("Name==\"" + customerName + "\"")
+				type :GET
+				headers:xeroHeaders
+			];
+			if(findContactResponse.containKey("Contacts") && findContactResponse.get("Contacts").size() > 0)
+			{
+				xeroContactID = findContactResponse.get("Contacts").get(0).get("ContactID");
+			}
+		}
+		catch (e)
+		{
+			info e;
+		}
+	}
+	if(xeroContactID != "")
+	{
+		contactUpdateMap = Map();
+		contactUpdateMap.put("custom_fields",{{"api_name":"cf_xero_contact_id","value":xeroContactID}});
+		zoho.books.updateRecord("Contacts",organizationID,customerID,contactUpdateMap,"zohobooksconnection");
+	}
+}
+if(xeroContactID == "")
+{
+	invokeurl
+	[
+		url :BOOKS_API + "/customerpayments/" + paymentID + "?organization_id=" + organizationID
+		type :PUT
+		parameters:releaseMap.toString()
+		headers:NO_WORKFLOW_HEADER
+		connection:"zohobooksconnection"
+	];
+	sendmail
+	[
+		from :zoho.adminuserid
+		to :ALERT_EMAIL
+		subject :"Retainer payment to Xero -- no Xero contact"
+		message :"Payment " + paymentData.get("payment_number") + " (" + retainerNumber + "): could not create or find Xero contact '" + customerName + "'."
+	]
+	return;
+}
+// ==========================================================================
+// 7. BANK ACCOUNT -- same name as the Books Deposit To account
+// ==========================================================================
+booksAccountName = ifnull(paymentData.get("account_name"),"").toString();
+booksAccountKey = booksAccountName.toLowerCase().trim();
+xeroBankAccountID = DEFAULT_BANK_ACCOUNT_ID;
+if(booksAccountKey != HILLVIEW_CLEARING_ACCOUNT_NAME)
+{
+	if(booksAccountKey != "" && xeroAccountsMap.containKey(booksAccountKey))
+	{
+		xeroBankAccountID = xeroAccountsMap.get(booksAccountKey);
+	}
+	else
+	{
+		sendmail
+		[
+			from :zoho.adminuserid
+			to :ALERT_EMAIL
+			subject :"Retainer payment to Xero -- bank account not matched, used BNS DFH-Checking"
+			message :"Payment " + paymentData.get("payment_number") + " (" + retainerNumber + "): no Xero account named '" + booksAccountName + "'. Posted to BNS DFH-Checking instead -- move it in Xero if that is wrong."
+		]
+	}
+}
+// ==========================================================================
+// 8. LINES -- the retainer's lines, pro-rata to this payment, tax-inclusive
+// ==========================================================================
+paymentAmount = paymentData.get("amount").toDecimal();
+retainerTotal = ifnull(retainerData.get("total"),0).toDecimal();
+preNeedAccountID = PRE_NEED_FALLBACK_ACCOUNT_ID;
+if(xeroAccountsMap.containKey("pre need"))
+{
+	preNeedAccountID = xeroAccountsMap.get("pre need");
+}
+retainerIsInclusive = retainerData.get("is_inclusive_tax") == true;
+lineSources = list();
+for each  retainerLine in ifnull(retainerData.get("line_items"),list())
+{
+	lineInclusiveAmount = ifnull(retainerLine.get("item_total"),0).toDecimal();
+	if(retainerIsInclusive == false)
+	{
+		for each  lineTax in ifnull(retainerLine.get("line_item_taxes"),list())
+		{
+			lineInclusiveAmount = lineInclusiveAmount + ifnull(lineTax.get("tax_amount"),0).toDecimal();
+		}
+	}
+	if(lineInclusiveAmount != 0)
+	{
+		lineSource = Map();
+		lineSource.put("line",retainerLine);
+		lineSource.put("amount",lineInclusiveAmount);
+		lineSources.add(lineSource);
+	}
+}
+LineItemsList = list();
+if(retainerTotal <= 0 || lineSources.size() == 0)
+{
+	// nothing to split against -> one PRE NEED line for the whole payment
+	singleLine = Map();
+	singleLine.put("Description","Pre-Need retainer payment " + paymentData.get("payment_number"));
+	singleLine.put("Quantity",1);
+	singleLine.put("UnitAmount",paymentAmount);
+	singleLine.put("LineAmount",paymentAmount);
+	singleLine.put("AccountID",preNeedAccountID);
+	singleLine.put("TaxType","NONE");
+	LineItemsList.add(singleLine);
+}
+else
+{
+	ratio = paymentAmount / retainerTotal;
+	allocatedAmount = 0;
+	lineIndex = 0;
+	for each  lineSource in lineSources
+	{
+		lineIndex = lineIndex + 1;
+		retainerLine = lineSource.get("line");
+		if(lineIndex == lineSources.size())
+		{
+			// last line takes the rounding remainder -> lines add up to the payment exactly
+			lineAmount = (paymentAmount - allocatedAmount).round(2);
+		}
+		else
+		{
+			lineAmount = (lineSource.get("amount") * ratio).round(2);
+			allocatedAmount = allocatedAmount + lineAmount;
+		}
+		lineMap = Map();
+		lineMap.put("Description",ifnull(retainerLine.get("description"),ifnull(retainerLine.get("name"),"Pre-Need")));
+		lineMap.put("Quantity",1);
+		lineMap.put("UnitAmount",lineAmount);
+		lineMap.put("LineAmount",lineAmount);
+		lineMap.put("AccountID",preNeedAccountID);
+		taxType = "NONE";
+		lineTaxName = ifnull(retainerLine.get("tax_name"),"").toString().toLowerCase();
+		if(lineTaxName != "" && xeroTaxesMap.containKey(lineTaxName))
+		{
+			taxType = xeroTaxesMap.get(lineTaxName);
+		}
+		lineMap.put("TaxType",taxType);
+		trackingList = list();
+		for each  itemCustomField in ifnull(retainerLine.get("item_custom_fields"),list())
+		{
+			itemFieldValue = ifnull(itemCustomField.get("value"),"").toString();
+			trackingCategoryKey = "";
+			if(itemCustomField.get("api_name") == "cf_revenue_centers")
+			{
+				trackingCategoryKey = "revenue centers";
+			}
+			else if(itemCustomField.get("api_name") == "cf_motor_vehicle")
+			{
+				trackingCategoryKey = "motor vehicle";
+			}
+			if(trackingCategoryKey != "" && itemFieldValue != "" && itemFieldValue != "null" && xeroTrackingMap.containKey(trackingCategoryKey))
+			{
+				trackingEntry = xeroTrackingMap.get(trackingCategoryKey);
+				trackingOptionID = trackingEntry.get("options").get(itemFieldValue.toLowerCase());
+				if(!isNull(trackingOptionID))
+				{
+					trackingMap = Map();
+					trackingMap.put("TrackingCategoryID",trackingEntry.get("categoryId"));
+					trackingMap.put("TrackingOptionID",trackingOptionID);
+					trackingList.add(trackingMap);
+				}
+			}
+		}
+		if(trackingList.size() > 0)
+		{
+			lineMap.put("Tracking",trackingList);
+		}
+		LineItemsList.add(lineMap);
+	}
+}
+// ==========================================================================
+// 9. CREATE THE RECEIVE MONEY
+// ==========================================================================
+xeroReference = "Pre-Need Retainer " + retainerNumber + " - " + paymentData.get("payment_number");
+retainerContacts = ifnull(retainerData.get("contact_persons_associated"),list());
+if(retainerContacts.size() > 0)
+{
+	xeroReference = xeroReference + " - " + ifnull(retainerContacts.get(0).get("first_name"),"") + " " + ifnull(retainerContacts.get(0).get("last_name"),"");
+}
+receiveMoneyMap = Map();
+receiveMoneyMap.put("Type","RECEIVE");
+receiveMoneyMap.put("Contact",{"ContactID":xeroContactID});
+receiveMoneyMap.put("BankAccount",{"AccountID":xeroBankAccountID});
+receiveMoneyMap.put("Date",paymentData.get("date"));
+receiveMoneyMap.put("Status","AUTHORISED");
+receiveMoneyMap.put("Reference",xeroReference.trim());
+receiveMoneyMap.put("LineAmountTypes","Inclusive");
+receiveMoneyMap.put("LineItems",LineItemsList);
+createReceiveMoneyResponse = Map();
+try
+{
+	createReceiveMoneyResponse = invokeurl
+	[
+		url :"https://api.xero.com/api.xro/2.0/BankTransactions"
+		type :POST
+		body:receiveMoneyMap.toString()
+		headers:xeroHeaders
+	];
+}
+catch (e)
+{
+	createReceiveMoneyResponse = Map();
+	createReceiveMoneyResponse.put("error",e.toString());
+}
+xeroBankTransactionID = "";
+if(createReceiveMoneyResponse.containKey("BankTransactions") && createReceiveMoneyResponse.get("BankTransactions").size() > 0)
+{
+	xeroBankTransactionID = ifnull(createReceiveMoneyResponse.get("BankTransactions").get(0).get("BankTransactionID"),"");
+}
+if(xeroBankTransactionID == "")
+{
+	invokeurl
+	[
+		url :BOOKS_API + "/customerpayments/" + paymentID + "?organization_id=" + organizationID
+		type :PUT
+		parameters:releaseMap.toString()
+		headers:NO_WORKFLOW_HEADER
+		connection:"zohobooksconnection"
+	];
+	sendmail
+	[
+		from :zoho.adminuserid
+		to :ALERT_EMAIL
+		subject :"Retainer payment to Xero -- Receive Money failed"
+		message :"Payment " + paymentData.get("payment_number") + " (" + retainerNumber + "). An empty response usually means the Xero daily API limit is used up -- edit and save the payment tomorrow to retry. Response: " + createReceiveMoneyResponse.toString() + " Request: " + receiveMoneyMap.toString()
+	]
+	return;
+}
+// ==========================================================================
+// 10. DONE -- the Xero ID replaces the claim on the payment
+// ==========================================================================
+doneMap = Map();
+doneMap.put("custom_fields",{{"api_name":"cf_xero_bank_transaction_id","value":xeroBankTransactionID}});
+invokeurl
+[
+	url :BOOKS_API + "/customerpayments/" + paymentID + "?organization_id=" + organizationID
+	type :PUT
+	parameters:doneMap.toString()
+	headers:NO_WORKFLOW_HEADER
+	connection:"zohobooksconnection"
+];
+info "Payment " + paymentData.get("payment_number") + " (" + retainerNumber + ") posted to Xero as Receive Money " + xeroBankTransactionID;
