@@ -1,0 +1,160 @@
+// Live source of button.calculateInstallmentAmount, pulled 2026-09-29 before ZP-TBD-81.
+// NOTE: differs from the ZP-TBD-75 repo copy -- the live one does NOT pass {"trigger":{"workflow"}} and instead calls the
+// installment invoice functions directly at the end. The zapikey is masked here (<ZAPIKEY>); to roll back, copy the
+// three URLs from handleWorkflowTriggerAndActionByTimelineProcess (same key). Code is verbatim; the long explanatory
+// comments of the live copy were trimmed.
+string button.calculateInstallmentAmount(String crmid)
+{
+recordInfo = zoho.crm.getRecordById("Deals",crmid);
+total_amount = ifnull(recordInfo.get("Contract_Value"),0);
+try
+{
+	total_amount = total_amount.round(2);
+}
+catch (e)
+{
+	total_amount = 0;
+}
+// Pre-need: the deposit is paid up front, so only what is left after it is split into installments.
+// Pre_Need_Deposit_Amount / Pre_Need_Balance_Due_Date are reused as-is (ZP-TBD-75) -- they already
+// drive createPreNeedDepositRetainerInvoice, so no field rename was needed.
+deposit_amount = ifnull(recordInfo.get("Pre_Need_Deposit_Amount"),0);
+try
+{
+	deposit_amount = deposit_amount.round(2);
+}
+catch (e)
+{
+	deposit_amount = 0;
+}
+if(deposit_amount > total_amount)
+{
+	return "Deposit is more than the total amount. Please correct the Pre-Need Deposit Amount.";
+}
+installment_base = total_amount - deposit_amount;
+dealMap = Map();
+dealMap.put("Installment_1_Amount",null);
+dealMap.put("Installment_1_Due_Date",null);
+dealMap.put("Installment_2_Amount",null);
+dealMap.put("Installment_2_Due_Date",null);
+dealMap.put("Installment_3_Amount",null);
+dealMap.put("Installment_3_Due_Date",null);
+if(installment_base <= 0)
+{
+	zoho.crm.updateRecord("Deals",crmid,dealMap);
+	return "Deposit covers the full contract value. No installments scheduled.";
+}
+balanceDueDate = recordInfo.get("Pre_Need_Balance_Due_Date");
+commencementDate = recordInfo.get("Installment_Commencement_Date");
+dayOfMonth = recordInfo.get("Installment_Day_of_Month");
+if(isNull(balanceDueDate) || isNull(commencementDate) || isNull(dayOfMonth))
+{
+	return "Installment_Commencement_Date, Installment_Day_of_Month and Pre_Need_Balance_Due_Date must all be set before calculating installments.";
+}
+balanceDueDate = balanceDueDate.toDate();
+commencementDate = commencementDate.toDate();
+dayOfMonth = dayOfMonth.toLong();
+if(commencementDate > balanceDueDate)
+{
+	return "Installment Commencement Date is after the Balance Due Date. Please correct the dates.";
+}
+dueDates = List();
+cursorDate = commencementDate;
+maxPeriodAttempts = {1,2,3,4,5,6};
+for each  attempt in maxPeriodAttempts
+{
+	if(cursorDate >= balanceDueDate)
+	{
+		break;
+	}
+	dueDates.add(cursorDate);
+	nextMonth = cursorDate.getMonth() + 1;
+	nextYear = cursorDate.getYear();
+	if(nextMonth > 12)
+	{
+		nextMonth = 1;
+		nextYear = nextYear + 1;
+	}
+	monthStr = nextMonth.toString();
+	if(nextMonth < 10)
+	{
+		monthStr = "0" + monthStr;
+	}
+	dayStr = dayOfMonth.toString();
+	if(dayOfMonth < 10)
+	{
+		dayStr = "0" + dayStr;
+	}
+	cursorDate = (nextYear + "-" + monthStr + "-" + dayStr).toDate();
+}
+dueDates.add(balanceDueDate);
+if(dueDates.size() > 3)
+{
+	return "This schedule needs " + dueDates.size() + " installment payments, but only 3 Installment slots exist on the Deal. Space the payments further apart, or raise a request to add another Installment slot.";
+}
+periodCount = dueDates.size();
+parts = List();
+sum_parts = 0.0;
+index = 0;
+for each  dueDate in dueDates
+{
+	if(index < periodCount - 1)
+	{
+		part = round(installment_base / periodCount,2);
+		sum_parts = sum_parts + part;
+	}
+	else
+	{
+		part = installment_base - sum_parts;
+	}
+	parts.add(part);
+	index = index + 1;
+}
+if(periodCount >= 1)
+{
+	dealMap.put("Installment_1_Amount",parts.get(0));
+	dealMap.put("Installment_1_Due_Date",dueDates.get(0).toString("yyyy-MM-dd"));
+}
+if(periodCount >= 2)
+{
+	dealMap.put("Installment_2_Amount",parts.get(1));
+	dealMap.put("Installment_2_Due_Date",dueDates.get(1).toString("yyyy-MM-dd"));
+}
+if(periodCount >= 3)
+{
+	dealMap.put("Installment_3_Amount",parts.get(2));
+	dealMap.put("Installment_3_Due_Date",dueDates.get(2).toString("yyyy-MM-dd"));
+}
+zoho.crm.updateRecord("Deals",crmid,dealMap);
+recordInfo = zoho.crm.getRecordById("Deals",crmid);
+//Installment 1 Invoice
+if(!isNull(recordInfo.get("Installment_1_Due_Date")) && recordInfo.get("Payment_Type") == "Installments" && !isNull(recordInfo.get("Installment_1_Amount")))
+{
+	createInvoiceForInstallment1 = invokeurl
+	[
+		url :"https://www.zohoapis.com/crm/v7/functions/createinvoiceifpaymenttypeisintallments/actions/execute?auth_type=apikey&zapikey=<ZAPIKEY>&crmid=" + crmid
+		type :GET
+	];
+}
+//End Installment 1 Invoice
+//Installment 2 Invoice
+if(!isNull(recordInfo.get("Installment_2_Due_Date")) && recordInfo.get("Payment_Type") == "Installments" && !isNull(recordInfo.get("Installment_2_Amount")))
+{
+	createInvoiceForInstallment1 = invokeurl
+	[
+		url :"https://www.zohoapis.com/crm/v7/functions/createinvoiceforinstallment2/actions/execute?auth_type=apikey&zapikey=<ZAPIKEY>&crmid=" + crmid
+		type :GET
+	];
+}
+//End Installment 2 Invoice
+//Installment 3 Invoice
+if(!isNull(recordInfo.get("Installment_3_Due_Date")) && recordInfo.get("Payment_Type") == "Installments" && !isNull(recordInfo.get("Installment_3_Amount")))
+{
+	createInvoiceForInstallment1 = invokeurl
+	[
+		url :"https://www.zohoapis.com/crm/v7/functions/createinvoiceforinstallment3/actions/execute?auth_type=apikey&zapikey=<ZAPIKEY>&crmid=" + crmid
+		type :GET
+	];
+}
+return "Amount of Installments are calculated.";
+}

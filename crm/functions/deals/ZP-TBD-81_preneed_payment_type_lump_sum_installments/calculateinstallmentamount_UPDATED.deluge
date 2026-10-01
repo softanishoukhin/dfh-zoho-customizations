@@ -1,0 +1,7 @@
+string button.calculateInstallmentAmount(String crmid)
+{
+// ZP-TBD-81: the payment plan now builds itself when Payment_Type (or Contract_Signing_Date) is set on the
+// Deal -- the schedule logic that used to live here moved to standalone.setupPreNeedPaymentPlan.
+// This button stays as a manual "rebuild the payment plan" for a Deal (e.g. after the products change).
+return standalone.setupPreNeedPaymentPlan(crmid.toLong());
+}

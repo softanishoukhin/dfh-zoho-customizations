@@ -1,0 +1,195 @@
+string standalone.setupPreNeedPaymentPlan(Int crmid)
+{
+// ZP-TBD-81: the Pre-Need payment plan is driven by Deals.Payment_Type.
+//   Lump Sum     -> ONE invoice for the full Contract_Value, due in 7 days.
+//   Installments -> first invoice = 50% of Contract_Value (the deposit), due in 7 days;
+//                   the other 50% = 2 x 25% installments, due at the END of (signing month + 2)
+//                   and the END of (signing month + 4).
+// Must_End_By_Date = Contract_Signing_Date + 6 months (maximum contract period), set for both types.
+// Contract_Signing_Date defaults to today when blank.
+// Called by automation.handleWorkflowTriggerAndActionByTimelineProcess when Payment_Type or
+// Contract_Signing_Date is edited, and by the Calculate Installment Amount button (manual re-run).
+// The schedule logic replaces what button.calculateInstallmentAmount used to do (ZP-TBD-75).
+getRecordInfo = invokeurl
+[
+	url :"https://www.zohoapis.com/crm/v8/Deals/" + crmid
+	type :GET
+	connection:"zohooauth"
+];
+recordInfo = getRecordInfo.get("data").get(0);
+if(recordInfo.get("Pipeline") != "Pre Need")
+{
+	return "The payment plan only applies to Pre Need Deals.";
+}
+paymentType = ifnull(recordInfo.get("Payment_Type"),"");
+if(paymentType != "Lump Sum" && paymentType != "Installments")
+{
+	return "Select a Payment Type (Lump Sum or Installments) first.";
+}
+totalAmount = 0.0;
+try
+{
+	totalAmount = ifnull(recordInfo.get("Contract_Value"),0).toString().toDecimal().round(2);
+}
+catch (eAmt)
+{
+	totalAmount = 0.0;
+}
+if(totalAmount <= 0)
+{
+	return "Contract Value is blank. Add the products to the Deal before choosing the Payment Type.";
+}
+// Never mix the two plans on one Deal: switching type after invoices exist would double-bill.
+// Lump Sum invoice = Invoice_For 'Other' or blank (same test createInvoiceIfPaymentTypeIsPaymentInFull uses);
+// plan invoices = Invoice_For 'Deposit' / 'Installment 1-3'. Void / Cancelled invoices are ignored.
+hasLumpSumInvoice = false;
+hasPlanInvoice = false;
+existingInvoices = standalone.COQLQuery("select Subject, Invoice_For, Status from Invoices where Deal_Name__s = '" + crmid + "' limit 50");
+if(existingInvoices.size() > 0)
+{
+	for each  existingInvoice in existingInvoices.toList()
+	{
+		invoiceStatus = ifnull(existingInvoice.get("Status"),"");
+		if(invoiceStatus == "Void" || invoiceStatus == "Cancelled")
+		{
+			continue;
+		}
+		invoiceFor = ifnull(existingInvoice.get("Invoice_For"),"Other");
+		if(invoiceFor == "Other")
+		{
+			hasLumpSumInvoice = true;
+		}
+		else if(invoiceFor == "Deposit" || invoiceFor.startsWith("Installment"))
+		{
+			hasPlanInvoice = true;
+		}
+	}
+}
+if(paymentType == "Lump Sum" && hasPlanInvoice)
+{
+	return "This Deal already has Deposit/Installment invoices. Void them before switching to Lump Sum.";
+}
+if(paymentType == "Installments" && hasLumpSumInvoice)
+{
+	return "This Deal already has a Lump Sum invoice. Void it before switching to Installments.";
+}
+// --- Dates ---
+// getRecordInfo returns dates as "yyyy-MM-dd" strings -- convert before any date math/comparison.
+signingDateRaw = recordInfo.get("Contract_Signing_Date");
+signingDateWasBlank = false;
+if(isNull(signingDateRaw) || signingDateRaw.toString() == "")
+{
+	signingDate = zoho.currentdate;
+	signingDateWasBlank = true;
+}
+else
+{
+	signingDate = signingDateRaw.toString().toDate();
+}
+// First day of each of the 7 months after the signing month (index 0 = signing month + 1).
+// Built by hand with a month/year rollover -- same pattern ZP-TBD-75 confirmed live.
+monthStarts = List();
+cursorYear = signingDate.getYear();
+cursorMonth = signingDate.getMonth();
+for each  offset in {1,2,3,4,5,6,7}
+{
+	cursorMonth = cursorMonth + 1;
+	if(cursorMonth > 12)
+	{
+		cursorMonth = 1;
+		cursorYear = cursorYear + 1;
+	}
+	monthStr = cursorMonth.toString();
+	if(cursorMonth < 10)
+	{
+		monthStr = "0" + monthStr;
+	}
+	monthStarts.add((cursorYear + "-" + monthStr + "-01").toDate());
+}
+// Must End By = same day of the month, 6 months later; clamped to that month's last day
+// (e.g. signed 31 Aug -> 28/29 Feb).
+signingDay = signingDate.getDay();
+lastDayOfMonth6 = monthStarts.get(6).subDay(1);
+if(signingDay > lastDayOfMonth6.getDay())
+{
+	mustEndBy = lastDayOfMonth6;
+}
+else
+{
+	dayStr = signingDay.toString();
+	if(signingDay < 10)
+	{
+		dayStr = "0" + dayStr;
+	}
+	mustEndBy = (monthStarts.get(5).toString("yyyy-MM") + "-" + dayStr).toDate();
+}
+dealMap = Map();
+if(signingDateWasBlank)
+{
+	dealMap.put("Contract_Signing_Date",signingDate.toString("yyyy-MM-dd"));
+}
+dealMap.put("Must_End_By_Date",mustEndBy.toString("yyyy-MM-dd"));
+// Always clear the 3 installment slots first. Use null, not "" -- the dispatcher and
+// createInstallmentInvoice treat a slot as unused only when it reads back null (ZP-TBD-75).
+dealMap.put("Installment_1_Amount",null);
+dealMap.put("Installment_1_Due_Date",null);
+dealMap.put("Installment_2_Amount",null);
+dealMap.put("Installment_2_Due_Date",null);
+dealMap.put("Installment_3_Amount",null);
+dealMap.put("Installment_3_Due_Date",null);
+if(paymentType == "Lump Sum")
+{
+	// No deposit / balance date on a Lump Sum contract (the contract template reads these fields).
+	dealMap.put("Pre_Need_Deposit_Amount",null);
+	dealMap.put("Pre_Need_Balance_Due_Date",null);
+	// In-function updateRecord does NOT fire workflows -- intended here: this function calls the
+	// invoice builders itself below, so no dispatcher block should run a second time.
+	zoho.crm.updateRecord("Deals",crmid,dealMap);
+	arguments = Map();
+	arguments.put("crmid",crmid);
+	lumpSumResp = invokeurl
+	[
+		url :"https://www.zohoapis.com/crm/v7/functions/createinvoiceifpaymenttypeispaymentinfull/actions/execute?auth_type=oauth"
+		type :GET
+		parameters:arguments
+		connection:"zohooauth"
+	];
+	info lumpSumResp;
+	return "Lump Sum: one invoice for " + totalAmount + ", due " + zoho.currentdate.addDay(7).toString("dd-MMM-yyyy") + ". Must End By " + mustEndBy.toString("dd-MMM-yyyy") + ".";
+}
+// --- Installments ---
+firstAmount = (totalAmount * 0.5).round(2);
+remainingAmount = totalAmount - firstAmount;
+installment1Amount = (remainingAmount / 2).round(2);
+// last installment absorbs the rounding remainder so the three invoices sum exactly to Contract_Value
+installment2Amount = (remainingAmount - installment1Amount).round(2);
+// End of (signing month + 2) = first day of (signing month + 3) minus one day; same for + 4.
+installment1Due = monthStarts.get(2).subDay(1);
+installment2Due = monthStarts.get(4).subDay(1);
+dealMap.put("Pre_Need_Deposit_Amount",firstAmount);
+// The last installment date is the contract's "balance on or before" date.
+dealMap.put("Pre_Need_Balance_Due_Date",installment2Due.toString("yyyy-MM-dd"));
+dealMap.put("Installment_1_Amount",installment1Amount);
+dealMap.put("Installment_1_Due_Date",installment1Due.toString("yyyy-MM-dd"));
+dealMap.put("Installment_2_Amount",installment2Amount);
+dealMap.put("Installment_2_Due_Date",installment2Due.toString("yyyy-MM-dd"));
+// No workflow trigger on purpose -- the three invoices are created right here, directly.
+zoho.crm.updateRecord("Deals",crmid,dealMap);
+// 1) 50% invoice -- automation.* so it has to go through its REST execute endpoint (same call the dispatcher makes).
+//    Idempotent: skips if a 'Deposit Invoice%' already exists on the Deal.
+arguments = Map();
+arguments.put("crmid",crmid);
+depositResp = invokeurl
+[
+	url :"https://www.zohoapis.com/crm/v7/functions/createpreneeddepositretainerinvoice/actions/execute?auth_type=oauth"
+	type :GET
+	parameters:arguments
+	connection:"zohooauth"
+];
+info depositResp;
+// 2) + 3) installment invoices -- standalone, so call it directly. Idempotent per Invoice_For
+//    (an existing 'Installment N' invoice is updated, not duplicated).
+standalone.createInstallmentInvoice(crmid,"Installment_1_Amount","Installment_1_Due_Date");
+standalone.createInstallmentInvoice(crmid,"Installment_2_Amount","Installment_2_Due_Date");
+return "Installments: 50% invoice " + firstAmount + " due " + zoho.currentdate.addDay(7).toString("dd-MMM-yyyy") + "; installment 1 " + installment1Amount + " due " + installment1Due.toString("dd-MMM-yyyy") + "; installment 2 " + installment2Amount + " due " + installment2Due.toString("dd-MMM-yyyy") + ". Must End By " + mustEndBy.toString("dd-MMM-yyyy") + ".";
+}
