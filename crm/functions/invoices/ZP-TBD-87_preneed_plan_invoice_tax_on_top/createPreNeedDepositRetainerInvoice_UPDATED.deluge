@@ -1,0 +1,239 @@
+void automation.createPreNeedDepositRetainerInvoice(Int crmid)
+{
+// Fires (via workflow rule) when Deals.Pre_Need_Balance_Due_Date is provided.
+// Creates ONE retainer invoice for Deals.Pre_Need_Deposit_Amount. Installment invoices are untouched
+// (still created by the Create Installment Invoice buttons).
+getRecordInfo = invokeurl
+[
+	url :"https://www.zohoapis.com/crm/v8/Deals/" + crmid
+	type :GET
+	connection:"zohooauth"
+];
+recordInfo = getRecordInfo.get("data").get(0);
+// Gate lives in the function itself (workflow criteria can only check the balance date)
+depositAmt = ifnull(recordInfo.get("Pre_Need_Deposit_Amount"),0);
+if(depositAmt <= 0)
+{
+	info "No deposit amount on Deal " + crmid + " - deposit retainer invoice not created";
+	return;
+}
+totalAmt = ifnull(recordInfo.get("Contract_Value"),0);
+if(depositAmt > totalAmt)
+{
+	info "Deposit is more than the Deal amount on Deal " + crmid + " - deposit retainer invoice not created";
+	return;
+}
+productRows = recordInfo.get("Product_Selection");
+if(isNull(productRows) || productRows.size() == 0)
+{
+	info "No products on Deal " + crmid + " - deposit retainer invoice not created";
+	return;
+}
+// Idempotency: the trigger can fire again if the balance date is edited - never create a second deposit invoice
+existingDepositInvoice = standalone.COQLQuery("select Subject from Invoices where (Deal_Name__s = '" + crmid + "' and Subject like 'Deposit Invoice%') limit 1");
+if(existingDepositInvoice.size() > 0)
+{
+	info "Deposit retainer invoice already exists for Deal " + crmid;
+	return;
+}
+// Link to the Pre-Need Sales Order if there is one
+salesOrderID = null;
+salesOrders = standalone.COQLQuery("select Subject from Sales_Orders where Deal_Name = '" + crmid + "' and Sales_Order_Type = 'Pre-Need' limit 1");
+try
+{
+	salesOrderID = salesOrders.toList().get(0).get("id");
+}
+catch (e)
+{
+	salesOrderID = null;
+}
+invoiceMap = Map();
+if(!isNull(salesOrderID))
+{
+	invoiceMap.put("Sales_Order",salesOrderID);
+}
+invoiceMap.put("Owner",recordInfo.get("Owner").get("id"));
+if(!isNull(recordInfo.get("Account_Name")))
+{
+	invoiceMap.put("Account_Name",recordInfo.get("Account_Name").get("id"));
+}
+if(!isNull(recordInfo.get("Contact_Name")))
+{
+	invoiceMap.put("Contact_Name",recordInfo.get("Contact_Name").get("id"));
+	contactInfo = zoho.crm.getRecordById("Contacts",recordInfo.get("Contact_Name").get("id"));
+	invoiceMap.put("Billing_City",ifnull(contactInfo.get("Mailing_City"),""));
+	invoiceMap.put("Billing_Code",ifnull(contactInfo.get("Mailing_Zip"),""));
+	invoiceMap.put("Billing_Country",ifnull(contactInfo.get("Mailing_Country"),""));
+	invoiceMap.put("Billing_State",ifnull(contactInfo.get("Mailing_State"),""));
+	invoiceMap.put("Billing_Street",ifnull(contactInfo.get("Mailing_Street"),""));
+}
+invoiceMap.put("Deal_Name__s",crmid);
+invoiceMap.put("Invoice_Date",zoho.currentdate.toString("yyyy-MM-dd"));
+// ZP-TBD-81: the 50% first invoice is due within 7 days, same as Lump Sum
+invoiceMap.put("Due_Date",zoho.currentdate.addDay(7).toString("yyyy-MM-dd"));
+invoiceMap.put("Status","Created");
+invoiceMap.put("Subject","Deposit Invoice - " + ifnull(recordInfo.get("Deal_Name"),""));
+// ZP-TBD-87: the deposit is a share of Contract_Value, which already INCLUDES tax (GCT). It used to be split
+// equally over the rows with no tax sent, so CRM added the product's GCT on top -> the invoice came out higher
+// than the deposit. Now each row gets the deposit's share of its tax-INCLUSIVE total, and the tax is taken back
+// out of it: List_Price x Qty - Discount + Tax = the row's share, so the invoice total = the deposit.
+// Tax rate per row = the product's first Tax value (same as createInstallmentInvoice).
+taxFieldResponse = invokeurl
+[
+	url :"https://www.zohoapis.com/crm/v8/settings/fields/6503357000000002797?module=Products"
+	type :GET
+	connection:"zohooauth"
+];
+taxFieldMap = Map();
+fieldsList = taxFieldResponse.get("fields");
+if(fieldsList != null && fieldsList.size() > 0)
+{
+	pickListValues = fieldsList.get(0).get("pick_list_values");
+	for each  pickVal in pickListValues
+	{
+		actualValue = pickVal.get("actual_value");
+		valParts = actualValue.toList(" - ");
+		taxName = valParts.get(0);
+		pctPart = valParts.get(1).replaceAll(" %","").trim();
+		pctNum = pctPart.toDecimal();
+		entry = Map();
+		entry.put("id",pickVal.get("id"));
+		entry.put("percentage",pctNum);
+		entry.put("name",taxName);
+		taxFieldMap.put(actualValue,entry);
+	}
+}
+rowInfoList = list();
+dealGrossTotal = 0.0;
+for each  row in productRows
+{
+	rowQuantity = row.get("Quantity");
+	if(isNull(rowQuantity) || rowQuantity == 0)
+	{
+		rowQuantity = 1;
+	}
+	rowDiscount = ifnull(row.get("Discount"),0);
+	rowNet = rowQuantity * ifnull(row.get("Unit_Price"),0) - rowDiscount;
+	rowTaxInfo = null;
+	rowTaxPct = 0.0;
+	rowProduct = zoho.crm.getRecordById("Products",row.get("Child_Product").get("id"));
+	rowTaxList = rowProduct.get("Tax");
+	if(rowTaxList != null && rowTaxList.size() > 0)
+	{
+		rowTaxInfo = taxFieldMap.get(rowTaxList.get(0));
+		if(rowTaxInfo != null)
+		{
+			rowTaxPct = rowTaxInfo.get("percentage").toDecimal();
+		}
+	}
+	rowGross = rowNet * (1 + rowTaxPct / 100);
+	dealGrossTotal = dealGrossTotal + rowGross;
+	rowInfo = Map();
+	rowInfo.put("row",row);
+	rowInfo.put("quantity",rowQuantity);
+	rowInfo.put("discount",rowDiscount);
+	rowInfo.put("gross",rowGross);
+	rowInfo.put("taxInfo",rowTaxInfo);
+	rowInfo.put("taxPct",rowTaxPct);
+	rowInfoList.add(rowInfo);
+}
+if(dealGrossTotal <= 0)
+{
+	info "Product total is 0 on Deal " + crmid + " - deposit retainer invoice not created";
+	return;
+}
+shareFraction = depositAmt / dealGrossTotal;
+rowCount = rowInfoList.size();
+sumGross = 0.0;
+rowIndex = 0;
+lineItemList = list();
+for each  rowInfo in rowInfoList
+{
+	rowIndex = rowIndex + 1;
+	product = rowInfo.get("row");
+	lineQuantity = rowInfo.get("quantity");
+	lineTaxPct = rowInfo.get("taxPct");
+	// the last row takes the rounding cents, so the lines add up to the deposit
+	if(rowIndex < rowCount)
+	{
+		lineGross = (rowInfo.get("gross") * shareFraction).round(2);
+		sumGross = sumGross + lineGross;
+	}
+	else
+	{
+		lineGross = depositAmt - sumGross;
+	}
+	lineNet = lineGross / (1 + lineTaxPct / 100);
+	lineDiscount = (rowInfo.get("discount") * shareFraction).round(2);
+	lineListPrice = ((lineNet + lineDiscount) / lineQuantity).round(2);
+	productMap = Map();
+	if(!isNull(product.get("Parent_Product")))
+	{
+		productMap.put("Parent_Product",product.get("Parent_Product").get("id"));
+	}
+	productMap.put("Product_Name",product.get("Child_Product").get("id"));
+	productMap.put("Quantity",lineQuantity);
+	productMap.put("List_Price",lineListPrice);
+	productMap.put("Discount",lineDiscount);
+	// tax is charged on the line AFTER its discount
+	lineTaxInfo = rowInfo.get("taxInfo");
+	if(lineTaxInfo != null)
+	{
+		lineTaxValue = ((lineQuantity * lineListPrice - lineDiscount) * lineTaxPct / 100).round(2);
+		taxEntry = Map();
+		taxEntry.put("id",lineTaxInfo.get("id"));
+		taxEntry.put("name",lineTaxInfo.get("name"));
+		taxEntry.put("percentage",lineTaxPct);
+		taxEntry.put("value",lineTaxValue);
+		productMap.put("Line_Tax",{taxEntry});
+		productMap.put("Tax",lineTaxValue);
+	}
+	else
+	{
+		productMap.put("Line_Tax",list());
+		productMap.put("Tax",0);
+	}
+	lineItemList.add(productMap);
+}
+invoiceMap.put("Invoiced_Items",lineItemList);
+invoiceMap.put("Retainer_Invoice",true);
+invoiceMap.put("Invoice_For","Deposit");
+recordList = list();
+recordList.add(invoiceMap);
+dataMap = Map();
+dataMap.put("data",recordList);
+info dataMap;
+createInvoice = invokeurl
+[
+	url :"https://www.zohoapis.com/crm/v8/Invoices"
+	type :POST
+	parameters:dataMap.toString()
+	connection:"zohooauth"
+];
+info createInvoice;
+newInvoiceId = "";
+try
+{
+	newInvoiceId = createInvoice.get("data").get(0).get("details").get("id");
+}
+catch (eCreate)
+{
+	info "Deposit retainer invoice was not created for Deal " + crmid + ": " + createInvoice.toString();
+	return;
+}
+// Potential payers, same as the other Pre-Need invoices
+if(!isNull(recordInfo.get("Account_Name")))
+{
+	accountID = recordInfo.get("Account_Name").get("id");
+	relatedContacts = zoho.crm.getRelatedRecords("Contacts","Accounts",accountID);
+	for each  contact in relatedContacts
+	{
+		potentialPayers = Map();
+		potentialPayers.put("Name",ifnull(contact.get("First_Name"),"") + " " + contact.get("Last_Name"));
+		potentialPayers.put("Account",accountID);
+		potentialPayers.put("Invoice",newInvoiceId);
+		potentialPayers.put("Contact",contact.get("id"));
+		createPotentialPayerResult = zoho.crm.createRecord("Potential_Payers",potentialPayers);
+	}
+}
+}
