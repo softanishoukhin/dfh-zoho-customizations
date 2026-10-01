@@ -1,0 +1,188 @@
+
+/*
+This is a sample function. Uncomment to execute or make changes to this function.
+*/
+paymentID = customer_payment.get("payment_id");
+organizationID = organization.get("organization_id");
+try
+{
+	currencyCode = customer_payment.get("currency_code");
+}
+catch (e)
+{
+	currencyCode = "JMD";
+}
+//info currencyInfo.get("response").get("currencyCode");
+//info customer_payment;
+//info customer_payment;
+//records = zoho.people.getRecordByID("Candidate",peopleID);
+document_id = "pd9n48147104968594137ae1cab04506567d5";
+email = null;
+data = Map();
+data.put("receipt_no",customer_payment.get("payment_number"));
+if(customer_payment.get("custom_field_hash").containKey("cf_actual_paid_amount"))
+{
+	data.put("amount",currencyCode + " " + customer_payment.get("custom_field_hash").get("cf_actual_paid_amount"));
+}
+else
+{
+	data.put("amount",currencyCode + " " + customer_payment.get("amount").toString());
+}
+data.put("date",customer_payment.get("date").toString("MM-dd-yyyy"));
+data.put("payment_method",ifnull(customer_payment.get("payment_mode"),""));
+//info data;
+booksInvoiceId = customer_payment.get("invoices").get(0).get("invoice_id");
+booksInvoiceDetailsData = zoho.books.getRecordsByID("invoices",organizationID,booksInvoiceId,"zohobooksconnection");
+booksInvoiceDetails = booksInvoiceDetailsData.get("invoice");
+deceasedName = "";
+if(booksInvoiceDetails.get("custom_field_hash").containKey("cf_crm_invoice_id"))
+{
+	crmInvoiceDetails = zoho.crm.getRecordById("Invoices",booksInvoiceDetails.get("custom_field_hash").get("cf_crm_invoice_id"));
+	deceasedName = crmInvoiceDetails.get("Deal_Name__s").get("name");
+}
+/*else if(booksInvoiceDetails.get("invoice").containKey("customer_name"))
+{
+	deceasedName = booksInvoiceDetails.get("invoice").get("customer_name");
+}*/
+deceasedName = customer_payment.get("customer_name");
+data.put("Deal_Name__s.Deal_Name",deceasedName);
+if(customer_payment.get("custom_field_hash").containKey("cf_payer_unformatted"))
+{
+	payerCRMContactID = customer_payment.get("custom_field_hash").get("cf_payer_unformatted");
+	payerDetails = zoho.crm.getRecordById("Contacts",payerCRMContactID);
+	if(!isNull(payerDetails.get("Email")))
+	{
+		email = payerDetails.get("Email");
+	}
+	data.put("contact",ifnull(payerDetails.get("Mobile"),""));
+	data.put("name",ifnull(payerDetails.get("First_Name"),"") + ' ' + ifnull(payerDetails.get("Last_Name"),""));
+}
+else if(customer_payment.get("custom_field_hash").containKey("cf_new_payer_name_if_not_found"))
+{
+	newPayerName = customer_payment.get("custom_field_hash").get("cf_new_payer_name_if_not_found");
+	if(customer_payment.get("custom_field_hash").containKey("cf_new_payer_contact"))
+	{
+		data.put("contact",customer_payment.get("custom_field_hash").get("cf_new_payer_contact"));
+	}
+	data.put("name",newPayerName);
+}
+// paramMap = {"send_from_org_email_id":true,"to_mail_ids":{email},"subject":"Statement of transactions with DFH","body":"Dear Customer,     <br/>We have attached with this email a list of all your transactions with us for this month. You can write to us or call us if you need any assistance or clarifications.     <br/>Thanks & Regards.<br/>Regards<br/>DFH"};
+// sendStatementResult = invokeurl
+// [
+//  url :"https://www.zohoapis.com/books/v3/contacts/" + customer_payment.get("customer_id") + "/statements/email?organization_id=" + organizationID
+//  type :POST
+//  parameters:paramMap.toString()
+//  connection:"zohobooksconnection"
+// ];
+output_settings = Map();
+output_settings.put("doc_name","Payment Receipt");
+document_info = zoho.writer.mergeAndStore(document_id,data,output_settings,"writer_connection");
+//info document_info;
+document_id = document_info.get("document_id");
+//document_url = document_info.get("document_url");
+document_details = invokeurl
+[
+	url :"https://zohoapis.com/writer/api/v1/documents/" + document_id
+	type :GET
+	connection:"writer_connection"
+];
+download_url = document_details.get("download_url");
+download = invokeurl
+[
+	url :"https://zohoapis.com/writer/api/v1/documents/" + document_id + "?format=pdf"
+	type :GET
+	connection:"writer_connection"
+];
+responseToUploadInWD = zoho.workdrive.uploadFile(download,"298em38e4a3da4c154189b406b15fb9b2b17f","Payment Receipt - " + customer_payment.get("payment_number") + ".pdf",false,"wdconnection");
+//info responseToUploadInWD;
+workdriveFileID = responseToUploadInWD.get("data").get(0).get("attributes").get("resource_id");
+header = Map();
+header.put("Accept","application/vnd.api+json");
+dataPermission = Map();
+data_param1 = Map();
+att_param1 = Map();
+att_param1.put("resource_id",workdriveFileID);
+att_param1.put("shared_type","everyone");
+att_param1.put("role_id","34");
+data_param1.put("attributes",att_param1);
+data_param1.put("type","permissions");
+dataPermission.put("data",data_param1);
+responsePermission = invokeurl
+[
+	url :"https://www.zohoapis.com/workdrive/api/v1/permissions"
+	type :POST
+	parameters:dataPermission.toString()
+	headers:header
+	connection:"wdconnection"
+];
+info responsePermission;
+paymentRecordMap = Map();
+customFieldsList = list();
+fieldMap = Map();
+fieldMap.put("api_name","cf_download_payment_receipt");
+fieldMap.put("value",responseToUploadInWD.get("data").get(0).get("attributes").get("Permalink"));
+customFieldsList.add(fieldMap);
+paymentRecordMap.put("custom_fields",customFieldsList);
+updatePayment = zoho.books.updateRecord("customerpayments",organizationID,paymentID,paymentRecordMap,"zohobooksconnection");
+/*
+if(isNull(email))
+{
+	if(customer_payment.get("custom_field_hash").containKey("cf_new_payer_email"))
+	{
+		emailNew = customer_payment.get("custom_field_hash").get("cf_new_payer_email");
+		sendmail
+		[
+			from :zoho.loginuserid
+			to :emailNew
+			subject :"DFH - Payment Receipt"
+			message :"Please check your attached payment receipt."
+			Attachments :file:download
+		]
+	}
+	else
+	{
+		booksCustomerDetails = zoho.books.getRecordsByID("contacts",organizationID,customer_payment.get("customer_id"),"zohobooksconnection");
+		email = booksCustomerDetails.get("contact").get("email");
+		payerCRMContactID = booksCustomerDetails.get("contact").get("zcrm_contact_id");
+	}
+}
+if(!isNull(email))
+{
+	download.setParamName("file");
+	response = invokeurl
+	[
+		url :"https://www.zohoapis.com/crm/v2.1/files"
+		type :POST
+		files:download
+		connection:"zohocrmconnection"
+	];
+	fid = response.get("data").get(0).get("details").get("id");
+	info fid;
+	sendfrom = Map();
+	sendfrom.put("email",zoho.crm.getOrgVariable("globalFromEmail"));
+	sendto = Map();
+	sendto.put("email",email);
+	tolist = List();
+	tolist.add(sendto);
+	// replyToAddress = Map();
+	// replyToAddress.put("email",dealInfo.get("Owner").get("email"));
+	mp = Map();
+	mp.put("from",sendfrom);
+	// mp.put("reply_to",replyToAddress);
+	mp.put("to",tolist);
+	mp.put("org_email",true);
+	mp.put("attachments",{{"id":fid}});
+	mp.put("template",{"id":"6503357000018064015"});
+	dlist = List();
+	dlist.add(mp);
+	data = Map();
+	data.put("data",dlist);
+	sendmail = invokeurl
+	[
+		url :"https://www.zohoapis.com/crm/v2.1/Contacts/" + payerCRMContactID + "/actions/send_mail"
+		type :POST
+		parameters:data + ""
+		connection:"zohocrmconnection"
+	];
+	//  info sendmail;
+}*/
