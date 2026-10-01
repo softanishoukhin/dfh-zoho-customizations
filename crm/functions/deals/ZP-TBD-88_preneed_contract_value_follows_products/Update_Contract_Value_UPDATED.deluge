@@ -1,0 +1,9 @@
+void automation.Update_Contract_Value(Int crmid)
+{
+// Called by the Product Selection workflow rule "Update Contract Value for Pre Need New" (5 minutes after a
+// product row is added / edited, Pre Need Deals only). ZP-TBD-88: the calculation now lives in
+// standalone.recalcPreNeedContractValue, which the Deal-edit dispatcher also calls straight away on every save.
+// This rule stays as a backstop -- recalcPreNeedContractValue only writes when something changed.
+recalcResult = standalone.recalcPreNeedContractValue(crmid);
+info recalcResult;
+}

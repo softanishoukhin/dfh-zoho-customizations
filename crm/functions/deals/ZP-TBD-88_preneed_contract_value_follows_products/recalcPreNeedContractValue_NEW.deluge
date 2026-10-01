@@ -1,0 +1,156 @@
+string standalone.recalcPreNeedContractValue(Int crmid)
+{
+// ZP-TBD-88: Pre-Need Contract_Value = the Deal's Product_Selection total (tax-inclusive), recalculated right away.
+// Same calculation as automation.Update_Contract_Value (2026-09-23), moved here so it can be called from:
+//   - the Deal-edit dispatcher (handleWorkflowTriggerAndActionByTimelineProcess) -> on every save of a Pre-Need Deal,
+//     including a removed product row (the old Product Selection rule only ran 5 minutes after a row was
+//     added/edited, and never when a row was deleted);
+//   - automation.Update_Contract_Value (that 5-minute rule), kept as a backstop.
+// Writes only when a value changed; zoho.crm.updateRecord here fires no workflows, so it can't loop.
+// If Contract_Value changes after the payment plan was made, the plan is NOT touched (lock + warn): a Note tells
+// staff, and getPreNeedContractType refuses to send the contract until the plan is rebuilt.
+nl = zoho.encryption.urlDecode("%0A");
+getRecordInfo = invokeurl
+[
+	url :"https://www.zohoapis.com/crm/v8/Deals/" + crmid
+	type :GET
+	connection:"zohooauth"
+];
+recordInfo = getRecordInfo.get("data").get(0);
+if(recordInfo.get("Pipeline") != "Pre Need")
+{
+	return "Not a Pre Need Deal.";
+}
+productRows = ifnull(recordInfo.get("Product_Selection"),list());
+if(productRows.size() == 0)
+{
+	// same as Update_Contract_Value: no products -> leave the Deal alone
+	return "No products on the Deal.";
+}
+subTotal = 0.0;
+totalDiscount = 0.0;
+totalTax = 0.0;
+// Products.Tax is a multi-select whose values carry the rate in the text, e.g. "GCT on Sales - 15.0 %".
+// Cache the summed rate per product so a product repeated across rows is only fetched once.
+taxRateCache = Map();
+for each  row in productRows
+{
+	// Blank / 0 quantity counts as 1, same rule the invoice-creating functions use for these rows
+	lineQuantity = row.get("Quantity");
+	if(isNull(lineQuantity) || lineQuantity == 0)
+	{
+		lineQuantity = 1;
+	}
+	unitPrice = ifnull(row.get("Unit_Price"),0);
+	lineDiscount = ifnull(row.get("Discount"),0);
+	lineTaxable = lineQuantity * unitPrice - lineDiscount;
+	subTotal = subTotal + lineQuantity * unitPrice;
+	totalDiscount = totalDiscount + lineDiscount;
+	// Tax rate from the row's product (Child_Product is the product the invoices are built from)
+	productId = "";
+	try
+	{
+		productId = row.get("Child_Product").get("id");
+	}
+	catch (eProd)
+	{
+		productId = "";
+	}
+	taxRate = 0.0;
+	if(productId != "")
+	{
+		if(taxRateCache.containKey(productId))
+		{
+			taxRate = taxRateCache.get(productId);
+		}
+		else
+		{
+			productInfo = zoho.crm.getRecordById("Products",productId.toLong());
+			productTaxes = ifnull(productInfo.get("Tax"),list());
+			for each  taxEntry in productTaxes
+			{
+				taxText = taxEntry.toString();
+				dashIndex = taxText.lastIndexOf("-");
+				if(dashIndex >= 0)
+				{
+					taxRate = taxRate + taxText.subString(dashIndex + 1).replaceAll("%","").trim().toDecimal();
+				}
+			}
+			taxRateCache.put(productId,taxRate);
+		}
+	}
+	// Tax applies to the line AFTER its discount
+	totalTax = totalTax + lineTaxable * taxRate / 100;
+}
+// Contract_Value = net of discounts + tax (tax-inclusive -- matches the Books master retainer, ZP-TBD-87)
+newAmount = (subTotal - totalDiscount).round(2);
+newAmount = newAmount + totalTax;
+newDiscount = totalDiscount.round(2);
+newTax = totalTax.round(2);
+oldAmount = 0.0;
+try
+{
+	oldAmount = ifnull(recordInfo.get("Contract_Value"),0).toString().toDecimal();
+}
+catch (eOld)
+{
+	oldAmount = 0.0;
+}
+// Compared at 2 decimals: the CRM field keeps limited decimals, so a raw compare could see a "change" on every
+// save and repeat the Note.
+contractValueChanged = oldAmount.round(2) != newAmount.round(2);
+if(contractValueChanged || ifnull(recordInfo.get("Total_Discount"),0) != newDiscount || ifnull(recordInfo.get("Total_Tax"),0) != newTax)
+{
+	dealMap = Map();
+	dealMap.put("Contract_Value",newAmount);
+	dealMap.put("Total_Discount",newDiscount);
+	dealMap.put("Total_Tax",newTax);
+	zoho.crm.updateRecord("Deals",crmid,dealMap);
+}
+if(!contractValueChanged)
+{
+	return "Contract Value unchanged (" + newAmount + ").";
+}
+// ---- lock + warn: the plan was built for a different amount ----
+planCheck = standalone.checkPreNeedPlanMatchesContract(crmid.toString()).toMap();
+if(planCheck.get("mismatch") == true)
+{
+	noteLines = List();
+	noteLines.add("The products on this Deal were changed after the payment plan was made.");
+	noteLines.add("Contract Value: " + oldAmount.round(2) + " -> " + newAmount.round(2));
+	noteLines.add("Payment plan (invoices and Books): " + planCheck.get("plan_total") + " -- NOT changed automatically.");
+	noteLines.add("");
+	noteLines.add("The contract cannot be sent until the plan matches the Contract Value again.");
+	noteLines.add("To fix, if NOTHING has been paid yet: delete this Deal's Deposit and Installment invoices (or the Lump Sum invoice) in CRM, delete the matching retainer / invoice in Books, then click 'Calculate Installment Amount' to rebuild the plan at the new value.");
+	noteLines.add("If a payment has already been taken: do not delete anything -- speak to Accounts first.");
+	noteMap = Map();
+	noteMap.put("Note_Title","Contract Value no longer matches the payment plan");
+	noteMap.put("Note_Content",noteLines.toString(nl));
+	noteParentModule = Map();
+	noteParentModule.put("api_name","Deals");
+	noteParent = Map();
+	noteParent.put("module",noteParentModule);
+	noteParent.put("id",crmid.toString());
+	noteMap.put("Parent_Id",noteParent);
+	noteList = List();
+	noteList.add(noteMap);
+	noteBody = Map();
+	noteBody.put("data",noteList);
+	try
+	{
+		invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v8/Notes"
+			type :POST
+			parameters:noteBody.toString()
+			connection:"zohooauth"
+		]
+	}
+	catch (eNote)
+	{
+		info "ZP-TBD-88: mismatch note failed: " + eNote;
+	}
+	return "Contract Value " + oldAmount + " -> " + newAmount + "; payment plan " + planCheck.get("plan_total") + " -> MISMATCH, Note added.";
+}
+return "Contract Value " + oldAmount + " -> " + newAmount + ".";
+}

@@ -1,0 +1,116 @@
+string standalone.checkPreNeedPlanMatchesContract(String crmid)
+{
+// ZP-TBD-88: does the Pre-Need payment plan still match the Deal's Contract Value?
+// The plan's real value is what Books was billed, and that never changes after a payment:
+//   Installments : the ONE master retainer (ZP-TBD-74) -- created at the full product total
+//   Lump Sum     : the Lump Sum Books invoice (billed at the product prices)
+// If the products change after the plan was made, Contract Value moves (recalcPreNeedContractValue) but these
+// Books documents do not -> mismatch. It clears only when the plan is really rebuilt (new Books documents).
+// No Books document yet (plan not made, or Books sync still running) -> nothing to compare -> no mismatch.
+// Used by recalcPreNeedContractValue (Note on the Deal) and getPreNeedContractType (blocks the contract send).
+// Returns a JSON string -- callers use .toMap().
+organizationID = "872327358";
+// Books rounds retainer totals to 0.125, and Contract_Value keeps its own decimals (e.g. 1,325,360.0425)
+TOLERANCE = 1.0;
+result = Map();
+result.put("plan_found",false);
+result.put("mismatch",false);
+result.put("contract_value",0);
+result.put("plan_total",0);
+result.put("message","");
+getRecordInfo = invokeurl
+[
+	url :"https://www.zohoapis.com/crm/v8/Deals/" + crmid
+	type :GET
+	connection:"zohooauth"
+];
+recordInfo = getRecordInfo.get("data").get(0);
+if(recordInfo.get("Pipeline") != "Pre Need")
+{
+	return result.toString();
+}
+paymentType = ifnull(recordInfo.get("Payment_Type"),"");
+contractValue = 0.0;
+try
+{
+	contractValue = ifnull(recordInfo.get("Contract_Value"),0).toString().toDecimal();
+}
+catch (eCv)
+{
+	contractValue = 0.0;
+}
+result.put("contract_value",contractValue);
+if(paymentType != "Lump Sum" && paymentType != "Installments")
+{
+	return result.toString();
+}
+// The plan's Books documents (same invoice tests as getPreNeedContractType / setupPreNeedPaymentPlan).
+// Several plan invoices share one master retainer -> de-duplicate the Books ids.
+docIds = list();
+docIsRetainer = Map();
+invoiceList = zoho.crm.getRelatedRecords("Invoices","Deals",crmid.toLong());
+for each  inv in invoiceList
+{
+	invStatus = ifnull(inv.get("Status"),"");
+	if(invStatus == "Void" || invStatus == "Cancelled")
+	{
+		continue;
+	}
+	booksId = ifnull(inv.get("Books_Invoice_ID"),"").toString();
+	if(booksId == "" || docIds.contains(booksId))
+	{
+		continue;
+	}
+	invoiceFor = ifnull(inv.get("Invoice_For"),"");
+	isPlanInvoice = invoiceFor == "Deposit" || invoiceFor.startsWith("Installment");
+	isLumpSumInvoice = invoiceFor == "Other" || invoiceFor == "";
+	if((paymentType == "Installments" && isPlanInvoice) || (paymentType == "Lump Sum" && isLumpSumInvoice))
+	{
+		docIds.add(booksId);
+		docIsRetainer.put(booksId,inv.get("Retainer_Invoice") == true);
+	}
+}
+planTotal = 0.0;
+docsRead = 0;
+for each  docId in docIds
+{
+	try
+	{
+		if(docIsRetainer.get(docId) == true)
+		{
+			booksData = zoho.books.getRecordsByID("retainerinvoices",organizationID,docId,"zohooauth").get("retainerinvoice");
+		}
+		else
+		{
+			booksData = zoho.books.getRecordsByID("invoices",organizationID,docId,"zohooauth").get("invoice");
+		}
+		if(ifnull(booksData.get("status"),"") != "void")
+		{
+			planTotal = planTotal + ifnull(booksData.get("total"),0).toDecimal();
+			docsRead = docsRead + 1;
+		}
+	}
+	catch (eBooks)
+	{
+		info "ZP-TBD-88: could not read Books document " + docId + ": " + eBooks;
+	}
+}
+if(docsRead == 0)
+{
+	return result.toString();
+}
+planTotal = planTotal.round(2);
+result.put("plan_found",true);
+result.put("plan_total",planTotal);
+difference = contractValue - planTotal;
+if(difference < 0)
+{
+	difference = difference * -1;
+}
+if(difference > TOLERANCE)
+{
+	result.put("mismatch",true);
+	result.put("message","The Contract Value (" + contractValue.round(2) + ") no longer matches the payment plan (" + planTotal + "). The products were changed after the plan was made. The plan must be rebuilt before the contract can be sent -- see the Note on the Deal.");
+}
+return result.toString();
+}
