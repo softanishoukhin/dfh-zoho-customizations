@@ -1,0 +1,137 @@
+string standalone.getPreNeedContractSignUrl(String rid, String did)
+{
+// ZP-TBD-94: called by the Creator page Sign_PreNeed_Contract -- the permanent link the family gets by WhatsApp.
+// Zoho's embedded signing URL lasts 2 minutes and works once, so the page calls this every time it is opened
+// and gets a fresh one. Exposed as a REST API (API key) so the public Creator page can call it.
+// "message" is shown to the family as-is; technical details go in "detail" (function log only).
+result = Map();
+result.put("status","error");
+result.put("sign_url","");
+result.put("message","We could not open this contract right now. Please try again in a few minutes, or contact the funeral home.");
+result.put("detail","");
+// Must match the site that shows the signing screen (the Creator page) -- see guideline.md if the screen stays blank
+signHost = "https://creatorapp.zohopublic.com";
+requestId = ifnull(rid,"").trim();
+dealId = ifnull(did,"").trim();
+if(requestId == "" || dealId == "")
+{
+	result.put("message","This contract link is incomplete. Please contact the funeral home for a new link.");
+	result.put("detail","rid or did missing");
+	info result;
+	return result.toString();
+}
+// The link must belong to this Deal: sendPreNeedFuneralContractEmbedded saves a ZohoSign Documents record with
+// the Sign request ID and the Deal, so a link with a changed rid or did is refused.
+linkOk = false;
+try
+{
+	docs = zoho.crm.searchRecords("zohosign__ZohoSign_Documents","(Request_ID:equals:" + requestId + ")");
+	for each  doc in docs
+	{
+		docDealId = "";
+		dealField = doc.get("zohosign__Deal");
+		if(dealField != null)
+		{
+			try
+			{
+				docDealId = dealField.get("id").toString();
+			}
+			catch (eLk)
+			{
+				docDealId = dealField.toString();
+			}
+		}
+		if(docDealId == dealId)
+		{
+			linkOk = true;
+		}
+	}
+}
+catch (eSearch)
+{
+	result.put("detail","ZohoSign Documents search failed: " + eSearch);
+	info result;
+	return result.toString();
+}
+if(!linkOk)
+{
+	result.put("message","This contract link is not valid. Please contact the funeral home for a new link.");
+	result.put("detail","No ZohoSign Documents record with Request_ID " + requestId + " on Deal " + dealId);
+	info result;
+	return result.toString();
+}
+// Current state of the request + the signer's action id
+reqResp = invokeurl
+[
+	url :"https://sign.zoho.com/api/v1/requests/" + requestId
+	type :GET
+	connection:"zohooauth"
+];
+reqStatus = "";
+actionId = "";
+try
+{
+	reqStatus = ifnull(reqResp.get("requests").get("request_status"),"").toString().toLowerCase();
+	reqActions = reqResp.get("requests").get("actions");
+	for each  act in reqActions
+	{
+		if(actionId == "" && act.get("action_type") == "SIGN")
+		{
+			actionId = act.get("action_id").toString();
+		}
+	}
+}
+catch (eReq)
+{
+	result.put("detail","Could not read Sign request: " + reqResp.toString());
+	info result;
+	return result.toString();
+}
+if(reqStatus == "completed")
+{
+	result.put("status","signed");
+	result.put("message","This contract has already been signed. Thank you.");
+	info result;
+	return result.toString();
+}
+if(reqStatus != "inprogress")
+{
+	result.put("status","closed");
+	result.put("message","This contract link is no longer active. Please contact the funeral home for a new link.");
+	result.put("detail","Sign request status: " + reqStatus);
+	info result;
+	return result.toString();
+}
+if(actionId == "")
+{
+	result.put("detail","No SIGN action on request: " + reqResp.toString());
+	info result;
+	return result.toString();
+}
+// A new embedded signing URL (valid 2 minutes, one use) -- the page shows it straight away
+embedResp = invokeurl
+[
+	url :"https://sign.zoho.com/api/v1/requests/" + requestId + "/actions/" + actionId + "/embedtoken?host=" + signHost
+	type :POST
+	connection:"zohooauth"
+];
+signUrl = "";
+try
+{
+	signUrl = ifnull(embedResp.get("sign_url"),"").toString();
+}
+catch (eUrl)
+{
+	signUrl = "";
+}
+if(signUrl == "")
+{
+	result.put("detail","No sign_url in embedtoken response: " + embedResp.toString());
+	info result;
+	return result.toString();
+}
+result.put("status","success");
+result.put("sign_url",signUrl);
+result.put("message","");
+return result.toString();
+}

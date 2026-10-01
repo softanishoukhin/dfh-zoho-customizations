@@ -1,0 +1,80 @@
+<%{
+	// ZP-TBD-94: permanent contract link sent by WhatsApp. Each time the family opens this page it asks CRM
+	// (standalone.getPreNeedContractSignUrl) for a fresh Zoho Sign URL and shows an "Open & Sign Contract" button.
+	crmApiUrl = "PASTE_CRM_FUNCTION_REST_API_URL_HERE";
+	pageStatus = "error";
+	signUrl = "";
+	pageMessage = "We could not open this contract right now. Please try again in a few minutes, or contact the funeral home.";
+	if(isNull(input.rid) || isNull(input.did))
+	{
+		pageMessage = "This contract link is incomplete. Please contact the funeral home for a new link.";
+	}
+	else
+	{
+		apiResp = invokeurl
+		[
+			url :crmApiUrl + "&rid=" + encodeUrl(input.rid) + "&did=" + encodeUrl(input.did)
+			type :GET
+		];
+		try
+		{
+			out = apiResp.get("details").get("output").toMap();
+			pageStatus = ifnull(out.get("status"),"error");
+			signUrl = ifnull(out.get("sign_url"),"");
+			if(ifnull(out.get("message"),"") != "")
+			{
+				pageMessage = out.get("message");
+			}
+		}
+		catch (e)
+		{
+			info apiResp;
+		}
+		if(pageStatus == "success" && signUrl == "")
+		{
+			pageStatus = "error";
+		}
+	}
+	%>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pre-Need Funeral Contract</title>
+    <style>
+        /* No fixed heights: the snippet sits inside Creator's own frames, so it must fit without its own scrollbar */
+        body { margin: 0; padding: 0; background: #FFFFFF; font-family: Arial, sans-serif; color: #333333; }
+        .card { max-width: 480px; margin: 0 auto; padding: 32px 20px; box-sizing: border-box; text-align: center; }
+        .title { font-size: 22px; font-weight: bold; margin: 0 0 12px 0; }
+        .text { font-size: 17px; line-height: 1.5; margin: 0 0 24px 0; }
+        .sign-btn { display: block; width: 100%; box-sizing: border-box; padding: 18px 16px; border-radius: 8px;
+                    background: #1F3864; color: #FFFFFF; font-size: 19px; font-weight: bold; text-decoration: none; }
+        .note { font-size: 14px; line-height: 1.5; color: #666666; margin: 20px 0 0 0; }
+    </style>
+</head>
+<body>
+<%
+	if(pageStatus == "success")
+	{
+	%>
+    <!-- ZP-TBD-94: Zoho Sign opens full screen in the browser (no iframe) -- inside Creator's frames an iframe gave
+         three nested scrollbars and hid "Start Signing" on phones. The link is fresh on every page load. -->
+    <div class="card">
+        <p class="title">Pre-Need Funeral Contract</p>
+        <p class="text">Tap the button below to open and sign your contract.</p>
+        <a class="sign-btn" href="<%=signUrl%>" target="_blank" rel="noopener">Open &amp; Sign Contract</a>
+        <p class="note">If the contract does not open, please reload this page and tap the button again.</p>
+    </div>
+<%
+	}
+	else
+	{
+	%>
+    <div class="card"><p class="text"><%=pageMessage%></p></div>
+<%
+	}
+	%>
+</body>
+</html>
+<%}%>
