@@ -1,0 +1,1417 @@
+// =============================================================================
+// ZP-TBD-98 -- Operations App portal: deceased card view + Reports section
+// Creator app: Operations App (operations-app)
+// Connection used everywhere: zoho_oauth_connection (already in the app; has
+//   ZohoCRM.coql.READ, ZohoCRM.modules.ALL, ZohoCRM.modules.notes.ALL)
+//
+// Add each function below as a NEW function in the Operations App
+// (Workflow > Functions > New Function, namespace "Deluge"). Paste one function
+// per editor -- the "// ----- FUNCTION:" banners are just separators.
+// Then create the Custom APIs listed in metadata.md, each pointing at the
+// matching function.
+//
+// None of these change any existing workflow. Reads use COQL + REST GET.
+// Writes go through opsSaveFields (field whitelist) and opsSaveAutopsySchedule.
+// =============================================================================
+
+
+// ----- FUNCTION: opsCoqlQuery  (helper -- no Custom API) ----------------------
+map opsCoqlQuery(string selectQuery)
+{
+	out = Map();
+	out.put("rows",List());
+	out.put("error","");
+	qm = Map();
+	qm.put("select_query",selectQuery);
+	resp = Map();
+	try
+	{
+		resp = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v8/coql"
+			type :POST
+			parameters:qm.toString()
+			connection:"zoho_oauth_connection"
+		];
+	}
+	catch (eReq)
+	{
+		out.put("error","COQL request failed: " + eReq.toString());
+		return out;
+	}
+	rows = List();
+	errCode = "";
+	try
+	{
+		errCode = ifnull(resp.get("code"),"") + "";
+	}
+	catch (eCode)
+	{
+		errCode = "";
+	}
+	if(errCode != "")
+	{
+		msg = "";
+		try
+		{
+			msg = ifnull(resp.get("message"),"") + "";
+		}
+		catch (eMsg)
+		{
+			msg = "";
+		}
+		out.put("error",errCode + " " + msg);
+		return out;
+	}
+	// start as a List so Deluge knows the loop below iterates a list
+	dataList = List();
+	try
+	{
+		dataRaw = resp.get("data");
+		if(dataRaw != null)
+		{
+			dataList = dataRaw.toList();
+		}
+	}
+	catch (eData)
+	{
+		dataList = List();
+	}
+	for each  rec in dataList
+	{
+		rows.add(rec);
+	}
+	out.put("rows",rows);
+	return out;
+}
+
+
+// ----- FUNCTION: opsCoql  (helper -- no Custom API) ---------------------------
+list opsCoql(string selectQuery)
+{
+	res = thisapp.opsCoqlQuery(selectQuery);
+	return res.get("rows");
+}
+
+
+// ----- FUNCTION: opsCoqlIn  (helper -- no Custom API) -------------------------
+// Runs "<selectFrom> where <inField> in (...) [and <extraWhere>]" in batches of 50
+// ids (COQL IN-list limit). extraWhere must already be wrapped in brackets if it
+// contains an OR.
+list opsCoqlIn(string selectFrom, string inField, list idList, string extraWhere)
+{
+	out = List();
+	cleanIds = List();
+	for each  oneId in idList
+	{
+		s = ifnull(oneId,"") + "";
+		if(s != "" && !cleanIds.contains(s))
+		{
+			cleanIds.add(s);
+		}
+	}
+	total = cleanIds.size();
+	if(total == 0)
+	{
+		return out;
+	}
+	batch = List();
+	idx = 0;
+	for each  oneId in cleanIds
+	{
+		idx = idx + 1;
+		batch.add(oneId);
+		if(batch.size() == 50 || idx == total)
+		{
+			q = selectFrom + " where " + inField + " in ('" + batch.toString("','") + "')";
+			if(extraWhere != "")
+			{
+				q = q + " and " + extraWhere;
+			}
+			q = q + " limit 2000";
+			part = thisapp.opsCoql(q);
+			for each  r in part
+			{
+				out.add(r);
+			}
+			batch = List();
+		}
+	}
+	return out;
+}
+
+
+// ----- FUNCTION: opsGetByIds  (helper -- no Custom API) -----------------------
+// REST GET /crm/v8/<module>?ids=... in batches of 100. Lookups come back as
+// {name,id}, which COQL does not give us.
+list opsGetByIds(string moduleName, list idList, string fieldList)
+{
+	out = List();
+	cleanIds = List();
+	for each  oneId in idList
+	{
+		s = ifnull(oneId,"") + "";
+		if(s != "" && !cleanIds.contains(s))
+		{
+			cleanIds.add(s);
+		}
+	}
+	total = cleanIds.size();
+	if(total == 0)
+	{
+		return out;
+	}
+	batch = List();
+	idx = 0;
+	for each  oneId in cleanIds
+	{
+		idx = idx + 1;
+		batch.add(oneId);
+		if(batch.size() == 100 || idx == total)
+		{
+			resp = Map();
+			try
+			{
+				resp = invokeurl
+				[
+					url :"https://www.zohoapis.com/crm/v8/" + moduleName + "?ids=" + batch.toString(",") + "&fields=" + fieldList
+					type :GET
+					connection:"zoho_oauth_connection"
+				];
+			}
+			catch (eGet)
+			{
+				resp = Map();
+			}
+			// start as a List so Deluge knows the loop below iterates a list
+			dataList = List();
+			try
+			{
+				dataRaw = resp.get("data");
+				if(dataRaw != null)
+				{
+					dataList = dataRaw.toList();
+				}
+			}
+			catch (eData)
+			{
+				dataList = List();
+			}
+			for each  rec in dataList
+			{
+				out.add(rec);
+			}
+			batch = List();
+		}
+	}
+	return out;
+}
+
+
+// ----- FUNCTION: opsLkId  (helper -- no Custom API) ---------------------------
+// Lookup id from a record: handles {id,name}, {id} and a plain id string.
+string opsLkId(map rec, string fieldName)
+{
+	// Works on the text form so no variable is ever typed as null/unknown.
+	out = "";
+	try
+	{
+		rawText = ifnull(rec.get(fieldName),"") + "";
+		if(rawText.startsWith("{"))
+		{
+			out = ifnull(rawText.toMap().get("id"),"") + "";
+		}
+		else
+		{
+			out = rawText;
+		}
+	}
+	catch (eLk)
+	{
+		out = "";
+	}
+	return out;
+}
+
+
+// ----- FUNCTION: opsIndexById  (helper -- no Custom API) ----------------------
+map opsIndexById(list recs)
+{
+	idx = Map();
+	for each  r in recs
+	{
+		idx.put(r.get("id") + "",r);
+	}
+	return idx;
+}
+
+
+// ----- FUNCTION: opsStamp  (helper -- no Custom API) --------------------------
+// "2026-10-04T23:09:41-05:00" -> 20261004230941 (digits only, first 14) so two
+// CRM date/datetime strings can be compared as numbers. Blank -> 0.
+int opsStamp(string isoText)
+{
+	digits = ifnull(isoText,"").replaceAll("[^0-9]","");
+	if(digits == "")
+	{
+		return 0;
+	}
+	if(digits.length() > 14)
+	{
+		digits = digits.subString(0,14);
+	}
+	pad = "00000000000000";
+	digits = digits + pad.subString(0,14 - digits.length());
+	return digits.toLong();
+}
+
+
+// ----- FUNCTION: opsRange  (helper -- no Custom API) --------------------------
+// fromDate / toDate are yyyy-MM-dd. Empty = current month (Jamaica time).
+map opsRange(string fromDate, string toDate)
+{
+	f = ifnull(fromDate,"").trim();
+	t = ifnull(toDate,"").trim();
+	if(f == "")
+	{
+		f = zoho.currentdate.toStartOfMonth().toString("yyyy-MM-dd");
+	}
+	if(t == "")
+	{
+		t = eomonth(zoho.currentdate,0).toString("yyyy-MM-dd");
+	}
+	r = Map();
+	r.put("from",f);
+	r.put("to",t);
+	r.put("fromIso",f + "T00:00:00-05:00");
+	r.put("toIso",t + "T23:59:59-05:00");
+	return r;
+}
+
+
+// ----- FUNCTION: opsGetDeceasedCards  -> Custom API Ops_Get_Deceased_Cards (POST) ----
+// Card view data = the app's own Deceased_Record_Form, exactly as it is today.
+// Paged (200 per call); the widget keeps asking until a page comes back short.
+map opsGetDeceasedCards(string pageNo, string pageSize)
+{
+	result = Map();
+	pg = 1;
+	sz = 200;
+	if(ifnull(pageNo,"").trim() != "")
+	{
+		pg = pageNo.trim().toLong();
+	}
+	if(ifnull(pageSize,"").trim() != "")
+	{
+		sz = pageSize.trim().toLong();
+	}
+	if(sz > 200 || sz < 1)
+	{
+		sz = 200;
+	}
+	if(pg < 1)
+	{
+		pg = 1;
+	}
+	startIdx = (pg - 1) * sz + 1;
+	endIdx = pg * sz;
+	recs = Deceased_Record_Form[ID != 0] sort by Added_Time desc range from startIdx to endIdx;
+	cards = List();
+	for each  r in recs
+	{
+		c = Map();
+		c.put("id",r.ID.toString());
+		c.put("deal_id",ifnull(r.deal_id,""));
+		c.put("name",ifnull(r.Deceased_Name,""));
+		c.put("sex",ifnull(r.Deceased_Sex,""));
+		c.put("size",ifnull(r.Deceased_Size,""));
+		c.put("deal_type",ifnull(r.Deal_Type,""));
+		c.put("condition",ifnull(r.Deceased_Condition,""));
+		c.put("status",ifnull(r.Deceased_Status,""));
+		c.put("employee",ifnull(r.Employee_Name,""));
+		c.put("location",ifnull(r.Location,""));
+		c.put("room",ifnull(r.Room,""));
+		c.put("mb_fridge",ifnull(r.MB_Refrigerator,""));
+		c.put("kg_fridge",ifnull(r.KG_Refrigerator,""));
+		c.put("row",ifnull(r.Row_field,""));
+		c.put("drawer",ifnull(r.Drawer,""));
+		c.put("autopsy_required",ifnull(r.Autopsy_Required,""));
+		c.put("id_required",ifnull(r.ID_Required,""));
+		c.put("id_visit_status",ifnull(r.ID_Visit_Status,""));
+		c.put("family_member",ifnull(r.Family_Member_Name,""));
+		c.put("work_order_type",ifnull(r.Work_Order_Type,""));
+		c.put("embalming_status",ifnull(r.Status,""));
+		c.put("case_location",ifnull(r.Case_Location,""));
+		c.put("assigned_to",ifnull(r.Assigned_To,""));
+		c.put("product",ifnull(r.Product_Name,""));
+		c.put("casket_size",ifnull(r.Casket_size,""));
+		c.put("casket_status",ifnull(r.Casket_Status,""));
+		c.put("casket_id",ifnull(r.Generated_Casket_ID,""));
+		c.put("primary_color",ifnull(r.Primary_Color,""));
+		c.put("secondary_color",ifnull(r.Secondary_Color,""));
+		// dates -> ISO-ish strings the widget can read without a Date object
+		if(r.Date_of_Death != null)
+		{
+			c.put("dod",r.Date_of_Death.toString("yyyy-MM-dd"));
+		}
+		else
+		{
+			c.put("dod","");
+		}
+		if(r.Initial_Trip_Completed_Date != null)
+		{
+			c.put("pickup_date",r.Initial_Trip_Completed_Date.toString("yyyy-MM-dd"));
+		}
+		else
+		{
+			c.put("pickup_date","");
+		}
+		if(r.Funeral_Date_and_Time != null)
+		{
+			c.put("funeral",r.Funeral_Date_and_Time.toString("yyyy-MM-dd'T'HH:mm:ss"));
+		}
+		else
+		{
+			c.put("funeral","");
+		}
+		if(r.Autopsy_Scheduled_At != null)
+		{
+			c.put("autopsy_at",r.Autopsy_Scheduled_At.toString("yyyy-MM-dd'T'HH:mm:ss"));
+		}
+		else
+		{
+			c.put("autopsy_at","");
+		}
+		if(r.Autopsy_Completed_At != null)
+		{
+			c.put("autopsy_done_at",r.Autopsy_Completed_At.toString("yyyy-MM-dd'T'HH:mm:ss"));
+		}
+		else
+		{
+			c.put("autopsy_done_at","");
+		}
+		if(r.ID_Date_Time != null)
+		{
+			c.put("id_visit_at",r.ID_Date_Time.toString("yyyy-MM-dd'T'HH:mm:ss"));
+		}
+		else
+		{
+			c.put("id_visit_at","");
+		}
+		if(r.Embalming_Schedule != null)
+		{
+			c.put("embalming_at",r.Embalming_Schedule.toString("yyyy-MM-dd'T'HH:mm:ss"));
+		}
+		else
+		{
+			c.put("embalming_at","");
+		}
+		if(r.Added_Time != null)
+		{
+			c.put("added",r.Added_Time.toString("yyyy-MM-dd'T'HH:mm:ss"));
+		}
+		else
+		{
+			c.put("added","");
+		}
+		addr = "";
+		try
+		{
+			parts = List();
+			a1 = ifnull(r.Pickup_Address.address_line_1,"");
+			a2 = ifnull(r.Pickup_Address.address_line_2,"");
+			ac = ifnull(r.Pickup_Address.district_city,"");
+			ap = ifnull(r.Pickup_Address.state_province,"");
+			if(a1 != "")
+			{
+				parts.add(a1);
+			}
+			if(a2 != "")
+			{
+				parts.add(a2);
+			}
+			if(ac != "")
+			{
+				parts.add(ac);
+			}
+			if(ap != "")
+			{
+				parts.add(ap);
+			}
+			addr = parts.toString(", ");
+		}
+		catch (eAddr)
+		{
+			addr = "";
+		}
+		c.put("address",addr);
+		cards.add(c);
+	}
+	result.put("status","success");
+	result.put("page",pg);
+	result.put("pageSize",sz);
+	result.put("cards",cards);
+	result.put("total",Deceased_Record_Form[ID != 0].count());
+	return result;
+}
+
+
+// ----- FUNCTION: opsGetPicklists  -> Custom API Ops_Get_Picklists (GET) --------
+// Drivers / attendants (Contacts.Contact_Type) and autopsy locations
+// (Accounts.Account_Type = 'Autopsy Location') for the report edit dropdowns.
+map opsGetPicklists()
+{
+	result = Map();
+	drivers = List();
+	attendants = List();
+	locations = List();
+	staff = thisapp.opsCoql("select id, First_Name, Last_Name, Contact_Type from Contacts where Contact_Type in ('Driver','Attendant') limit 2000");
+	for each  c in staff
+	{
+		nm = (ifnull(c.get("First_Name"),"") + " " + ifnull(c.get("Last_Name"),"")).trim();
+		row = Map();
+		row.put("id",c.get("id") + "");
+		row.put("name",nm);
+		if(ifnull(c.get("Contact_Type"),"") == "Driver")
+		{
+			drivers.add(row);
+		}
+		else
+		{
+			attendants.add(row);
+		}
+	}
+	locs = thisapp.opsCoql("select id, Account_Name, Billing_City from Accounts where Account_Type = 'Autopsy Location' limit 500");
+	for each  a in locs
+	{
+		row = Map();
+		row.put("id",a.get("id") + "");
+		row.put("name",ifnull(a.get("Account_Name"),""));
+		row.put("city",ifnull(a.get("Billing_City"),""));
+		locations.add(row);
+	}
+	result.put("status","success");
+	result.put("drivers",drivers);
+	result.put("attendants",attendants);
+	result.put("autopsyLocations",locations);
+	return result;
+}
+
+
+// ----- FUNCTION: opsReportInitialPickups  -> Custom API Ops_Report_Initial_Pickups (POST) ----
+// Report 1. Police / hospital (incl. Hospital Storage) / first call pickups whose
+// Trip Scheduled_Date falls in the range. Police + hospital trips give one row per
+// Deceased Pickup record; first call gives one row per trip (Deal + Trip only).
+map opsReportInitialPickups(string fromDate, string toDate)
+{
+	result = Map();
+	rng = thisapp.opsRange(fromDate,toDate);
+	types = "'Police Case Pickup','Initial Police Case Pickup','Hospital Storage','Hospital Pickups','First Call'";
+	hits = thisapp.opsCoql("select id from Trips where Trip_Type in (" + types + ") and Scheduled_Date between '" + rng.get("fromIso") + "' and '" + rng.get("toIso") + "' limit 2000");
+	tripIds = List();
+	for each  h in hits
+	{
+		tripIds.add(h.get("id") + "");
+	}
+	trips = thisapp.opsGetByIds("Trips",tripIds,"Name,Trip_Type,Scheduled_Date,Place_of_Removal,Place_of_Removal_Other,Hospital_Name,Ward,Number_of_distance_in_km,Driver,Attendant_NEW,Deal,Trip_Status");
+	// Deceased Pickups on those trips
+	pkHits = thisapp.opsCoqlIn("select id from Deceased_Pickups","Trip",tripIds,"");
+	pkIds = List();
+	for each  p in pkHits
+	{
+		pkIds.add(p.get("id") + "");
+	}
+	pickups = thisapp.opsGetByIds("Deceased_Pickups",pkIds,"First_Name,Last_Name,Trip,Deal,Date_of_Death,Deceased_Street_Address,Deceased_City,NOK_First_Name,NOK_Last_Name,NOK_Phone,Doctor_Name,Doctor_Phone,Police_Officer_Name,Police_Phone_Number,Time_of_Death,Deceased_Size,Condition,Operations_Record,Location,Refrigerator,Row,Drawer,Room");
+	pickupsByTrip = Map();
+	for each  p in pickups
+	{
+		tId = thisapp.opsLkId(p,"Trip");
+		lst = List();
+		if(pickupsByTrip.containKey(tId))
+		{
+			lst = pickupsByTrip.get(tId);
+		}
+		lst.add(p);
+		pickupsByTrip.put(tId,lst);
+	}
+	// Deals (from trips + pickups)
+	dealIds = List();
+	for each  t in trips
+	{
+		dealIds.add(thisapp.opsLkId(t,"Deal"));
+	}
+	for each  p in pickups
+	{
+		dealIds.add(thisapp.opsLkId(p,"Deal"));
+	}
+	deals = thisapp.opsGetByIds("Deals",dealIds,"Name_of_Deceased,Date_of_Birth,Date_of_Death,Sex,Street_1,City,Contact_Name,Doctor_Name,Doctor_Phone,Police_Office_Name,Police_Phone_Number,Time_of_Death,Call_Taken_By,Deceased_Size,Type,Initial_Trip_Completed_At");
+	dealIdx = thisapp.opsIndexById(deals);
+	// NOK contacts (Deal.Contact_Name)
+	nokIds = List();
+	for each  d in deals
+	{
+		nokIds.add(thisapp.opsLkId(d,"Contact_Name"));
+	}
+	noks = thisapp.opsGetByIds("Contacts",nokIds,"First_Name,Last_Name,Mobile,Phone");
+	nokIdx = thisapp.opsIndexById(noks);
+	// Operations: by pickup's Operations_Record, and by Related_Trip (first call)
+	opsIds = List();
+	for each  p in pickups
+	{
+		opsIds.add(thisapp.opsLkId(p,"Operations_Record"));
+	}
+	opsTripHits = thisapp.opsCoqlIn("select id from Operations","Related_Trip",tripIds,"");
+	for each  o in opsTripHits
+	{
+		opsIds.add(o.get("id") + "");
+	}
+	opsRecs = thisapp.opsGetByIds("Operations",opsIds,"Refrigerator,Row,Drawer,Room,Location,Condition,Needs_Attention_Description,Related_Deal,Related_Trip");
+	opsIdx = thisapp.opsIndexById(opsRecs);
+	opsByTrip = Map();
+	for each  o in opsRecs
+	{
+		rt = thisapp.opsLkId(o,"Related_Trip");
+		if(rt != "" && !opsByTrip.containKey(rt))
+		{
+			opsByTrip.put(rt,o);
+		}
+	}
+	rows = List();
+	for each  t in trips
+	{
+		tId = t.get("id") + "";
+		tripPickups = List();
+		if(pickupsByTrip.containKey(tId))
+		{
+			tripPickups = pickupsByTrip.get(tId);
+		}
+		if(tripPickups.size() > 0)
+		{
+			for each  p in tripPickups
+			{
+				row = Map();
+				row.put("trip",t);
+				row.put("pickup",p);
+				dId = thisapp.opsLkId(p,"Deal");
+				deal = Map();
+				if(dId != "" && dealIdx.containKey(dId))
+				{
+					deal = dealIdx.get(dId);
+				}
+				row.put("deal",deal);
+				nok = Map();
+				nId = thisapp.opsLkId(deal,"Contact_Name");
+				if(nId != "" && nokIdx.containKey(nId))
+				{
+					nok = nokIdx.get(nId);
+				}
+				row.put("nok",nok);
+				ops = Map();
+				oId = thisapp.opsLkId(p,"Operations_Record");
+				if(oId != "" && opsIdx.containKey(oId))
+				{
+					ops = opsIdx.get(oId);
+				}
+				row.put("ops",ops);
+				rows.add(row);
+			}
+		}
+		else
+		{
+			row = Map();
+			row.put("trip",t);
+			row.put("pickup",Map());
+			dId = thisapp.opsLkId(t,"Deal");
+			deal = Map();
+			if(dId != "" && dealIdx.containKey(dId))
+			{
+				deal = dealIdx.get(dId);
+			}
+			row.put("deal",deal);
+			nok = Map();
+			nId = thisapp.opsLkId(deal,"Contact_Name");
+			if(nId != "" && nokIdx.containKey(nId))
+			{
+				nok = nokIdx.get(nId);
+			}
+			row.put("nok",nok);
+			ops = Map();
+			if(opsByTrip.containKey(tId))
+			{
+				ops = opsByTrip.get(tId);
+			}
+			row.put("ops",ops);
+			rows.add(row);
+		}
+	}
+	result.put("status","success");
+	result.put("from",rng.get("from"));
+	result.put("to",rng.get("to"));
+	result.put("rows",rows);
+	return result;
+}
+
+
+// ----- FUNCTION: opsReportAutopsyResults  -> Custom API Ops_Report_Autopsy_Results (POST) ----
+// Report 2. "Multi Deceased Autopsy Trip" parents in range + one row per child trip.
+map opsReportAutopsyResults(string fromDate, string toDate)
+{
+	result = Map();
+	rng = thisapp.opsRange(fromDate,toDate);
+	hits = thisapp.opsCoql("select id from Trips where Trip_Type = 'Multi Deceased Autopsy Trip' and Scheduled_Date between '" + rng.get("fromIso") + "' and '" + rng.get("toIso") + "' limit 2000");
+	parentIds = List();
+	for each  h in hits
+	{
+		parentIds.add(h.get("id") + "");
+	}
+	parents = thisapp.opsGetByIds("Trips",parentIds,"Name,Scheduled_Date,Driver,Autopsy_Location,Trip_Status");
+	childHits = thisapp.opsCoqlIn("select id from Trips","Parent_Trip",parentIds,"");
+	childIds = List();
+	for each  h in childHits
+	{
+		childIds.add(h.get("id") + "");
+	}
+	children = thisapp.opsGetByIds("Trips",childIds,"Name,Scheduled_Date,Driver,Deal,Parent_Trip,Trip_Type,Trip_Status");
+	dealIds = List();
+	for each  c in children
+	{
+		dealIds.add(thisapp.opsLkId(c,"Deal"));
+	}
+	deals = thisapp.opsGetByIds("Deals",dealIds,"Name_of_Deceased,Name_of_Receiving_Funeral_Home,Reason_for_not_Selecting_DFH");
+	dealIdx = thisapp.opsIndexById(deals);
+	opsHits = thisapp.opsCoqlIn("select id, Outcome, Reschedule_Reason, Related_Trip, Modified_Time from Operations","Related_Trip",childIds,"");
+	opsByTrip = Map();
+	for each  o in opsHits
+	{
+		rt = thisapp.opsLkId(o,"Related_Trip");
+		if(rt != "" && !opsByTrip.containKey(rt))
+		{
+			opsByTrip.put(rt,o);
+		}
+	}
+	rows = List();
+	for each  c in children
+	{
+		row = Map();
+		row.put("child",c);
+		row.put("parentId",ifnull(c.get("Parent_Trip"),"") + "");
+		dId = thisapp.opsLkId(c,"Deal");
+		deal = Map();
+		if(dId != "" && dealIdx.containKey(dId))
+		{
+			deal = dealIdx.get(dId);
+		}
+		row.put("deal",deal);
+		ops = Map();
+		cId = c.get("id") + "";
+		if(opsByTrip.containKey(cId))
+		{
+			ops = opsByTrip.get(cId);
+		}
+		row.put("ops",ops);
+		rows.add(row);
+	}
+	result.put("status","success");
+	result.put("from",rng.get("from"));
+	result.put("to",rng.get("to"));
+	result.put("parents",parents);
+	result.put("rows",rows);
+	return result;
+}
+
+
+// ----- FUNCTION: opsReportEmbalming  -> Custom API Ops_Report_Embalming (GET) ----
+// Report 3. Embalming auth AND burial order received, AND (funeral today or later
+// OR the Embalming Request Operations record is not Completed).
+// Uses Operations.Status only (never Deal stage / Deceased_Status).
+map opsReportEmbalming()
+{
+	result = Map();
+	todayIso = zoho.currentdate.toString("yyyy-MM-dd") + "T00:00:00-05:00";
+	dealIds = List();
+	a = thisapp.opsCoql("select id from Deals where Embalming_Auth_form_Received = true and Burial_Order_Received = true and Funeral_Time >= '" + todayIso + "' limit 2000");
+	for each  d in a
+	{
+		dealIds.add(d.get("id") + "");
+	}
+	openOps = thisapp.opsCoql("select id, Related_Deal from Operations where Work_Order_Type = 'Embalming Request' and (Status != 'Completed' or Status is null) limit 2000");
+	for each  o in openOps
+	{
+		dealIds.add(thisapp.opsLkId(o,"Related_Deal"));
+	}
+	dealsRaw = thisapp.opsGetByIds("Deals",dealIds,"Name_of_Deceased,Initial_Trip_Completed_At,Funeral_Time,Embalming_Auth_form_Received,Burial_Order_Received,Deceased_Size");
+	deals = List();
+	keepIds = List();
+	for each  d in dealsRaw
+	{
+		authOk = ifnull(d.get("Embalming_Auth_form_Received"),"") + "";
+		burialOk = ifnull(d.get("Burial_Order_Received"),"") + "";
+		if(authOk == "true" && burialOk == "true")
+		{
+			deals.add(d);
+			keepIds.add(d.get("id") + "");
+		}
+	}
+	// Re-Measured Size is a new field (create first). If it isn't there yet the
+	// query would fail as a whole, so probe it once and leave it out if missing.
+	probe = thisapp.opsCoqlQuery("select id, Re_Measured_Size from Operations where Work_Order_Type = 'Embalming Request' limit 1");
+	hasReMeasured = false;
+	if(probe.get("error") == "")
+	{
+		hasReMeasured = true;
+	}
+	opsFields = "select id, Related_Deal, Status, Schedule_the_Embalming, Embalming_Report_Uploaded, Modified_Time";
+	if(hasReMeasured)
+	{
+		opsFields = opsFields + ", Re_Measured_Size";
+	}
+	opsRecs = thisapp.opsCoqlIn(opsFields + " from Operations","Related_Deal",keepIds,"Work_Order_Type = 'Embalming Request'");
+	// latest Embalming Request per deal
+	opsByDeal = Map();
+	for each  o in opsRecs
+	{
+		dId = thisapp.opsLkId(o,"Related_Deal");
+		if(dId != "")
+		{
+			if(!opsByDeal.containKey(dId))
+			{
+				opsByDeal.put(dId,o);
+			}
+			else
+			{
+				prev = opsByDeal.get(dId);
+				if(thisapp.opsStamp(ifnull(o.get("Modified_Time"),"") + "") > thisapp.opsStamp(ifnull(prev.get("Modified_Time"),"") + ""))
+				{
+					opsByDeal.put(dId,o);
+				}
+			}
+		}
+	}
+	todayStamp = thisapp.opsStamp(todayIso);
+	rows = List();
+	for each  d in deals
+	{
+		dId = d.get("id") + "";
+		ops = Map();
+		if(opsByDeal.containKey(dId))
+		{
+			ops = opsByDeal.get(dId);
+		}
+		funeralStamp = thisapp.opsStamp(ifnull(d.get("Funeral_Time"),"") + "");
+		futureFuneral = false;
+		if(funeralStamp >= todayStamp)
+		{
+			futureFuneral = true;
+		}
+		// "not yet embalmed" = there is an Embalming Request and its Status is not Completed
+		notEmbalmed = false;
+		if(ops.size() > 0 && (ifnull(ops.get("Status"),"") + "") != "Completed")
+		{
+			notEmbalmed = true;
+		}
+		if(futureFuneral || notEmbalmed)
+		{
+			row = Map();
+			row.put("deal",d);
+			row.put("ops",ops);
+			rows.add(row);
+		}
+	}
+	result.put("status","success");
+	result.put("hasReMeasuredField",hasReMeasured);
+	result.put("rows",rows);
+	return result;
+}
+
+
+// ----- FUNCTION: opsReportUpcomingAutopsies  -> Custom API Ops_Report_Upcoming_Autopsies (GET) ----
+// Report 4. Autopsies today through the next two days. One row per deceased.
+// Also used by Trip Manager (same function body, TM's own Custom API).
+map opsReportUpcomingAutopsies()
+{
+	result = Map();
+	fromIso = zoho.currentdate.toString("yyyy-MM-dd") + "T00:00:00-05:00";
+	toIso = zoho.currentdate.addDay(2).toString("yyyy-MM-dd") + "T23:59:59-05:00";
+	hits = thisapp.opsCoql("select id from Trips where Trip_Type in ('Autopsy Initial','Multi Deceased Autopsy Trip','Autopsy Reschedule') and Scheduled_Date between '" + fromIso + "' and '" + toIso + "' limit 2000");
+	tripIds = List();
+	for each  h in hits
+	{
+		tripIds.add(h.get("id") + "");
+	}
+	tripFields = "Name,Trip_Type,Scheduled_Date,Autopsy_Location,Deal,Parent_Trip,Trip_Status";
+	trips = thisapp.opsGetByIds("Trips",tripIds,tripFields);
+	parentIds = List();
+	for each  t in trips
+	{
+		if(ifnull(t.get("Trip_Type"),"") == "Multi Deceased Autopsy Trip")
+		{
+			parentIds.add(t.get("id") + "");
+		}
+	}
+	// children of in-window parents (their own date may be blank)
+	childHits = thisapp.opsCoqlIn("select id from Trips","Parent_Trip",parentIds,"");
+	childIds = List();
+	for each  h in childHits
+	{
+		cId = h.get("id") + "";
+		if(!tripIds.contains(cId))
+		{
+			childIds.add(cId);
+		}
+	}
+	children = thisapp.opsGetByIds("Trips",childIds,tripFields);
+	allTrips = List();
+	allTrips.addAll(trips);
+	allTrips.addAll(children);
+	tripIdx = thisapp.opsIndexById(allTrips);
+	// deals with an autopsy date in the window but no trip yet
+	dealHits = thisapp.opsCoql("select id from Deals where Autopsy_Date_Time between '" + fromIso + "' and '" + toIso + "' limit 2000");
+	dealIds = List();
+	for each  t in allTrips
+	{
+		dealIds.add(thisapp.opsLkId(t,"Deal"));
+	}
+	for each  h in dealHits
+	{
+		dealIds.add(h.get("id") + "");
+	}
+	deals = thisapp.opsGetByIds("Deals",dealIds,"Name_of_Deceased,Autopsy_Date_Time,Autopsy_Locations,Pipeline");
+	dealIdx = thisapp.opsIndexById(deals);
+	opsRecs = thisapp.opsCoqlIn("select id, Related_Deal, Refrigerator, Row, Drawer, Room, Location, Modified_Time from Operations","Related_Deal",dealIds,"");
+	opsByDeal = Map();
+	for each  o in opsRecs
+	{
+		dId = thisapp.opsLkId(o,"Related_Deal");
+		lst = List();
+		if(opsByDeal.containKey(dId))
+		{
+			lst = opsByDeal.get(dId);
+		}
+		lst.add(o);
+		opsByDeal.put(dId,lst);
+	}
+	rows = List();
+	seenDeals = List();
+	for each  t in allTrips
+	{
+		dId = thisapp.opsLkId(t,"Deal");
+		if(dId != "" && !seenDeals.contains(dId))
+		{
+			seenDeals.add(dId);
+			row = Map();
+			row.put("trip",t);
+			parent = Map();
+			pId = ifnull(t.get("Parent_Trip"),"") + "";
+			if(pId != "" && tripIdx.containKey(pId))
+			{
+				parent = tripIdx.get(pId);
+			}
+			row.put("parent",parent);
+			deal = Map();
+			if(dealIdx.containKey(dId))
+			{
+				deal = dealIdx.get(dId);
+			}
+			row.put("deal",deal);
+			opsList = List();
+			if(opsByDeal.containKey(dId))
+			{
+				opsList = opsByDeal.get(dId);
+			}
+			row.put("opsList",opsList);
+			rows.add(row);
+		}
+	}
+	for each  h in dealHits
+	{
+		dId = h.get("id") + "";
+		if(!seenDeals.contains(dId))
+		{
+			seenDeals.add(dId);
+			row = Map();
+			row.put("trip",Map());
+			row.put("parent",Map());
+			deal = Map();
+			if(dealIdx.containKey(dId))
+			{
+				deal = dealIdx.get(dId);
+			}
+			row.put("deal",deal);
+			opsList = List();
+			if(opsByDeal.containKey(dId))
+			{
+				opsList = opsByDeal.get(dId);
+			}
+			row.put("opsList",opsList);
+			rows.add(row);
+		}
+	}
+	result.put("status","success");
+	result.put("from",fromIso.subString(0,10));
+	result.put("to",toIso.subString(0,10));
+	result.put("rows",rows);
+	return result;
+}
+
+
+// ----- FUNCTION: opsReportAwaitingAutopsy  -> Custom API Ops_Report_Awaiting_Autopsy (GET) ----
+// Report 4b (Ms Shirley). Deceased in our care (Is_Deceased_In_Our_Care = Yes) with
+// Autopsy Required = Yes and no Autopsy Date/Time yet.
+map opsReportAwaitingAutopsy()
+{
+	result = Map();
+	closed = "'Closed Lost','Closed Lost to Competition','Funeral Completed','Completed','Cremation Completed','DFH Not Selected','Letter of No Interest','Not Interested','Survey Sent','Survey Completed'";
+	// "In our care" = the Deal's own Is_Deceased_In_Our_Care flag (set to Yes when the
+	// initial pickup completes). Nothing sets it back to No when the body leaves, so the
+	// closed-stage + Deceased_Departed checks stay as a backstop.
+	hits = thisapp.opsCoql("select id from Deals where Is_Deceased_In_Our_Care = 'Yes' and Autopsy_Required = 'Yes' and Autopsy_Date_Time is null and Stage not in (" + closed + ") limit 2000");
+	ids = List();
+	for each  h in hits
+	{
+		ids.add(h.get("id") + "");
+	}
+	dealsRaw = thisapp.opsGetByIds("Deals",ids,"Name_of_Deceased,Pipeline,Stage,Initial_Trip_Completed_At,Date_of_Death,Autopsy_Type,Autopsy_Locations,Deceased_Departed,Owner,Created_Time");
+	rows = List();
+	for each  d in dealsRaw
+	{
+		departed = ifnull(d.get("Deceased_Departed"),"") + "";
+		if(departed != "true")
+		{
+			rows.add(d);
+		}
+	}
+	result.put("status","success");
+	result.put("rows",rows);
+	return result;
+}
+
+
+// ----- FUNCTION: opsSaveAutopsySchedule  -> Custom API Ops_Save_Autopsy_Schedule (POST) ----
+// Ms Shirley's save. Writes Deal Autopsy_Date_Time + Autopsy_Locations WITH workflow
+// trigger, so the existing "New - Create Trip on the Day of Autopsy Date..." rule
+// still creates the autopsy trip. That workflow is not changed.
+// autopsyDateTime = yyyy-MM-ddTHH:mm:ss-05:00
+map opsSaveAutopsySchedule(string dealId, string autopsyDateTime, string locationId)
+{
+	result = Map();
+	result.put("status","error");
+	dId = ifnull(dealId,"").trim();
+	dt = ifnull(autopsyDateTime,"").trim();
+	loc = ifnull(locationId,"").trim();
+	if(dId == "" || dt == "")
+	{
+		result.put("message","Deal and autopsy date/time are both required");
+		return result;
+	}
+	upd = Map();
+	upd.put("Autopsy_Date_Time",dt);
+	if(loc != "")
+	{
+		upd.put("Autopsy_Locations",loc);
+	}
+	resp = Map();
+	try
+	{
+		resp = zoho.crm.updateRecord("Deals",dId.toLong(),upd,{"trigger":{"workflow"}},"zoho_oauth_connection");
+	}
+	catch (eUpd)
+	{
+		result.put("message","Save failed: " + eUpd.toString());
+		return result;
+	}
+	if(resp.containKey("id"))
+	{
+		result.put("status","success");
+		result.put("message","Saved");
+	}
+	else
+	{
+		result.put("message","Save failed: " + resp.toString());
+	}
+	return result;
+}
+
+
+// ----- FUNCTION: opsReportFamilyViewing  -> Custom API Ops_Report_Family_Viewing (GET) ----
+// Report 6. Funeral today or later AND (appearance answer OR new funeral time).
+map opsReportFamilyViewing()
+{
+	result = Map();
+	todayIso = zoho.currentdate.toString("yyyy-MM-dd") + "T00:00:00-05:00";
+	hits = thisapp.opsCoql("select id from Deals where Funeral_Time >= '" + todayIso + "' limit 2000");
+	ids = List();
+	for each  h in hits
+	{
+		ids.add(h.get("id") + "");
+	}
+	dealsRaw = thisapp.opsGetByIds("Deals",ids,"Name_of_Deceased,Owner,Pre_Visit_Viewing_Date,Funeral_Time,Changes_in_Deceased_Appearence,New_Requested_Funeral_Date_and_Time");
+	rows = List();
+	for each  d in dealsRaw
+	{
+		appearance = (ifnull(d.get("Changes_in_Deceased_Appearence"),"") + "").trim();
+		newTime = ifnull(d.get("New_Requested_Funeral_Date_and_Time"),"") + "";
+		if(appearance != "" || newTime != "")
+		{
+			rows.add(d);
+		}
+	}
+	result.put("status","success");
+	result.put("rows",rows);
+	return result;
+}
+
+
+// ----- FUNCTION: opsReportDriverNotes  -> Custom API Ops_Report_Driver_Notes (POST) ----
+// Report 7. Deals with a Funeral trip in the range (up to today); keeps the Deal
+// notes written by the apps ("[[author|yyyy-MM-dd h:mm a]]" header) whose header
+// date is the funeral date.
+map opsReportDriverNotes(string fromDate, string toDate)
+{
+	result = Map();
+	rng = thisapp.opsRange(fromDate,toDate);
+	toIso = rng.get("toIso");
+	nowIso = zoho.currentdate.toString("yyyy-MM-dd") + "T23:59:59-05:00";
+	if(thisapp.opsStamp(toIso) > thisapp.opsStamp(nowIso))
+	{
+		toIso = nowIso;
+	}
+	hits = thisapp.opsCoql("select id, Deal, Scheduled_Date from Trips where Trip_Type = 'Funeral' and Scheduled_Date between '" + rng.get("fromIso") + "' and '" + toIso + "' limit 2000");
+	dealIds = List();
+	tripDateByDeal = Map();
+	for each  h in hits
+	{
+		dId = thisapp.opsLkId(h,"Deal");
+		if(dId != "")
+		{
+			dealIds.add(dId);
+			tripDateByDeal.put(dId,ifnull(h.get("Scheduled_Date"),"") + "");
+		}
+	}
+	deals = thisapp.opsGetByIds("Deals",dealIds,"Name_of_Deceased,Funeral_Time");
+	rows = List();
+	for each  d in deals
+	{
+		dId = d.get("id") + "";
+		funeralIso = ifnull(d.get("Funeral_Time"),"") + "";
+		if(funeralIso == "" && tripDateByDeal.containKey(dId))
+		{
+			funeralIso = tripDateByDeal.get(dId);
+		}
+		if(funeralIso.length() >= 10)
+		{
+			funeralDay = funeralIso.subString(0,10);
+			notesRaw = List();
+			try
+			{
+				nResp = invokeurl
+				[
+					url :"https://www.zohoapis.com/crm/v8/Deals/" + dId + "/Notes?fields=Note_Content,Created_Time&per_page=200"
+					type :GET
+					connection:"zoho_oauth_connection"
+				];
+				nData = nResp.get("data");
+				if(nData != null)
+				{
+					notesRaw = nData.toList();
+				}
+			}
+			catch (eNotes)
+			{
+				notesRaw = List();
+			}
+			for each  n in notesRaw
+			{
+				content = (ifnull(n.get("Note_Content"),"") + "").trim();
+				if(content.startsWith("[["))
+				{
+					closeIdx = content.indexOf("]]");
+					if(closeIdx > 1)
+					{
+						inner = content.subString(2,closeIdx);
+						if(inner.contains("|"))
+						{
+							pipeIdx = inner.indexOf("|");
+							author = inner.subString(0,pipeIdx).trim();
+							stamp = inner.subString(pipeIdx + 1).trim();
+							if(stamp.length() >= 10 && stamp.subString(0,10) == funeralDay)
+							{
+								row = Map();
+								row.put("dealId",dId);
+								row.put("deceased",ifnull(d.get("Name_of_Deceased"),""));
+								row.put("funeral",funeralIso);
+								row.put("noteId",n.get("id") + "");
+								row.put("driver",author);
+								row.put("stamp",stamp);
+								row.put("created",ifnull(n.get("Created_Time"),"") + "");
+								row.put("text",content.subString(closeIdx + 2).trim());
+								rows.add(row);
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	result.put("status","success");
+	result.put("from",rng.get("from"));
+	result.put("to",rng.get("to"));
+	result.put("rows",rows);
+	return result;
+}
+
+
+// ----- FUNCTION: opsSaveFields  -> Custom API Ops_Save_Fields (POST) ----------
+// Generic inline-edit save for every report. updatesJson is a JSON list of
+//   {"m":"<module>","id":"<record id>","f":"<field api name>","v":"<value>"}
+// Only fields in the whitelist below can be written. Edits to the same record
+// are sent as one update. Deals / Operations / Deceased Pickups / Contacts fire
+// workflows (same as editing in CRM); Trips do NOT (avoids re-sending historic
+// trips to Amber / Trip Manager).
+map opsSaveFields(string updatesJson)
+{
+	result = Map();
+	result.put("status","error");
+	// ---- whitelist: module -> field -> type ----
+	wl = Map();
+	wDeals = Map();
+	wDeals.put("Name_of_Deceased","text");
+	wDeals.put("Date_of_Birth","date");
+	wDeals.put("Sex","text");
+	wDeals.put("Street_1","text");
+	wDeals.put("City","text");
+	wDeals.put("Doctor_Name","text");
+	wDeals.put("Doctor_Phone","text");
+	wDeals.put("Police_Office_Name","text");
+	wDeals.put("Police_Phone_Number","text");
+	wDeals.put("Time_of_Death","text");
+	wDeals.put("Call_Taken_By","text");
+	wDeals.put("Deceased_Size","text");
+	wDeals.put("Name_of_Receiving_Funeral_Home","text");
+	wDeals.put("Reason_for_not_Selecting_DFH","text");
+	wDeals.put("Funeral_Time","datetime");
+	wDeals.put("Initial_Trip_Completed_At","datetime");
+	wDeals.put("Embalming_Auth_form_Received","bool");
+	wDeals.put("Burial_Order_Received","bool");
+	wDeals.put("Pre_Visit_Viewing_Date","date");
+	wDeals.put("Changes_in_Deceased_Appearence","text");
+	wDeals.put("New_Requested_Funeral_Date_and_Time","datetime");
+	wDeals.put("Owner","lookup");
+	wl.put("Deals",wDeals);
+	wTrips = Map();
+	wTrips.put("Name","text");
+	wTrips.put("Scheduled_Date","datetime");
+	wTrips.put("Place_of_Removal","text");
+	wTrips.put("Place_of_Removal_Other","text");
+	wTrips.put("Hospital_Name","text");
+	wTrips.put("Ward","text");
+	wTrips.put("Driver","lookup");
+	wTrips.put("Attendant_NEW","lookup");
+	wTrips.put("Number_of_distance_in_km","num");
+	wTrips.put("Autopsy_Location","lookup");
+	wl.put("Trips",wTrips);
+	wPick = Map();
+	wPick.put("First_Name","text");
+	wPick.put("Last_Name","text");
+	wPick.put("Deceased_Street_Address","text");
+	wPick.put("Deceased_City","text");
+	wPick.put("NOK_First_Name","text");
+	wPick.put("NOK_Last_Name","text");
+	wPick.put("NOK_Phone","text");
+	wPick.put("Doctor_Name","text");
+	wPick.put("Doctor_Phone","text");
+	wPick.put("Police_Officer_Name","text");
+	wPick.put("Police_Phone_Number","text");
+	wPick.put("Time_of_Death","text");
+	wPick.put("Deceased_Size","text");
+	wl.put("Deceased_Pickups",wPick);
+	wOps = Map();
+	wOps.put("Refrigerator","text");
+	wOps.put("Row","text");
+	wOps.put("Drawer","text");
+	wOps.put("Room","text");
+	wOps.put("Location","text");
+	wOps.put("Condition","text");
+	wOps.put("Needs_Attention_Description","text");
+	wOps.put("Outcome","text");
+	wOps.put("Reschedule_Reason","text");
+	wOps.put("Status","text");
+	wOps.put("Schedule_the_Embalming","datetime");
+	wOps.put("Embalming_Report_Uploaded","bool");
+	wOps.put("Re_Measured_Size","text");
+	wl.put("Operations",wOps);
+	wCon = Map();
+	wCon.put("First_Name","text");
+	wCon.put("Last_Name","text");
+	wCon.put("Phone","text");
+	wl.put("Contacts",wCon);
+	wNotes = Map();
+	wNotes.put("Note_Content","text");
+	wl.put("Notes",wNotes);
+	// ---- parse + group ----
+	updList = List();
+	try
+	{
+		updList = ifnull(updatesJson,"[]").toJSONList();
+	}
+	catch (eParse)
+	{
+		result.put("message","Could not read the changes sent");
+		return result;
+	}
+	groups = Map();
+	rejected = List();
+	for each  item in updList
+	{
+		u = item.toString().toMap();
+		m = ifnull(u.get("m"),"") + "";
+		recId = ifnull(u.get("id"),"") + "";
+		f = ifnull(u.get("f"),"") + "";
+		v = ifnull(u.get("v"),"") + "";
+		typ = "";
+		if(wl.containKey(m))
+		{
+			typ = ifnull(wl.get(m).get(f),"") + "";
+		}
+		if(typ == "" || recId == "")
+		{
+			rejected.add(m + "." + f);
+		}
+		else
+		{
+			if(v == "-None-")
+			{
+				v = "";
+			}
+			key = m + "|" + recId;
+			fm = Map();
+			if(groups.containKey(key))
+			{
+				fm = groups.get(key);
+			}
+			if(typ == "bool")
+			{
+				if(v == "true")
+				{
+					fm.put(f,true);
+				}
+				else
+				{
+					fm.put(f,false);
+				}
+			}
+			else if(typ == "num")
+			{
+				if(v == "")
+				{
+					fm.put(f,"");
+				}
+				else
+				{
+					fm.put(f,v.toDecimal());
+				}
+			}
+			else
+			{
+				fm.put(f,v);
+			}
+			groups.put(key,fm);
+		}
+	}
+	if(rejected.size() > 0)
+	{
+		result.put("message","These fields cannot be edited here: " + rejected.toString(", "));
+		return result;
+	}
+	if(groups.size() == 0)
+	{
+		result.put("message","Nothing to save");
+		return result;
+	}
+	errors = List();
+	saved = 0;
+	groupKeys = groups.keys();
+	for each  key in groupKeys
+	{
+		parts = key.toList("|");
+		m = parts.get(0);
+		recId = parts.get(1);
+		fm = groups.get(key);
+		ok = false;
+		errText = "";
+		try
+		{
+			if(m == "Notes")
+			{
+				body = Map();
+				dl = List();
+				dl.add(fm);
+				body.put("data",dl);
+				nResp = invokeurl
+				[
+					url :"https://www.zohoapis.com/crm/v8/Notes/" + recId
+					type :PUT
+					parameters:body.toString()
+					connection:"zoho_oauth_connection"
+				];
+				code = "";
+				try
+				{
+					code = ifnull(nResp.get("data").get(0).get("code"),"") + "";
+				}
+				catch (eNc)
+				{
+					code = "";
+				}
+				if(code == "SUCCESS")
+				{
+					ok = true;
+				}
+				else
+				{
+					errText = nResp.toString();
+				}
+			}
+			else
+			{
+				opts = Map();
+				if(m != "Trips")
+				{
+					opts = {"trigger":{"workflow"}};
+				}
+				resp = zoho.crm.updateRecord(m,recId.toLong(),fm,opts,"zoho_oauth_connection");
+				if(resp.containKey("id"))
+				{
+					ok = true;
+				}
+				else
+				{
+					errText = resp.toString();
+				}
+			}
+		}
+		catch (eSave)
+		{
+			ok = false;
+			errText = eSave.toString();
+		}
+		if(ok)
+		{
+			saved = saved + 1;
+		}
+		else
+		{
+			errors.add(m + " " + recId + ": " + errText);
+		}
+	}
+	if(errors.size() == 0)
+	{
+		result.put("status","success");
+		result.put("message","Saved");
+	}
+	else
+	{
+		result.put("message",errors.toString(" | "));
+	}
+	result.put("saved",saved);
+	return result;
+}

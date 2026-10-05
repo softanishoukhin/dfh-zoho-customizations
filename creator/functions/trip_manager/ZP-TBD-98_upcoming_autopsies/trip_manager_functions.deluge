@@ -1,0 +1,371 @@
+// =============================================================================
+// ZP-TBD-98 -- Trip Manager: Upcoming Autopsies (Report 4)
+// Creator app: Trip Manager. Copied UNCHANGED from the Operations App file
+// (operations_app/ZP-TBD-98_ops_portal_cards_and_reports/operations_app_functions.deluge)
+// so both apps give the same answer. TM's zoho_oauth_connection has the same CRM
+// scopes (coql.READ, modules.ALL). No name clashes with existing TM functions.
+// Add each as a NEW function (one per editor), helpers first, then create the
+// Custom API TM_Upcoming_Autopsies (GET) -> opsReportUpcomingAutopsies.
+// =============================================================================
+
+// ----- FUNCTION: opsCoqlQuery  (helper -- no Custom API) ----------------------
+map opsCoqlQuery(string selectQuery)
+{
+	out = Map();
+	out.put("rows",List());
+	out.put("error","");
+	qm = Map();
+	qm.put("select_query",selectQuery);
+	resp = Map();
+	try
+	{
+		resp = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v8/coql"
+			type :POST
+			parameters:qm.toString()
+			connection:"zoho_oauth_connection"
+		];
+	}
+	catch (eReq)
+	{
+		out.put("error","COQL request failed: " + eReq.toString());
+		return out;
+	}
+	rows = List();
+	errCode = "";
+	try
+	{
+		errCode = ifnull(resp.get("code"),"") + "";
+	}
+	catch (eCode)
+	{
+		errCode = "";
+	}
+	if(errCode != "")
+	{
+		msg = "";
+		try
+		{
+			msg = ifnull(resp.get("message"),"") + "";
+		}
+		catch (eMsg)
+		{
+			msg = "";
+		}
+		out.put("error",errCode + " " + msg);
+		return out;
+	}
+	// start as a List so Deluge knows the loop below iterates a list
+	dataList = List();
+	try
+	{
+		dataRaw = resp.get("data");
+		if(dataRaw != null)
+		{
+			dataList = dataRaw.toList();
+		}
+	}
+	catch (eData)
+	{
+		dataList = List();
+	}
+	for each  rec in dataList
+	{
+		rows.add(rec);
+	}
+	out.put("rows",rows);
+	return out;
+}
+
+
+// ----- FUNCTION: opsCoql  (helper -- no Custom API) ---------------------------
+list opsCoql(string selectQuery)
+{
+	res = thisapp.opsCoqlQuery(selectQuery);
+	return res.get("rows");
+}
+
+
+// ----- FUNCTION: opsCoqlIn  (helper -- no Custom API) -------------------------
+// Runs "<selectFrom> where <inField> in (...) [and <extraWhere>]" in batches of 50
+// ids (COQL IN-list limit). extraWhere must already be wrapped in brackets if it
+// contains an OR.
+list opsCoqlIn(string selectFrom, string inField, list idList, string extraWhere)
+{
+	out = List();
+	cleanIds = List();
+	for each  oneId in idList
+	{
+		s = ifnull(oneId,"") + "";
+		if(s != "" && !cleanIds.contains(s))
+		{
+			cleanIds.add(s);
+		}
+	}
+	total = cleanIds.size();
+	if(total == 0)
+	{
+		return out;
+	}
+	batch = List();
+	idx = 0;
+	for each  oneId in cleanIds
+	{
+		idx = idx + 1;
+		batch.add(oneId);
+		if(batch.size() == 50 || idx == total)
+		{
+			q = selectFrom + " where " + inField + " in ('" + batch.toString("','") + "')";
+			if(extraWhere != "")
+			{
+				q = q + " and " + extraWhere;
+			}
+			q = q + " limit 2000";
+			part = thisapp.opsCoql(q);
+			for each  r in part
+			{
+				out.add(r);
+			}
+			batch = List();
+		}
+	}
+	return out;
+}
+
+
+// ----- FUNCTION: opsGetByIds  (helper -- no Custom API) -----------------------
+// REST GET /crm/v8/<module>?ids=... in batches of 100. Lookups come back as
+// {name,id}, which COQL does not give us.
+list opsGetByIds(string moduleName, list idList, string fieldList)
+{
+	out = List();
+	cleanIds = List();
+	for each  oneId in idList
+	{
+		s = ifnull(oneId,"") + "";
+		if(s != "" && !cleanIds.contains(s))
+		{
+			cleanIds.add(s);
+		}
+	}
+	total = cleanIds.size();
+	if(total == 0)
+	{
+		return out;
+	}
+	batch = List();
+	idx = 0;
+	for each  oneId in cleanIds
+	{
+		idx = idx + 1;
+		batch.add(oneId);
+		if(batch.size() == 100 || idx == total)
+		{
+			resp = Map();
+			try
+			{
+				resp = invokeurl
+				[
+					url :"https://www.zohoapis.com/crm/v8/" + moduleName + "?ids=" + batch.toString(",") + "&fields=" + fieldList
+					type :GET
+					connection:"zoho_oauth_connection"
+				];
+			}
+			catch (eGet)
+			{
+				resp = Map();
+			}
+			// start as a List so Deluge knows the loop below iterates a list
+			dataList = List();
+			try
+			{
+				dataRaw = resp.get("data");
+				if(dataRaw != null)
+				{
+					dataList = dataRaw.toList();
+				}
+			}
+			catch (eData)
+			{
+				dataList = List();
+			}
+			for each  rec in dataList
+			{
+				out.add(rec);
+			}
+			batch = List();
+		}
+	}
+	return out;
+}
+
+
+// ----- FUNCTION: opsLkId  (helper -- no Custom API) ---------------------------
+// Lookup id from a record: handles {id,name}, {id} and a plain id string.
+string opsLkId(map rec, string fieldName)
+{
+	// Works on the text form so no variable is ever typed as null/unknown.
+	out = "";
+	try
+	{
+		rawText = ifnull(rec.get(fieldName),"") + "";
+		if(rawText.startsWith("{"))
+		{
+			out = ifnull(rawText.toMap().get("id"),"") + "";
+		}
+		else
+		{
+			out = rawText;
+		}
+	}
+	catch (eLk)
+	{
+		out = "";
+	}
+	return out;
+}
+
+
+// ----- FUNCTION: opsIndexById  (helper -- no Custom API) ----------------------
+map opsIndexById(list recs)
+{
+	idx = Map();
+	for each  r in recs
+	{
+		idx.put(r.get("id") + "",r);
+	}
+	return idx;
+}
+
+
+// ----- FUNCTION: opsReportUpcomingAutopsies  -> Custom API TM_Upcoming_Autopsies (GET) ----
+// Report 4. Autopsies today through the next two days. One row per deceased.
+// Also used by Trip Manager (same function body, TM's own Custom API).
+map opsReportUpcomingAutopsies()
+{
+	result = Map();
+	fromIso = zoho.currentdate.toString("yyyy-MM-dd") + "T00:00:00-05:00";
+	toIso = zoho.currentdate.addDay(2).toString("yyyy-MM-dd") + "T23:59:59-05:00";
+	hits = thisapp.opsCoql("select id from Trips where Trip_Type in ('Autopsy Initial','Multi Deceased Autopsy Trip','Autopsy Reschedule') and Scheduled_Date between '" + fromIso + "' and '" + toIso + "' limit 2000");
+	tripIds = List();
+	for each  h in hits
+	{
+		tripIds.add(h.get("id") + "");
+	}
+	tripFields = "Name,Trip_Type,Scheduled_Date,Autopsy_Location,Deal,Parent_Trip,Trip_Status";
+	trips = thisapp.opsGetByIds("Trips",tripIds,tripFields);
+	parentIds = List();
+	for each  t in trips
+	{
+		if(ifnull(t.get("Trip_Type"),"") == "Multi Deceased Autopsy Trip")
+		{
+			parentIds.add(t.get("id") + "");
+		}
+	}
+	// children of in-window parents (their own date may be blank)
+	childHits = thisapp.opsCoqlIn("select id from Trips","Parent_Trip",parentIds,"");
+	childIds = List();
+	for each  h in childHits
+	{
+		cId = h.get("id") + "";
+		if(!tripIds.contains(cId))
+		{
+			childIds.add(cId);
+		}
+	}
+	children = thisapp.opsGetByIds("Trips",childIds,tripFields);
+	allTrips = List();
+	allTrips.addAll(trips);
+	allTrips.addAll(children);
+	tripIdx = thisapp.opsIndexById(allTrips);
+	// deals with an autopsy date in the window but no trip yet
+	dealHits = thisapp.opsCoql("select id from Deals where Autopsy_Date_Time between '" + fromIso + "' and '" + toIso + "' limit 2000");
+	dealIds = List();
+	for each  t in allTrips
+	{
+		dealIds.add(thisapp.opsLkId(t,"Deal"));
+	}
+	for each  h in dealHits
+	{
+		dealIds.add(h.get("id") + "");
+	}
+	deals = thisapp.opsGetByIds("Deals",dealIds,"Name_of_Deceased,Autopsy_Date_Time,Autopsy_Locations,Pipeline");
+	dealIdx = thisapp.opsIndexById(deals);
+	opsRecs = thisapp.opsCoqlIn("select id, Related_Deal, Refrigerator, Row, Drawer, Room, Location, Modified_Time from Operations","Related_Deal",dealIds,"");
+	opsByDeal = Map();
+	for each  o in opsRecs
+	{
+		dId = thisapp.opsLkId(o,"Related_Deal");
+		lst = List();
+		if(opsByDeal.containKey(dId))
+		{
+			lst = opsByDeal.get(dId);
+		}
+		lst.add(o);
+		opsByDeal.put(dId,lst);
+	}
+	rows = List();
+	seenDeals = List();
+	for each  t in allTrips
+	{
+		dId = thisapp.opsLkId(t,"Deal");
+		if(dId != "" && !seenDeals.contains(dId))
+		{
+			seenDeals.add(dId);
+			row = Map();
+			row.put("trip",t);
+			parent = Map();
+			pId = ifnull(t.get("Parent_Trip"),"") + "";
+			if(pId != "" && tripIdx.containKey(pId))
+			{
+				parent = tripIdx.get(pId);
+			}
+			row.put("parent",parent);
+			deal = Map();
+			if(dealIdx.containKey(dId))
+			{
+				deal = dealIdx.get(dId);
+			}
+			row.put("deal",deal);
+			opsList = List();
+			if(opsByDeal.containKey(dId))
+			{
+				opsList = opsByDeal.get(dId);
+			}
+			row.put("opsList",opsList);
+			rows.add(row);
+		}
+	}
+	for each  h in dealHits
+	{
+		dId = h.get("id") + "";
+		if(!seenDeals.contains(dId))
+		{
+			seenDeals.add(dId);
+			row = Map();
+			row.put("trip",Map());
+			row.put("parent",Map());
+			deal = Map();
+			if(dealIdx.containKey(dId))
+			{
+				deal = dealIdx.get(dId);
+			}
+			row.put("deal",deal);
+			opsList = List();
+			if(opsByDeal.containKey(dId))
+			{
+				opsList = opsByDeal.get(dId);
+			}
+			row.put("opsList",opsList);
+			rows.add(row);
+		}
+	}
+	result.put("status","success");
+	result.put("from",fromIso.subString(0,10));
+	result.put("to",toIso.subString(0,10));
+	result.put("rows",rows);
+	return result;
+}
+
+
