@@ -1,0 +1,767 @@
+string standalone.setupPreNeedPaymentPlan(Int crmid)
+{
+// ZP-TBD-81: the Pre-Need payment plan is driven by Deals.Payment_Type.
+//   Lump Sum     -> ONE invoice for the full Contract_Value, due in 7 days.
+//   Installments -> first invoice = 50% of Contract_Value (the deposit), due in 7 days;
+//                   the other 50% = 2 x 25% installments, due at the END of (signing month + 2)
+//                   and the END of (signing month + 4).
+// Must_End_By_Date = Contract_Signing_Date + 6 months (maximum contract period), set for both types.
+// Contract_Signing_Date defaults to today when blank.
+// Called by automation.handleWorkflowTriggerAndActionByTimelineProcess when Payment_Type or
+// Contract_Signing_Date is edited, and by the Calculate Installment Amount button (manual re-run).
+// The schedule logic replaces what button.calculateInstallmentAmount used to do (ZP-TBD-75).
+//
+// ZP-TBD-95 (PN-03): when the plan invoices already exist (Installments), a re-run makes them follow the
+// current Contract_Value. Rule agreed with Andrea: money already paid is locked, everything not yet paid
+// re-spreads.
+//   Nothing paid yet       -> rebuilt as above (50 / 25 / 25); existing invoices are updated in place.
+//   Something paid         -> every invoice with a payment against it is left alone. The rest
+//                             (Contract_Value - the FULL amount of every invoice with a payment) is split
+//                             evenly over the unpaid invoices, which keep their due dates.
+//   Paid > Contract_Value  -> nothing is changed; left for a person (refund conversation).
+// Books follows FIRST (see the Books block below): nothing paid -> the master retainer (ZP-TBD-74) is re-sized;
+// a payment exists -> Books won't change that retainer (code 9533), so the increase goes on one "Pre-Need top-up"
+// retainer. A decrease after a payment needs a credit note -> stop. If Books refuses anything, nothing in CRM is
+// changed, so CRM and Books never disagree.
+organizationID = "872327358";
+getRecordInfo = invokeurl
+[
+	url :"https://www.zohoapis.com/crm/v8/Deals/" + crmid
+	type :GET
+	connection:"zohooauth"
+];
+recordInfo = getRecordInfo.get("data").get(0);
+if(recordInfo.get("Pipeline") != "Pre Need")
+{
+	return "The payment plan only applies to Pre Need Deals.";
+}
+paymentType = ifnull(recordInfo.get("Payment_Type"),"");
+if(paymentType != "Lump Sum" && paymentType != "Installments")
+{
+	return "Select a Payment Type (Lump Sum or Installments) first.";
+}
+totalAmount = 0.0;
+try
+{
+	totalAmount = ifnull(recordInfo.get("Contract_Value"),0).toString().toDecimal().round(2);
+}
+catch (eAmt)
+{
+	totalAmount = 0.0;
+}
+if(totalAmount <= 0)
+{
+	return "Contract Value is blank. Add the products to the Deal before choosing the Payment Type.";
+}
+// Never mix the two plans on one Deal: switching type after invoices exist would double-bill.
+// Lump Sum invoice = Invoice_For 'Other' or blank (same test createInvoiceIfPaymentTypeIsPaymentInFull uses);
+// plan invoices = Invoice_For 'Deposit' / 'Installment 1-3'. Void / Cancelled invoices are ignored.
+hasLumpSumInvoice = false;
+hasPlanInvoice = false;
+// ZP-TBD-95: remember the active plan invoice for each slot (Invoice_For -> CRM invoice id)
+planInvoiceIds = Map();
+existingInvoices = standalone.COQLQuery("select Subject, Invoice_For, Status from Invoices where Deal_Name__s = '" + crmid + "' limit 50");
+if(existingInvoices.size() > 0)
+{
+	for each  existingInvoice in existingInvoices.toList()
+	{
+		invoiceStatus = ifnull(existingInvoice.get("Status"),"");
+		if(invoiceStatus == "Void" || invoiceStatus == "Cancelled")
+		{
+			continue;
+		}
+		invoiceFor = ifnull(existingInvoice.get("Invoice_For"),"Other");
+		if(invoiceFor == "Other")
+		{
+			hasLumpSumInvoice = true;
+		}
+		else if(invoiceFor == "Deposit" || invoiceFor.startsWith("Installment"))
+		{
+			hasPlanInvoice = true;
+			if(!planInvoiceIds.containKey(invoiceFor))
+			{
+				planInvoiceIds.put(invoiceFor,existingInvoice.get("id"));
+			}
+		}
+	}
+}
+if(paymentType == "Lump Sum" && hasPlanInvoice)
+{
+	return "This Deal already has Deposit/Installment invoices. Void them before switching to Lump Sum.";
+}
+if(paymentType == "Installments" && hasLumpSumInvoice)
+{
+	return "This Deal already has a Lump Sum invoice. Void it before switching to Installments.";
+}
+// --- Dates ---
+// getRecordInfo returns dates as "yyyy-MM-dd" strings -- convert before any date math/comparison.
+signingDateRaw = recordInfo.get("Contract_Signing_Date");
+signingDateWasBlank = false;
+if(isNull(signingDateRaw) || signingDateRaw.toString() == "")
+{
+	signingDate = zoho.currentdate;
+	signingDateWasBlank = true;
+}
+else
+{
+	signingDate = signingDateRaw.toString().toDate();
+}
+// First day of each of the 7 months after the signing month (index 0 = signing month + 1).
+// Built by hand with a month/year rollover -- same pattern ZP-TBD-75 confirmed live.
+monthStarts = List();
+cursorYear = signingDate.getYear();
+cursorMonth = signingDate.getMonth();
+for each  offset in {1,2,3,4,5,6,7}
+{
+	cursorMonth = cursorMonth + 1;
+	if(cursorMonth > 12)
+	{
+		cursorMonth = 1;
+		cursorYear = cursorYear + 1;
+	}
+	monthStr = cursorMonth.toString();
+	if(cursorMonth < 10)
+	{
+		monthStr = "0" + monthStr;
+	}
+	monthStarts.add((cursorYear + "-" + monthStr + "-01").toDate());
+}
+// Must End By = same day of the month, 6 months later; clamped to that month's last day
+// (e.g. signed 31 Aug -> 28/29 Feb).
+signingDay = signingDate.getDay();
+lastDayOfMonth6 = monthStarts.get(6).subDay(1);
+if(signingDay > lastDayOfMonth6.getDay())
+{
+	mustEndBy = lastDayOfMonth6;
+}
+else
+{
+	dayStr = signingDay.toString();
+	if(signingDay < 10)
+	{
+		dayStr = "0" + dayStr;
+	}
+	mustEndBy = (monthStarts.get(5).toString("yyyy-MM") + "-" + dayStr).toDate();
+}
+dealMap = Map();
+if(signingDateWasBlank)
+{
+	dealMap.put("Contract_Signing_Date",signingDate.toString("yyyy-MM-dd"));
+}
+dealMap.put("Must_End_By_Date",mustEndBy.toString("yyyy-MM-dd"));
+// Always clear the 3 installment slots first. Use null, not "" -- the dispatcher and
+// createInstallmentInvoice treat a slot as unused only when it reads back null (ZP-TBD-75).
+dealMap.put("Installment_1_Amount",null);
+dealMap.put("Installment_1_Due_Date",null);
+dealMap.put("Installment_2_Amount",null);
+dealMap.put("Installment_2_Due_Date",null);
+dealMap.put("Installment_3_Amount",null);
+dealMap.put("Installment_3_Due_Date",null);
+if(paymentType == "Lump Sum")
+{
+	// No deposit / balance date on a Lump Sum contract (the contract template reads these fields).
+	dealMap.put("Pre_Need_Deposit_Amount",null);
+	dealMap.put("Pre_Need_Balance_Due_Date",null);
+	// In-function updateRecord does NOT fire workflows -- intended here: this function calls the
+	// invoice builders itself below, so no dispatcher block should run a second time.
+	zoho.crm.updateRecord("Deals",crmid,dealMap);
+	arguments = Map();
+	arguments.put("crmid",crmid);
+	lumpSumResp = invokeurl
+	[
+		url :"https://www.zohoapis.com/crm/v7/functions/createinvoiceifpaymenttypeispaymentinfull/actions/execute?auth_type=oauth"
+		type :GET
+		parameters:arguments
+		connection:"zohooauth"
+	];
+	info lumpSumResp;
+	return "Lump Sum: one invoice for " + totalAmount + ", due " + zoho.currentdate.addDay(7).toString("dd-MMM-yyyy") + ". Must End By " + mustEndBy.toString("dd-MMM-yyyy") + ".";
+}
+// --- Installments ---
+// ZP-TBD-95: read the plan invoices that already exist. A payment shows on the invoice itself -- an
+// Invoice_Payers row (what createPaymentsOnBooksForRetainerInvoice posts to Books) or a paid amount.
+// Status is NOT used: Books mirrors the master retainer's status onto ONE CRM invoice only (the one in
+// cf_crm_invoice_id), not the one that was paid. The subform only comes back on a REST GET.
+planSlots = {"Deposit","Installment 1","Installment 2","Installment 3"};
+slotAmountField = {"Deposit":"Pre_Need_Deposit_Amount","Installment 1":"Installment_1_Amount","Installment 2":"Installment_2_Amount","Installment 3":"Installment_3_Amount"};
+slotDueDateField = {"Installment 1":"Installment_1_Due_Date","Installment 2":"Installment_2_Due_Date","Installment 3":"Installment_3_Due_Date"};
+lockedSlots = list();
+unpaidSlots = list();
+slotAmount = Map();
+slotDueDate = Map();
+lockedTotal = 0.0;
+crmPaidTotal = 0.0;
+// distinct Books retainer ids of the plan invoices (master + top-up), and each slot's own id
+planBooksIds = list();
+slotBooksIds = Map();
+for each  slotName in planSlots
+{
+	if(!planInvoiceIds.containKey(slotName))
+	{
+		continue;
+	}
+	slotDetails = invokeurl
+	[
+		url :"https://www.zohoapis.com/crm/v8/Invoices/" + planInvoiceIds.get(slotName)
+		type :GET
+		connection:"zohooauth"
+	];
+	slotRecord = slotDetails.get("data").get(0);
+	slotBooksId = ifnull(slotRecord.get("Books_Invoice_ID"),"").toString();
+	slotBooksIds.put(slotName,slotBooksId);
+	if(slotBooksId != "" && !planBooksIds.contains(slotBooksId))
+	{
+		planBooksIds.add(slotBooksId);
+	}
+	slotPaid = ifnull(slotRecord.get("Total_Actual_Paid_Amount"),0).toString().toDecimal();
+	crmPaidTotal = crmPaidTotal + slotPaid;
+	slotHasPayment = false;
+	if(slotPaid > 0 || ifnull(slotRecord.get("Payment_Made"),0).toString().toDecimal() > 0)
+	{
+		slotHasPayment = true;
+	}
+	slotPayers = ifnull(slotRecord.get("Invoice_Payers"),list());
+	for each  slotPayer in slotPayers
+	{
+		if(!isNull(slotPayer.get("Books_Payment_ID")) || ifnull(slotPayer.get("Amount_Paid"),0).toString().toDecimal() > 0)
+		{
+			slotHasPayment = true;
+		}
+	}
+	slotDueDate.put(slotName,slotRecord.get("Due_Date"));
+	if(slotHasPayment)
+	{
+		// NOT Grand_Total: once a payment syncs back, CRM shows Grand_Total as the balance still due
+		// (Sub_Total - Payment_Made, e.g. -0.005 on a fully paid deposit -- seen live in test T3, 2026-10-02).
+		// The invoice's own amount is Sub_Total (line totals incl. tax) + Adjustment.
+		slotTotal = (ifnull(slotRecord.get("Sub_Total"),0).toString().toDecimal() + ifnull(slotRecord.get("Adjustment"),0).toString().toDecimal()).round(2);
+		lockedSlots.add(slotName);
+		lockedTotal = lockedTotal + slotTotal;
+		slotAmount.put(slotName,slotTotal);
+	}
+	else
+	{
+		unpaidSlots.add(slotName);
+	}
+}
+// --- Re-spread amounts (only when something is already paid) ---
+if(lockedSlots.size() > 0)
+{
+	remainingAmount = (totalAmount - lockedTotal).round(2);
+	if(remainingAmount < 0)
+	{
+		return "Nothing was changed. The invoices that already have payments total " + lockedTotal + ", which is more than the new Contract Value of " + totalAmount + ". This needs a person (refund conversation).";
+	}
+	if(unpaidSlots.size() == 0)
+	{
+		return "Nothing was changed. Every invoice on this Deal already has a payment against it, so there is no unpaid invoice to carry the difference of " + remainingAmount + ". This needs a person.";
+	}
+	if(remainingAmount < 1)
+	{
+		return "Nothing was changed. The invoices that already have payments cover the whole new Contract Value of " + totalAmount + ", so the unpaid invoices would be 0. This needs a person.";
+	}
+	// split evenly; the last unpaid invoice takes the rounding cents so the plan adds up to Contract_Value
+	evenShare = (remainingAmount / unpaidSlots.size()).round(2);
+	assignedAmount = 0.0;
+	unpaidIndex = 0;
+	for each  slotName in unpaidSlots
+	{
+		unpaidIndex = unpaidIndex + 1;
+		if(unpaidIndex < unpaidSlots.size())
+		{
+			slotAmount.put(slotName,evenShare);
+			assignedAmount = assignedAmount + evenShare;
+		}
+		else
+		{
+			slotAmount.put(slotName,(remainingAmount - assignedAmount).round(2));
+		}
+	}
+}
+// --- Books retainers (ZP-TBD-95 change D + top-up) ---
+// The master retainer (ZP-TBD-74) is sized to the Deal's full products when it is created, and
+// createRetainerInvoiceInBooks never touches it again. Without this block Books keeps the old contract value:
+// payments are capped at the old balance, and checkPreNeedPlanMatchesContract (ZP-TBD-88) keeps blocking the
+// contract send. Books refuses to change a retainer's amount once a payment is recorded on it (code 9533, test
+// T3, 2026-10-02), so:
+//   no payment on any plan retainer -> the master is re-sized to the Deal's products (an unpaid top-up left from
+//                                      an earlier change is voided);
+//   a payment exists                -> the master stays; the increase goes on ONE top-up retainer (created, or
+//                                      re-sized while it has no payment). A product whose amount went DOWN can't
+//                                      be done with a retainer (needs a credit note) -> stop, nothing changed.
+// The top-up is marked with reference_number "Pre-Need top-up ..." and is linked through the LAST unpaid plan
+// invoice's Books_Invoice_ID, so checkPreNeedPlanMatchesContract / getPreNeedContractType (both add up the
+// distinct Books ids of the plan invoices) see master + top-up.
+// All Books changes happen BEFORE any CRM write: if Books refuses, nothing in CRM is changed.
+// Line items are built the same way createRetainerInvoiceInBooks builds the master.
+TOPUP_REFERENCE = "Pre-Need top-up";
+booksNote = "";
+masterBooksId = "";
+masterData = Map();
+topupBooksId = "";
+topupData = Map();
+for each  planBooksId in planBooksIds
+{
+	retainerResp = zoho.books.getRecordsByID("retainerinvoices",organizationID,planBooksId,"zohooauth");
+	retainerData = retainerResp.get("retainerinvoice");
+	if(isNull(retainerData) || ifnull(retainerData.get("status"),"") == "void")
+	{
+		continue;
+	}
+	if(ifnull(retainerData.get("reference_number"),"").startsWith(TOPUP_REFERENCE))
+	{
+		if(topupBooksId == "")
+		{
+			topupBooksId = planBooksId;
+			topupData = retainerData;
+		}
+	}
+	else if(masterBooksId == "")
+	{
+		masterBooksId = planBooksId;
+		masterData = retainerData;
+	}
+}
+if(masterBooksId != "")
+{
+	masterNumber = ifnull(masterData.get("retainerinvoice_number"),masterBooksId);
+	masterTotal = ifnull(masterData.get("total"),0).toString().toDecimal();
+	masterPaid = ifnull(masterData.get("payment_made"),0).toString().toDecimal();
+	topupTotal = 0.0;
+	topupPaid = 0.0;
+	topupNumber = "";
+	if(topupBooksId != "")
+	{
+		topupTotal = ifnull(topupData.get("total"),0).toString().toDecimal();
+		topupPaid = ifnull(topupData.get("payment_made"),0).toString().toDecimal();
+		topupNumber = ifnull(topupData.get("retainerinvoice_number"),topupBooksId);
+	}
+	// A payment entered straight into Books is not tied to any CRM invoice, so we can't tell which invoice it
+	// paid -> stop and leave it for a person.
+	booksPaid = masterPaid + topupPaid;
+	if(booksPaid - crmPaidTotal > 1)
+	{
+		unattributedNote = Map();
+		unattributedNote.put("Parent_Id",crmid);
+		unattributedNote.put("se_module","Deals");
+		unattributedNote.put("Note_Title","Payment plan not rebuilt");
+		unattributedNote.put("Note_Content","The Books retainer(s) for this Deal show " + booksPaid + " paid, but the CRM invoices only account for " + crmPaidTotal + ". A payment was probably entered directly in Books, so we can't tell which invoice it paid. Nothing was changed. Record the payment against the right CRM invoice, then press Calculate Installment Amount again.");
+		zoho.crm.createRecord("Notes",unattributedNote);
+		return "Nothing was changed. Books shows " + booksPaid + " paid but the CRM invoices only account for " + crmPaidTotal + " - see the Note on the Deal.";
+	}
+	booksPlanDifference = totalAmount - masterTotal - topupTotal;
+	if(booksPlanDifference < 0)
+	{
+		booksPlanDifference = booksPlanDifference * -1;
+	}
+	// Books rounds retainer totals to 0.125 -> same 1.00 tolerance as ZP-TBD-88
+	if(booksPlanDifference > 1)
+	{
+		// The Deal's products as Books lines (net of tax), added up per product name
+		chartOfAccounts = invokeurl
+		[
+			url :"https://www.zohoapis.com/books/v3/chartofaccounts?organization_id=" + organizationID
+			type :GET
+			connection:"zohooauth"
+		];
+		listChartOfAccounts = chartOfAccounts.get("chartofaccounts");
+		taxesResp = invokeurl
+		[
+			url :"https://www.zohoapis.com/books/v3/settings/taxes?organization_id=" + organizationID
+			type :GET
+			connection:"zohooauth"
+		];
+		listTaxes = taxesResp.get("taxes");
+		usdRateResp = invokeurl
+		[
+			url :"https://www.zohoapis.com/books/v3/settings/currencies/5830143000000000097/exchangerates?organization_id=" + organizationID
+			type :GET
+			connection:"zohooauth"
+		];
+		usdRate = usdRateResp.get("exchange_rates").get(0).get("rate");
+		masterProductRows = ifnull(recordInfo.get("Product_Selection"),list());
+		newLines = list();
+		newNetTotal = 0.0;
+		newNetByName = Map();
+		lineTemplateByName = Map();
+		for each  dealRow in masterProductRows
+		{
+			rowQuantity = dealRow.get("Quantity");
+			if(isNull(rowQuantity) || rowQuantity == 0)
+			{
+				rowQuantity = 1;
+			}
+			rowTotal = rowQuantity * ifnull(dealRow.get("Unit_Price"),0) - ifnull(dealRow.get("Discount"),0);
+			newNetTotal = newNetTotal + rowTotal;
+			crmProduct = zoho.crm.getRecordById("Products",dealRow.get("Child_Product").get("id"));
+			productName = dealRow.get("Child_Product").get("name");
+			masterLine = Map();
+			for each  chartOfAccount in listChartOfAccounts
+			{
+				if(!isNull(crmProduct.get("Sales_Account")) && chartOfAccount.get("account_name").toLowerCase() == crmProduct.get("Sales_Account").toLowerCase())
+				{
+					masterLine.put("account_id",chartOfAccount.get("account_id"));
+					break;
+				}
+			}
+			productTaxList = crmProduct.get("Tax");
+			if(productTaxList != null && productTaxList.size() > 0)
+			{
+				productTaxName = productTaxList.get(0).toList(" - ").get(0).trim();
+				for each  booksTax in listTaxes
+				{
+					if(booksTax.get("tax_name").toLowerCase() == productTaxName.toLowerCase())
+					{
+						masterLine.put("tax_id",booksTax.get("tax_id"));
+						break;
+					}
+				}
+			}
+			masterLine.put("description",productName);
+			masterLine.put("rate",rowTotal);
+			newLines.add(masterLine);
+			nameKey = productName.trim().toLowerCase();
+			newNetByName.put(nameKey,ifnull(newNetByName.get(nameKey),0) + rowTotal);
+			if(!lineTemplateByName.containKey(nameKey))
+			{
+				lineTemplateByName.put(nameKey,masterLine);
+			}
+		}
+		if(masterPaid <= 0 && topupPaid <= 0)
+		{
+			// ---- Nothing paid in Books: re-size the master to the Deal's products ----
+			if(masterTotal - totalAmount > 1 || totalAmount - masterTotal > 1)
+			{
+				masterCustomFields = list();
+				masterCustomFields.add({"api_name":"cf_amount_due_in_jmd","value":newNetTotal});
+				masterCustomFields.add({"api_name":"cf_amount_due_in_usd","value":(newNetTotal / usdRate).round(2)});
+				masterCustomFields.add({"api_name":"cf_edit_status","value":"Updated"});
+				masterCustomFields.add({"api_name":"cf_edit_timestamp","value":zoho.currenttime.toString("yyyy-MM-dd HH:mm")});
+				masterUpdateMap = Map();
+				masterUpdateMap.put("line_items",newLines);
+				masterUpdateMap.put("custom_fields",masterCustomFields);
+				masterUpdateMap.put("reason","Pre-Need contract value changed - payment plan rebuilt from CRM");
+				masterUpdateResp = zoho.books.updateRecord("retainerinvoices",organizationID,masterBooksId,masterUpdateMap,"zohooauth");
+				info masterUpdateResp;
+				masterUpdateCode = "";
+				if(!isNull(masterUpdateResp) && !isNull(masterUpdateResp.get("code")))
+				{
+					masterUpdateCode = masterUpdateResp.get("code").toString();
+				}
+				if(masterUpdateCode != "0")
+				{
+					refusedNote = Map();
+					refusedNote.put("Parent_Id",crmid);
+					refusedNote.put("se_module","Deals");
+					refusedNote.put("Note_Title","Payment plan not rebuilt - Books refused");
+					refusedNote.put("Note_Content","The Contract Value is now " + totalAmount + " but Books retainer " + masterNumber + " is still " + masterTotal + ". Books refused the update: " + ifnull(masterUpdateResp,"no response").toString() + ". Nothing was changed in CRM.");
+					zoho.crm.createRecord("Notes",refusedNote);
+					return "Nothing was changed. Books refused to update retainer " + masterNumber + " to the new Contract Value - see the Note on the Deal.";
+				}
+				booksNote = " Books retainer " + masterNumber + " updated from " + masterTotal + " to the new Contract Value.";
+			}
+			// An unpaid top-up left from an earlier change is now covered by the master -> void it and point its
+			// CRM invoice back to the master.
+			if(topupBooksId != "")
+			{
+				voidResp = invokeurl
+				[
+					url :"https://www.zohoapis.com/books/v3/retainerinvoices/" + topupBooksId + "/status/void?organization_id=" + organizationID
+					type :POST
+					connection:"zohooauth"
+				];
+				info voidResp;
+				for each  slotName in planSlots
+				{
+					if(ifnull(slotBooksIds.get(slotName),"") == topupBooksId)
+					{
+						zoho.crm.updateRecord("Invoices",planInvoiceIds.get(slotName).toLong(),{"Books_Invoice_ID":masterBooksId,"Books_Invoice_Number":masterNumber});
+					}
+				}
+				booksNote = booksNote + " Top-up retainer " + topupNumber + " voided (now covered by " + masterNumber + ").";
+			}
+		}
+		else
+		{
+			// ---- A payment exists: the master can't change. Top-up = what each product went UP by vs the master ----
+			masterNetByName = Map();
+			masterLineItems = ifnull(masterData.get("line_items"),list());
+			for each  masterLineItem in masterLineItems
+			{
+				masterLineName = ifnull(masterLineItem.get("description"),"").trim().toLowerCase();
+				masterNetByName.put(masterLineName,ifnull(masterNetByName.get(masterLineName),0) + ifnull(masterLineItem.get("item_total"),0).toString().toDecimal());
+			}
+			droppedProducts = "";
+			topupLines = list();
+			topupNetTotal = 0.0;
+			newNames = newNetByName.keys();
+			for each  nameKey in newNames
+			{
+				productDelta = (newNetByName.get(nameKey) - ifnull(masterNetByName.get(nameKey),0)).round(2);
+				if(productDelta < -0.01)
+				{
+					droppedProducts = droppedProducts + " " + nameKey + ";";
+				}
+				else if(productDelta > 0.01)
+				{
+					topupLine = Map();
+					templateLine = lineTemplateByName.get(nameKey);
+					if(templateLine.containKey("account_id"))
+					{
+						topupLine.put("account_id",templateLine.get("account_id"));
+					}
+					if(templateLine.containKey("tax_id"))
+					{
+						topupLine.put("tax_id",templateLine.get("tax_id"));
+					}
+					topupLine.put("description",templateLine.get("description"));
+					topupLine.put("rate",productDelta);
+					topupLines.add(topupLine);
+					topupNetTotal = topupNetTotal + productDelta;
+				}
+			}
+			masterNames = masterNetByName.keys();
+			for each  nameKey in masterNames
+			{
+				if(!newNetByName.containKey(nameKey) && masterNetByName.get(nameKey) > 0.01)
+				{
+					droppedProducts = droppedProducts + " " + nameKey + " (removed);";
+				}
+			}
+			if(droppedProducts != "")
+			{
+				droppedNote = Map();
+				droppedNote.put("Parent_Id",crmid);
+				droppedNote.put("se_module","Deals");
+				droppedNote.put("Note_Title","Payment plan not rebuilt - needs Accounts");
+				droppedNote.put("Note_Content","A payment has already been recorded on Books retainer " + masterNumber + ", so its amount can't change. These products went down or were removed:" + droppedProducts + " A reduction needs a credit note from Accounts. Nothing was changed.");
+				zoho.crm.createRecord("Notes",droppedNote);
+				return "Nothing was changed. A payment has been taken and some products went down or were removed - Accounts needs to handle it (credit note). See the Note on the Deal.";
+			}
+			topupCustomFields = list();
+			topupCustomFields.add({"api_name":"cf_amount_due_in_jmd","value":topupNetTotal});
+			topupCustomFields.add({"api_name":"cf_amount_due_in_usd","value":(topupNetTotal / usdRate).round(2)});
+			topupCustomFields.add({"api_name":"cf_edit_status","value":"Updated"});
+			topupCustomFields.add({"api_name":"cf_edit_timestamp","value":zoho.currenttime.toString("yyyy-MM-dd HH:mm")});
+			if(topupBooksId != "")
+			{
+				if(topupPaid > 0)
+				{
+					topupPaidNote = Map();
+					topupPaidNote.put("Parent_Id",crmid);
+					topupPaidNote.put("se_module","Deals");
+					topupPaidNote.put("Note_Title","Payment plan not rebuilt - needs Accounts");
+					topupPaidNote.put("Note_Content","Books retainers " + masterNumber + " and top-up " + topupNumber + " both have payments, so neither amount can change. The Contract Value is now " + totalAmount + " but Books holds " + (masterTotal + topupTotal) + ". Nothing was changed.");
+					zoho.crm.createRecord("Notes",topupPaidNote);
+					return "Nothing was changed. The master and the top-up retainer both have payments, so Books can't follow this change - see the Note on the Deal.";
+				}
+				if(topupLines.size() == 0)
+				{
+					// back down to the master's value -> the top-up isn't needed any more
+					voidResp = invokeurl
+					[
+						url :"https://www.zohoapis.com/books/v3/retainerinvoices/" + topupBooksId + "/status/void?organization_id=" + organizationID
+						type :POST
+						connection:"zohooauth"
+					];
+					info voidResp;
+					for each  slotName in planSlots
+					{
+						if(ifnull(slotBooksIds.get(slotName),"") == topupBooksId)
+						{
+							zoho.crm.updateRecord("Invoices",planInvoiceIds.get(slotName).toLong(),{"Books_Invoice_ID":masterBooksId,"Books_Invoice_Number":masterNumber});
+						}
+					}
+					booksNote = " Top-up retainer " + topupNumber + " voided (the contract is back to " + masterNumber + "'s value).";
+				}
+				else
+				{
+					topupUpdateMap = Map();
+					topupUpdateMap.put("line_items",topupLines);
+					topupUpdateMap.put("custom_fields",topupCustomFields);
+					topupUpdateMap.put("reason","Pre-Need contract value changed - top-up rebuilt from CRM");
+					topupUpdateResp = zoho.books.updateRecord("retainerinvoices",organizationID,topupBooksId,topupUpdateMap,"zohooauth");
+					info topupUpdateResp;
+					topupUpdateCode = "";
+					if(!isNull(topupUpdateResp) && !isNull(topupUpdateResp.get("code")))
+					{
+						topupUpdateCode = topupUpdateResp.get("code").toString();
+					}
+					if(topupUpdateCode != "0")
+					{
+						refusedNote = Map();
+						refusedNote.put("Parent_Id",crmid);
+						refusedNote.put("se_module","Deals");
+						refusedNote.put("Note_Title","Payment plan not rebuilt - Books refused");
+						refusedNote.put("Note_Content","Books refused to update top-up retainer " + topupNumber + ": " + ifnull(topupUpdateResp,"no response").toString() + ". Nothing was changed in CRM.");
+						zoho.crm.createRecord("Notes",refusedNote);
+						return "Nothing was changed. Books refused to update top-up retainer " + topupNumber + " - see the Note on the Deal.";
+					}
+					booksNote = " Top-up retainer " + topupNumber + " updated (master " + masterNumber + " unchanged).";
+				}
+			}
+			else if(topupLines.size() > 0)
+			{
+				// New top-up, linked through the LAST unpaid plan invoice (unpaidSlots is in Deposit -> Installment
+				// order and is never empty here -- the CRM checks above return first).
+				pointerSlot = unpaidSlots.get(unpaidSlots.size() - 1);
+				pointerInvoiceId = planInvoiceIds.get(pointerSlot);
+				topupCustomFields.add({"api_name":"cf_crm_invoice_id","value":pointerInvoiceId});
+				topupCustomFields.add({"api_name":"cf_related_crm_deal_id","value":crmid.toString()});
+				masterHash = ifnull(masterData.get("custom_field_hash"),Map());
+				if(masterHash.containKey("cf_crm_payer_id"))
+				{
+					topupCustomFields.add({"api_name":"cf_crm_payer_id","value":masterHash.get("cf_crm_payer_id")});
+				}
+				topupMap = Map();
+				topupMap.put("customer_id",masterData.get("customer_id"));
+				topupMap.put("date",zoho.currentdate.toString("yyyy-MM-dd"));
+				topupMap.put("reference_number",TOPUP_REFERENCE + " of " + masterNumber);
+				topupMap.put("line_items",topupLines);
+				topupMap.put("contact_persons",ifnull(masterData.get("contact_persons"),list()));
+				topupMap.put("custom_fields",topupCustomFields);
+				topupMap.put("zcrm_potential_id",crmid.toString());
+				topupMap.put("notes","Increase of the Pre-Need contract from " + masterTotal + " to " + totalAmount + ". The original contract is retainer " + masterNumber + ".");
+				topupCreateResp = zoho.books.createRecord("retainerinvoices",organizationID,topupMap,"zohooauth");
+				info topupCreateResp;
+				newTopupId = "";
+				newTopupNumber = "";
+				try
+				{
+					newTopupId = topupCreateResp.get("retainerinvoice").get("retainerinvoice_id");
+					newTopupNumber = topupCreateResp.get("retainerinvoice").get("retainerinvoice_number");
+				}
+				catch (eTopup)
+				{
+					newTopupId = "";
+				}
+				if(isNull(newTopupId) || newTopupId == "")
+				{
+					refusedNote = Map();
+					refusedNote.put("Parent_Id",crmid);
+					refusedNote.put("se_module","Deals");
+					refusedNote.put("Note_Title","Payment plan not rebuilt - Books refused");
+					refusedNote.put("Note_Content","Books refused to create the top-up retainer for the increase from " + masterTotal + " to " + totalAmount + ": " + ifnull(topupCreateResp,"no response").toString() + ". Nothing was changed in CRM.");
+					zoho.crm.createRecord("Notes",refusedNote);
+					return "Nothing was changed. Books refused to create the top-up retainer - see the Note on the Deal.";
+				}
+				// one edit straight after create, so the retainer-edit workflows (Xero Receive Money,
+				// syncretainerinvoicetoxero) run for the top-up the same way they do for the master
+				topupTouchMap = Map();
+				topupTouchMap.put("custom_fields",{{"api_name":"cf_edit_timestamp","value":zoho.currenttime.toString("yyyy-MM-dd HH:mm")}});
+				topupTouchMap.put("reason","Pre-Need top-up created from CRM");
+				zoho.books.updateRecord("retainerinvoices",organizationID,newTopupId,topupTouchMap,"zohooauth");
+				// link it: the last unpaid plan invoice now points at the top-up
+				zoho.crm.updateRecord("Invoices",pointerInvoiceId.toLong(),{"Books_Invoice_ID":newTopupId,"Books_Invoice_Number":newTopupNumber});
+				booksNote = " Top-up retainer " + newTopupNumber + " created for the increase of " + (totalAmount - masterTotal).round(2) + " (master " + masterNumber + " unchanged), linked to " + pointerSlot + ".";
+			}
+		}
+	}
+}
+// --- CRM: something paid -> re-spread over the unpaid invoices ---
+if(lockedSlots.size() > 0)
+{
+	respreadMap = Map();
+	for each  slotName in planSlots
+	{
+		if(slotAmount.containKey(slotName))
+		{
+			respreadMap.put(slotAmountField.get(slotName),slotAmount.get(slotName));
+			// unpaid installments keep their own due date: copy it back to the Deal, because
+			// createInstallmentInvoice sets the invoice's Due_Date from the Deal field
+			if(slotDueDateField.containKey(slotName))
+			{
+				respreadMap.put(slotDueDateField.get(slotName),slotDueDate.get(slotName));
+			}
+		}
+		else if(slotDueDateField.containKey(slotName))
+		{
+			// an installment slot with no invoice is not part of this plan
+			respreadMap.put(slotAmountField.get(slotName),null);
+			respreadMap.put(slotDueDateField.get(slotName),null);
+		}
+	}
+	// No workflow trigger on purpose -- the unpaid invoices are updated right here, directly.
+	zoho.crm.updateRecord("Deals",crmid,respreadMap);
+	respreadSummary = "";
+	for each  slotName in unpaidSlots
+	{
+		if(slotName == "Deposit")
+		{
+			arguments = Map();
+			arguments.put("crmid",crmid);
+			depositResp = invokeurl
+			[
+				url :"https://www.zohoapis.com/crm/v7/functions/createpreneeddepositretainerinvoice/actions/execute?auth_type=oauth"
+				type :GET
+				parameters:arguments
+				connection:"zohooauth"
+			];
+			info depositResp;
+		}
+		else
+		{
+			standalone.createInstallmentInvoice(crmid,slotAmountField.get(slotName),slotDueDateField.get(slotName));
+		}
+		respreadSummary = respreadSummary + " " + slotName + " " + slotAmount.get(slotName) + ";";
+	}
+	lockedNames = "";
+	for each  slotName in lockedSlots
+	{
+		if(lockedNames != "")
+		{
+			lockedNames = lockedNames + ", ";
+		}
+		lockedNames = lockedNames + slotName;
+	}
+	return "Paid invoices left unchanged: " + lockedNames + " (" + lockedTotal + "). The remaining " + (totalAmount - lockedTotal).round(2) + " was split over the unpaid invoices, due dates unchanged:" + respreadSummary + booksNote;
+}
+// --- CRM: nothing paid -> 50 / 25 / 25 as before (existing invoices are updated in place) ---
+firstAmount = (totalAmount * 0.5).round(2);
+remainingAmount = totalAmount - firstAmount;
+installment1Amount = (remainingAmount / 2).round(2);
+// last installment absorbs the rounding remainder so the three invoices sum exactly to Contract_Value
+installment2Amount = (remainingAmount - installment1Amount).round(2);
+// End of (signing month + 2) = first day of (signing month + 3) minus one day; same for + 4.
+installment1Due = monthStarts.get(2).subDay(1);
+installment2Due = monthStarts.get(4).subDay(1);
+dealMap.put("Pre_Need_Deposit_Amount",firstAmount);
+// The last installment date is the contract's "balance on or before" date.
+dealMap.put("Pre_Need_Balance_Due_Date",installment2Due.toString("yyyy-MM-dd"));
+dealMap.put("Installment_1_Amount",installment1Amount);
+dealMap.put("Installment_1_Due_Date",installment1Due.toString("yyyy-MM-dd"));
+dealMap.put("Installment_2_Amount",installment2Amount);
+dealMap.put("Installment_2_Due_Date",installment2Due.toString("yyyy-MM-dd"));
+// No workflow trigger on purpose -- the three invoices are created right here, directly.
+zoho.crm.updateRecord("Deals",crmid,dealMap);
+// 1) 50% invoice -- automation.* so it has to go through its REST execute endpoint (same call the dispatcher makes).
+//    Creates the deposit invoice, or (ZP-TBD-95) updates the existing one in place while it is unpaid.
+arguments = Map();
+arguments.put("crmid",crmid);
+depositResp = invokeurl
+[
+	url :"https://www.zohoapis.com/crm/v7/functions/createpreneeddepositretainerinvoice/actions/execute?auth_type=oauth"
+	type :GET
+	parameters:arguments
+	connection:"zohooauth"
+];
+info depositResp;
+// 2) + 3) installment invoices -- standalone, so call it directly. Idempotent per Invoice_For
+//    (an existing 'Installment N' invoice is updated, not duplicated).
+standalone.createInstallmentInvoice(crmid,"Installment_1_Amount","Installment_1_Due_Date");
+standalone.createInstallmentInvoice(crmid,"Installment_2_Amount","Installment_2_Due_Date");
+// An old 3-installment plan (before ZP-TBD-81) can leave an Installment 3 invoice behind -- it is not part of
+// this plan. Left alone on purpose (PN-06 decides what happens to Installment 3).
+leftoverNote = "";
+if(planInvoiceIds.containKey("Installment 3"))
+{
+	leftoverNote = " NOTE: this Deal still has an old Installment 3 invoice, which is not part of the new plan and was left unchanged.";
+}
+// an existing deposit invoice keeps its own due date (createPreNeedDepositRetainerInvoice only rewrites its lines)
+depositDueText = "due " + zoho.currentdate.addDay(7).toString("dd-MMM-yyyy");
+if(planInvoiceIds.containKey("Deposit"))
+{
+	depositDueText = "(existing invoice updated, due date unchanged)";
+}
+return "Installments: 50% invoice " + firstAmount + " " + depositDueText + "; installment 1 " + installment1Amount + " due " + installment1Due.toString("dd-MMM-yyyy") + "; installment 2 " + installment2Amount + " due " + installment2Due.toString("dd-MMM-yyyy") + ". Must End By " + mustEndBy.toString("dd-MMM-yyyy") + "." + booksNote + leftoverNote;
+}
