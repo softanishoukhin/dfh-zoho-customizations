@@ -1,0 +1,30 @@
+{
+  "locale": ["en"],
+  "service": "CREATOR",
+  "modules": {
+    "widgets": [
+      {
+        "name": "DFH Family Viewing",
+        "description": "Funeral Preparation Part 1 -- viewing list, Family Viewing Form, changes to complete",
+        "index": "/app/viewing.html",
+        "location": "page"
+      },
+      {
+        "name": "DFH Pre-Funeral Reconciliation",
+        "description": "Funeral Preparation Part 2 -- funerals for the day ahead and their checklist",
+        "index": "/app/prep.html",
+        "location": "page"
+      }
+    ]
+  },
+  "cspDomains": {
+    "connect-src": [
+      "https://www.zohoapis.com",
+      "https://static.zohocdn.com",
+      "https://cdn.jsdelivr.net",
+      "https://fonts.googleapis.com",
+      "https://fonts.gstatic.com"
+    ]
+  },
+  "config": []
+}

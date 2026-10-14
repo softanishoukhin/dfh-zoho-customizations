@@ -1,0 +1,178 @@
+string automation.createOperationsRecordOnTripCreation(String tripId)
+{
+result = Map();
+// Step 2 - Fetch the Trip (CRM-side: no connection arg)
+tripInfo = Map();
+try
+{
+	tripInfo = zoho.crm.getRecordById("Trips",tripId.toLong());
+}
+catch (e)
+{
+	result.put("error","Failed to fetch Trip " + tripId + ": " + e.toString());
+	return result.toString();
+}
+if(!tripInfo.containKey("id"))
+{
+	result.put("error","Trip not found for id " + tripId);
+	return result.toString();
+}
+// Step 3 - Read the Deal lookup off the Trip.
+// Lookups can be a present key with a NULL value, so containKey on the
+// value is unsafe. Read via try/catch + ifnull instead.
+dealId = "";
+try
+{
+	dealLookup = tripInfo.get("Deal");
+	dealId = ifnull(dealLookup.get("id"),"");
+}
+catch (e)
+{
+	dealId = "";
+}
+if(dealId == "" && tripInfo.get("Trip_Type") != "Multi Deceased Autopsy Trip")
+{
+	result.put("error","Trip " + tripId + " has no Deal lookup or Deal id");
+	return result.toString();
+}
+// Step 4 - Handle Multi Deceased Autopsy Trip (no Deal)
+if(tripInfo.get("Trip_Type") == "Multi Deceased Autopsy Trip")
+{
+	recordName = ifnull(tripInfo.get("Name"),"Multi Deceased Autopsy") + " - Ops Record";
+	payload = Map();
+	payload.put("Name",recordName);
+	relatedTripMap = Map();
+	relatedTripMap.put("id",tripId);
+	payload.put("Related_Trip",relatedTripMap);
+	createResult = Map();
+	try
+	{
+		createResult = zoho.crm.createRecord("Operations",payload);
+	}
+	catch (e)
+	{
+		result.put("error","Failed to create Operations record: " + e.toString());
+		return result.toString();
+	}
+	if(!createResult.containKey("id"))
+	{
+		result.put("error","Operations create returned no id");
+		result.put("create_response",createResult.toString());
+		return result.toString();
+	}
+	result.put("operations_record_id",createResult.get("id"));
+	result.put("status","success");
+	return result.toString();
+}
+// Step 4 - Fetch the Deal
+dealInfo = Map();
+try
+{
+	dealInfo = zoho.crm.getRecordById("Deals",dealId.toLong());
+}
+catch (e)
+{
+	result.put("error","Failed to fetch Deal " + dealId + ": " + e.toString());
+	return result.toString();
+}
+if(!dealInfo.containKey("id"))
+{
+	result.put("error","Deal not found for id " + dealId);
+	return result.toString();
+}
+// Step 5 - Deceased Account (Deal.Account_Name): id + display name.
+// Safe read: try/catch + ifnull (lookup may be present-key-but-null).
+deceasedName = "";
+accountId = "";
+try
+{
+	accountLookup = dealInfo.get("Account_Name");
+	accountId = ifnull(accountLookup.get("id"),"");
+	deceasedName = ifnull(accountLookup.get("name"),"");
+}
+catch (e)
+{
+	accountId = "";
+	deceasedName = "";
+}
+// Step 6 - NOK Contact (Deal.Contact_Name): optional.
+// Safe read: try/catch + ifnull. If empty/null/missing, NOK is omitted.
+nokId = "";
+nokPresent = false;
+try
+{
+	contactLookup = dealInfo.get("Contact_Name");
+	nokId = ifnull(contactLookup.get("id"),"");
+}
+catch (e)
+{
+	nokId = "";
+}
+if(nokId != "")
+{
+	nokPresent = true;
+}
+// Step 7 - Date of Death (Date) -> dd-MMM-yyyy, else "DOD Unknown"
+dodString = "DOD Unknown";
+dodValue = ifnull(dealInfo.get("Date_of_Death"),"");
+if(dodValue != "")
+{
+	formattedDOD = "";
+	try
+	{
+		formattedDOD = dodValue.toString("dd-MMM-yyyy");
+	}
+	catch (e)
+	{
+		formattedDOD = "";
+	}
+	if(formattedDOD != "")
+	{
+		dodString = formattedDOD;
+	}
+}
+// Step 8 - Compose the record name: {Deceased} - {DOD} - Ops Record
+recordName = deceasedName + " - " + dodString + " - Ops Record";
+// Step 9 - Build the Operations create payload
+payload = Map();
+payload.put("Name",recordName);
+relatedTripMap = Map();
+relatedTripMap.put("id",tripId);
+payload.put("Related_Trip",relatedTripMap);
+relatedDealMap = Map();
+relatedDealMap.put("id",dealId);
+payload.put("Related_Deal",relatedDealMap);
+if(accountId != "")
+{
+	deceasedMap = Map();
+	deceasedMap.put("id",accountId);
+	payload.put("Deceased",deceasedMap);
+}
+if(nokPresent)
+{
+	nokMap = Map();
+	nokMap.put("id",nokId);
+	payload.put("NOK",nokMap);
+}
+// Step 10 - Create the Operations record (CRM-side: no connection arg)
+createResult = Map();
+try
+{
+	createResult = zoho.crm.createRecord("Operations",payload);
+}
+catch (e)
+{
+	result.put("error","Failed to create Operations record: " + e.toString());
+	return result.toString();
+}
+// Step 11 - Return
+if(!createResult.containKey("id"))
+{
+	result.put("error","Operations create returned no id");
+	result.put("create_response",createResult.toString());
+	return result.toString();
+}
+result.put("operations_record_id",createResult.get("id"));
+result.put("status","success");
+return result.toString();
+}

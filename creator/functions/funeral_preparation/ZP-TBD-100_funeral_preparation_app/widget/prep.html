@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DFH Pre-Funeral Reconciliation</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@2.44.0/tabler-icons.min.css">
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@600;700&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<script src="https://static.zohocdn.com/creator/widgets/version/1.0/widgetsdk-min.js"></script>
+<link rel="stylesheet" href="style.css">
+<!-- Part 2: Pre-Funeral Reconciliation (Ms FS) -->
+<script>window.FP_PART = "prep";</script>
+</head>
+<body>
+<div class="app" id="app">
+  <div class="topbar">
+    <div class="logo-area">
+      <button class="hamburger-btn" id="hamburgerBtn" aria-label="Menu"><i class="ti ti-menu-2"></i></button>
+      <div class="logo-name">Delapenha</div><div class="logo-div"></div><div class="logo-sub" id="logoSub">Funeral Preparation</div>
+    </div>
+    <div class="topbar-r">
+      <div class="topbar-d" id="todayLbl"></div>
+      <div class="avatar" id="avatar">··</div>
+    </div>
+  </div>
+  <div class="body">
+    <div class="sidebar" id="sidebar"></div>
+    <div class="sidebar-overlay" id="sidebarOverlay"></div>
+    <div class="main">
+      <div class="view-header" id="viewHeader"></div>
+      <div class="content-area" id="contentArea"></div>
+    </div>
+  </div>
+</div>
+
+<div class="modal-bg" id="modalBg">
+  <div class="modal" id="modalBox">
+    <div class="modal-hdr"><div class="modal-title" id="modalTitle"></div><div class="modal-sub" id="modalSub"></div></div>
+    <div class="modal-body"><div class="modal-err" id="modalErr"></div><div id="modalFields"></div></div>
+    <div class="modal-ftr"><button class="btn" id="modalCancel">Cancel</button><button class="btn primary" id="modalSave">Submit</button></div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,506 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Caskets to Build</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@2.44.0/tabler-icons.min.css">
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@600;700&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<script src="https://js.zohostatic.com/creator/widgets/version/2.0/widgetsdk-min.js"></script>
+<style>
+:root{
+  --plum:#5c2d6e;--plum-l:#7a3d91;--plum-d:#3d1e4a;--plum-p:#f5eef8;
+  --gold:#b8965a;--gold-l:#d4b07a;
+  --taupe:#b0a090;--taupe-l:#d4c8bc;--taupe-p:#f7f4f1;
+  --white:#fff;--off:#fafaf9;--text:#1a1218;--mid:#4a3f52;--muted:#8a7d92;
+  --bt:rgba(176,160,144,0.35);--bp:rgba(92,45,110,0.12);
+  --green:#3a8a5c;--green-b:#edf7f2;--amber:#c47d1a;--amber-b:#fdf3e3;--red:#c0392b;--red-b:#fdf0ee;
+}
+*{box-sizing:border-box;margin:0;padding:0;}
+html,body{font-family:'DM Sans',sans-serif;background:#e8e4f0;color:var(--text);}
+.app{min-height:100vh;display:flex;flex-direction:column;background:var(--white);}
+.topbar{background:var(--plum);padding:0 20px;height:50px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0;}
+.logo-name{font-family:'Cormorant Garamond',serif;font-size:19px;font-weight:700;color:#fff;letter-spacing:.02em;}
+.logo-div{width:1px;height:16px;background:rgba(255,255,255,.25);display:inline-block;margin:0 10px;vertical-align:middle;}
+.logo-sub{font-size:10px;color:var(--gold-l);letter-spacing:.12em;text-transform:uppercase;}
+.avatar{min-width:30px;height:30px;border-radius:15px;background:var(--gold);display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:500;color:var(--plum-d);padding:0 9px;}
+.view-header{padding:14px 20px 12px;border-bottom:1px solid var(--bt);}
+.view-title{font-family:'Cormorant Garamond',serif;font-size:22px;font-weight:600;color:var(--plum-d);display:flex;align-items:center;gap:8px;}
+.view-title i{font-size:20px;color:var(--gold);}
+.view-title .count{font-family:'DM Sans',sans-serif;font-size:12px;font-weight:400;color:var(--muted);}
+.body-area{flex:1;padding:16px 20px 32px;background:var(--off);}
+.tiles{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px;}
+.tile{flex:1;min-width:150px;background:var(--white);border:1px solid var(--bt);border-radius:10px;padding:14px 16px;cursor:pointer;transition:all .15s;}
+.tile:hover{border-color:var(--plum-l);}
+.tile.active{border-color:var(--plum);background:var(--plum-p);box-shadow:0 0 0 1px var(--plum) inset;}
+.tile .n{font-size:28px;font-weight:600;line-height:1;color:var(--plum-d);}
+.tile .l{font-size:12px;color:var(--muted);margin-top:5px;}
+.tile.amber .n{color:var(--amber);} .tile.green .n{color:var(--green);}
+.tile.hillview .n{color:var(--plum);} .tile.hillview .l{color:var(--plum);font-weight:600;}
+.tile.plum .n{color:var(--plum);}
+.tile.alert{border-color:rgba(196,125,26,.5);}
+.tile.alert .n{color:var(--amber);}
+.tile.alert .l{color:var(--amber);font-weight:600;}
+.tile.alert.has{background:var(--amber-b);border-color:var(--amber);}
+.tile.alert.active{border-color:var(--amber)!important;background:var(--amber-b)!important;box-shadow:0 0 0 1px var(--amber) inset!important;}
+.tile.late .n{color:var(--red);} .tile.late .l{color:var(--red);font-weight:600;}
+.tile.late.has{background:var(--red-b);border-color:var(--red);}
+.tile.late.active{border-color:var(--red)!important;background:var(--red-b)!important;box-shadow:0 0 0 1px var(--red) inset!important;}
+.toolbar{display:flex;gap:10px;align-items:center;margin-bottom:14px;flex-wrap:wrap;}
+.search-box{flex:1;min-width:200px;display:flex;align-items:center;gap:6px;background:var(--white);border:1px solid var(--bt);border-radius:8px;padding:8px 12px;}
+.search-box i{font-size:15px;color:var(--muted);}
+.search-box input{background:none;border:none;outline:none;font-size:13px;color:var(--text);font-family:'DM Sans',sans-serif;width:100%;}
+.dfh-btn{padding:8px 14px;border-radius:8px;font-size:12px;font-weight:500;font-family:'DM Sans',sans-serif;cursor:pointer;display:inline-flex;align-items:center;gap:6px;transition:opacity .15s;}
+.btn-outline{background:var(--white);color:var(--plum);border:1px solid var(--plum);}
+.btn-outline:hover{background:var(--plum-p);}
+.btn-primary{background:var(--plum);color:#fff;border:1px solid var(--plum);}
+.btn-primary:hover{opacity:.9;} .btn-primary:disabled{opacity:.5;cursor:not-allowed;}
+/* cards */
+.card{background:var(--white);border:1px solid var(--bt);border-radius:10px;padding:14px 16px;margin-bottom:12px;cursor:pointer;transition:border-color .12s;}
+.card:hover{border-color:var(--plum-l);}
+.card.changed{border-color:var(--amber);box-shadow:0 0 0 1px var(--amber) inset;}
+.card-top{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;border-bottom:1px solid var(--bt);padding-bottom:8px;margin-bottom:10px;}
+.c-name{font-family:'Cormorant Garamond',serif;font-size:19px;font-weight:700;color:var(--plum-d);}
+.c-meta{font-size:12px;color:var(--muted);}
+.c-right{margin-left:auto;display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
+.pill{padding:2px 10px;border-radius:20px;font-size:11px;font-weight:600;white-space:nowrap;}
+.pill-status{background:var(--plum-p);color:var(--plum);border:1px solid var(--bp);}
+.pill-status.none{background:var(--taupe-p);color:var(--muted);border:1px solid var(--bt);}
+.pill-changed{background:var(--amber-b);color:var(--amber);border:1px solid rgba(196,125,26,.35);}
+.pill-due{background:var(--green-b);color:var(--green);border:1px solid rgba(58,138,92,.25);}
+.pill-due.behind{background:var(--red-b);color:var(--red);border:1px solid rgba(192,57,43,.3);}
+.pill-hillview{background:var(--plum);color:#fff;border:1px solid var(--plum-d);}
+.ro{font-size:13px;color:var(--mid);padding:8px 10px;background:var(--off);border:1px solid var(--bt);border-radius:6px;}
+.c-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px 24px;}
+@media(max-width:620px){.c-grid{grid-template-columns:1fr;}}
+.fld{font-size:13px;display:flex;gap:8px;align-items:baseline;}
+.fld.wide{grid-column:1 / -1;}
+.k{font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);font-weight:600;min-width:104px;flex-shrink:0;padding-top:2px;}
+.v{color:var(--text);word-break:break-word;}
+.dim{color:var(--taupe);}
+.old{color:var(--taupe);text-decoration:line-through;}
+.arrow{color:var(--amber);font-weight:700;margin:0 5px;}
+.new{background:var(--amber-b);color:#8a3d00;font-weight:700;padding:1px 7px;border-radius:5px;border:1px solid rgba(196,125,26,.4);}
+.final{font-size:9px;color:var(--amber);font-weight:700;letter-spacing:.05em;margin-left:5px;text-transform:uppercase;}
+.when{font-size:10px;color:var(--amber);margin-left:6px;}
+/* ZP-TBD-102: edit queue */
+.new.seen{background:var(--off);color:var(--mid);border-color:var(--bt);font-weight:600;}
+.final.seen{color:var(--muted);}
+.pill-seen{background:var(--taupe-p);color:var(--muted);border:1px solid var(--bt);}
+.qbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px;}
+.qbar .qcount{font-size:13px;color:var(--mid);font-weight:600;}
+.qbar .sp{flex:1;}
+.qrow{background:var(--white);border:1px solid var(--amber);border-left:4px solid var(--amber);border-radius:10px;padding:12px 14px;margin-bottom:10px;display:flex;gap:14px;align-items:center;flex-wrap:wrap;}
+.qrow.seen{border-color:var(--bt);border-left-color:var(--taupe-l);opacity:.75;}
+.qrow .qwho{min-width:180px;cursor:pointer;}
+.qrow .qwho .c-name{font-size:17px;}
+.qrow .qwhat{flex:1;min-width:220px;font-size:13px;}
+.qrow .qwhat .k{display:block;margin-bottom:3px;}
+.qrow .qside{display:flex;flex-direction:column;align-items:flex-end;gap:6px;}
+.qrow .qwhen{font-size:11px;color:var(--amber);}
+.qrow.seen .qwhen{color:var(--muted);}
+.qhead{font-size:12px;font-weight:700;color:var(--mid);text-transform:uppercase;letter-spacing:.04em;margin:4px 0 8px;}
+.empty,.loading{text-align:center;color:var(--muted);padding:44px 14px;font-size:14px;background:var(--white);border:1px solid var(--bt);border-radius:10px;}
+/* modal */
+.overlay{position:fixed;inset:0;background:rgba(61,30,74,.45);display:none;align-items:flex-start;justify-content:center;padding:24px;overflow:auto;z-index:50;}
+.overlay.open{display:flex;}
+.modal{background:var(--white);border-radius:12px;max-width:560px;width:100%;box-shadow:0 24px 60px rgba(61,30,74,.35);overflow:hidden;}
+.modal-hdr{background:var(--plum);padding:14px 20px;}
+.modal-hdr h2{font-family:'Cormorant Garamond',serif;font-size:20px;font-weight:700;color:#fff;}
+.modal-hdr .sub{color:rgba(255,255,255,.6);font-size:12px;margin-top:2px;}
+.modal-body{padding:16px 20px 20px;}
+.erow{display:grid;grid-template-columns:150px 1fr;gap:10px;align-items:center;margin-bottom:11px;}
+.erow label{font-size:12px;font-weight:500;color:var(--mid);}
+.erow select,.erow input{border:1px solid var(--bt);border-radius:6px;padding:8px 10px;font-size:13px;width:100%;font-family:'DM Sans',sans-serif;color:var(--text);outline:none;}
+.erow select:focus,.erow input:focus{border-color:var(--plum);}
+.actions{display:flex;justify-content:flex-end;gap:10px;margin-top:8px;}
+.warn{background:var(--amber-b);color:var(--amber);border:1px solid rgba(196,125,26,.25);border-radius:8px;padding:9px 12px;font-size:12px;font-weight:500;margin-bottom:14px;}
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="topbar">
+    <div><span class="logo-name">Delapenha</span><span class="logo-div"></span><span class="logo-sub">Casket Build</span></div>
+    <div class="avatar" title="Casket Management">CM</div>
+  </div>
+  <div class="view-header">
+    <div class="view-title"><i class="ti ti-hammer"></i> Caskets to Build <span class="count" id="count"></span></div>
+  </div>
+  <div class="body-area">
+    <div class="tiles" id="tiles"></div>
+    <div class="toolbar">
+      <div class="search-box"><i class="ti ti-search"></i><input id="search" placeholder="Search by name or casket type…"></div>
+      <button class="dfh-btn btn-outline" id="refresh"><i class="ti ti-refresh"></i> Refresh</button>
+    </div>
+    <div id="content"><div class="loading">Loading caskets…</div></div>
+  </div>
+</div>
+<div class="overlay" id="overlay"><div class="modal" id="modal"></div></div>
+
+<script>
+var WORKSPACE = "";
+var API_LIST = "Casket_Build_List";
+var API_SAVE = "Update_Casket_Field";
+// ZP-TBD-102: edit queue -- acknowledged ("seen") edits are kept in the app's Casket_Edit_Ack form
+var API_ACKS = "Casket_Edit_Acks";
+var API_ACK = "Acknowledge_Casket_Edits";
+var STATE = { all:[], counts:{}, filter:"all", search:"", seen:{}, acksOk:true, showSeen:false };
+var STATUS_OPTS = ["-None-","Ticket given","At Sander","Prime Complete","At Sprayer","Quilting","Delivered"];
+// Pre-rename names, so a record saved under the old wording still reads and buckets
+// correctly. Safe to drop once nothing in CRM holds the old text.
+var STATUS_ALIAS = {"Requested":"Ticket given","Build Complete":"At Sander",
+                    "Colors Complete":"At Sprayer","Handles Complete":"Quilting","Ready":"Delivered"};
+function normStatus(v){var t=(v==null?'':(''+v)).trim();return STATUS_ALIAS[t]||t;}
+// mutually-exclusive lifecycle bucket for a row, from its casket status
+var BUILT_STATUSES = {"At Sander":1,"Prime Complete":1,"At Sprayer":1,"Quilting":1};
+function statusBucket(r){
+  var s=normStatus(r.casketStatus);
+  if(s==='Delivered')return 'ready';
+  if(BUILT_STATUSES[s])return 'built';
+  return 'tobuild'; // no status or Ticket given = not started
+}
+var SEP = "~SEP~";
+
+function esc(s){return (s==null?'':(''+s)).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
+function isBlank(v){return v==null||(''+v).trim()==='';}
+function dpart(s){return isBlank(s)?'':(''+s).substring(0,10);}
+function fmtDate(s){if(isBlank(s))return '';var d=new Date(s);if(isNaN(d))return dpart(s);return d.toLocaleDateString(undefined,{year:'numeric',month:'short',day:'numeric'});}
+function fmtDateTime(s){if(isBlank(s))return '';var d=new Date(s);if(isNaN(d))return dpart(s);return d.toLocaleDateString(undefined,{year:'numeric',month:'short',day:'numeric'})+' · '+d.toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'});}
+function fmtStamp(s){if(isBlank(s))return '';var d=new Date(s);if(isNaN(d))return '';return d.toLocaleDateString(undefined,{month:'short',day:'numeric'});}
+function fmtDateOnly(s){if(isBlank(s))return '';var p=(''+s).substring(0,10).split('-');if(p.length!==3)return ''+s;var m=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];return m[parseInt(p[1],10)-1]+' '+parseInt(p[2],10)+', '+p[0];}
+function funMs(s){if(isBlank(s))return Infinity;var d=new Date(s).getTime();return isNaN(d)?Infinity:d;}
+function parseSnap(s){var p=(''+(s||'')).split(SEP);function g(i){return (p[i]||'').substring(2);}return {type:g(0),prim:g(1),sec:g(2),hand:g(3),spec:g(4),fun:g(5),ok:p.length>=6};}
+// true if any TRACKED spec field differs from the saved original (the "edited" test)
+function rowHasEdits(r){
+  var o=parseSnap(r.snapshot);
+  function ch(a,b,co){var x=(a==null?'':(''+a)).trim(),y=(b==null?'':(''+b)).trim();if(co&&x==='')return false;return x!==y;}
+  if((r.pipeline||'')!=='Full Body Repatriation' && ch(o.type,r.casketType,true))return true;
+  if(ch(o.prim,r.primaryColor))return true;
+  if(ch(o.sec,r.secondaryColor))return true;
+  if(ch(o.hand,r.handles))return true;
+  if(ch(o.spec,r.specialInstructions))return true;
+  if(ch(o.fun,dpart(r.funeralTime)))return true;
+  return false;
+}
+// ZP-TBD-102: the edits on one casket, one per field group -- the same comparisons as
+// rowHasEdits (current value vs the saved spec snapshot). Key = Operations id + group + that
+// group's change stamp, so a newer change to the same field shows as new again.
+function rowEdits(r){
+  if(!r.operationsId)return [];
+  var o=parseSnap(r.snapshot);
+  if(!o.ok)return [];
+  var out=[];
+  function n(v){return (v==null?'':(''+v)).trim();}
+  // The key also carries a short fingerprint of the NEW value: when CRM leaves the
+  // ..._Changed_On stamp empty, a later change to the same field still gets a new key and
+  // shows as new again (stamp alone would repeat the same key).
+  function add(group,label,oldV,newV,stamp,isDate){
+    out.push({key:r.operationsId+'|'+group+'|'+n(stamp)+'|'+h32(n(newV)),group:group,label:label,old:n(oldV),cur:n(newV),stamp:n(stamp),isDate:!!isDate,r:r});
+  }
+  if((r.pipeline||'')!=='Full Body Repatriation' && n(o.type)!=='' && n(o.type)!==n(r.casketType))
+    add('type','Casket Type',o.type,r.casketType,r.typeChangedOn);
+  if(n(o.prim)!==n(r.primaryColor) || n(o.sec)!==n(r.secondaryColor))
+    add('colours','Colours',joinPS(o.prim,o.sec),joinPS(r.primaryColor,r.secondaryColor),r.colorsChangedOn);
+  if(n(o.hand)!==n(r.handles)) add('handles','Handles',o.hand,r.handles,r.handlesChangedOn);
+  if(n(o.spec)!==n(r.specialInstructions)) add('special','Special Instructions',o.spec,r.specialInstructions,r.specialChangedOn);
+  if(n(o.fun)!==dpart(r.funeralTime)) add('funeral','Funeral Date',o.fun,dpart(r.funeralTime),r.funeralChangedOn,true);
+  return out;
+}
+// short, stable fingerprint of a text value (keeps the edit key well under the 255-char field)
+function h32(s){var h=5381;s=''+s;for(var i=0;i<s.length;i++){h=((h<<5)+h+s.charCodeAt(i))|0;}return (h>>>0).toString(36);}
+function joinPS(p,s){var a=(p==null?'':(''+p)).trim(),b=(s==null?'':(''+s)).trim();return (a||b)?((a||'—')+' / '+(b||'—')):'';}
+function isSeen(e){return !!STATE.seen[e.key];}
+function rowNewEdits(r){return rowEdits(r).filter(function(e){return !isSeen(e);});}
+// true when this field group was edited and that edit has been marked as seen
+function groupSeen(r,group){var es=rowEdits(r).filter(function(e){return e.group===group;});return es.length>0 && es.every(isSeen);}
+function stripLoc(s){ if(isBlank(s))return ''; var t=(''+s).replace(/^\s*Delapenha\s+Funeral\s+Home\s*[-,–]?\s*/i,'').trim(); return t||(''+s); }
+function dueTarget(r){ if(isBlank(r.funeralTime))return null; var dp=(''+r.funeralTime).substring(0,10).split('-'); if(dp.length!==3)return null; var d=new Date(parseInt(dp[0],10),parseInt(dp[1],10)-1,parseInt(dp[2],10)); if(isNaN(d))return null; d.setDate(d.getDate()-4); return d; }
+function dueTargetStr(r){ var d=dueTarget(r); if(!d)return ''; var m=d.getMonth()+1,day=d.getDate(); return d.getFullYear()+'-'+(m<10?'0':'')+m+'-'+(day<10?'0':'')+day; }
+function isReal(v){ var x=(v==null?'':(''+v)).trim(); return x!==''&&x.toUpperCase()!=='TBD'&&x!=='-None-'; }
+function rowLate(r){ var t=dueTarget(r); if(!t)return false; return normStatus(r.casketStatus)!=='Delivered' && new Date()>t; }
+function rowNoDate(r){ return isBlank(r.funeralTime); }
+function rowNoColors(r){ if((r.pipeline||'')==='Full Body Repatriation')return false; if(isBlank(r.casketType))return false; return !isReal(r.primaryColor)&&!isReal(r.secondaryColor); }
+
+function callApi(cfg){
+  if(!(window.ZOHO && ZOHO.CREATOR && ZOHO.CREATOR.DATA && ZOHO.CREATOR.DATA.invokeCustomApi)){
+    return Promise.reject(new Error("Creator SDK not available"));
+  }
+  if(WORKSPACE){ cfg.workspace_name = WORKSPACE; }
+  return ZOHO.CREATOR.DATA.invokeCustomApi(cfg);
+}
+function parseResult(resp){
+  var r = resp;
+  if(r && typeof r==='object' && r.result!==undefined) r=r.result;
+  else if(r && typeof r==='object' && r.data!==undefined) r=r.data;
+  if(typeof r==='string'){ try{ return JSON.parse(r); }catch(e){ return {}; } }
+  return r||{};
+}
+
+function load(){
+  document.getElementById('content').innerHTML='<div class="loading">Loading caskets…</div>';
+  // ZP-TBD-102: the "seen" edits load alongside the list; if that API fails the list still loads
+  var acksP=callApi({ api_name:API_ACKS, http_method:"GET" })
+    .then(function(resp){ var a=parseResult(resp); STATE.seen=(a&&a.seen)?a.seen:{}; STATE.acksOk=!!(a&&a.success); })
+    .catch(function(e){ STATE.seen={}; STATE.acksOk=false; try{console.error('casketEditAcks error:',e);}catch(_){} });
+  Promise.all([callApi({ api_name:API_LIST, http_method:"GET" }), acksP])
+   .then(function(res){
+      var resp=res[0];
+      var data=parseResult(resp);
+      STATE.all=(data&&data.rows)?data.rows:[];
+      STATE.all.sort(function(a,b){ return funMs(a.funeralTime)-funMs(b.funeralTime); });
+      STATE.counts={ total:data.countTotal||STATE.all.length, pending:data.countPending||0, ready:data.countReady||0 };
+      render();
+   })
+   .catch(function(e){
+      var msg=(e&&e.message)?e.message:((typeof e==='object')?JSON.stringify(e):(''+e));
+      try{console.error('casketBuildList error:',e);}catch(_){}
+      document.getElementById('content').innerHTML='<div class="empty">Couldn’t load.<br><small style="color:#b91c1c;word-break:break-word">'+esc(msg)+'</small><br><br>Tap Refresh to try again.</div>';
+   });
+}
+
+function renderTiles(){
+  var c=STATE.counts;
+  // ZP-TBD-102: the tile counts edits not yet marked as seen (one per changed field)
+  var edited=STATE.all.reduce(function(n,r){return n+rowNewEdits(r).length;},0);
+  var late=STATE.all.filter(rowLate).length;
+  var nodate=STATE.all.filter(rowNoDate).length;
+  var nocolors=STATE.all.filter(rowNoColors).length;
+  var hillview=STATE.all.filter(function(r){return r.hillview;}).length;
+  var tobuild=STATE.all.filter(function(r){return statusBucket(r)==='tobuild';}).length;
+  var built=STATE.all.filter(function(r){return statusBucket(r)==='built';}).length;
+  var ready=STATE.all.filter(function(r){return statusBucket(r)==='ready';}).length;
+  var t=[
+    {key:"all",n:(c.total||STATE.all.length),l:"All caskets",cls:""},
+    {key:"tobuild",n:tobuild,l:"To build",cls:""},
+    {key:"built",n:built,l:"Built",cls:"plum"},
+    {key:"ready",n:ready,l:"Delivered",cls:"green"},
+    {key:"edited",n:edited,l:"⚠ New edits",cls:"alert"},
+    {key:"late",n:late,l:"⏰ Late",cls:"late"},
+    {key:"nodate",n:nodate,l:"No funeral date",cls:"amber"},
+    {key:"nocolors",n:nocolors,l:"No colours",cls:"amber"},
+    {key:"hillview",n:hillview,l:"Hillview",cls:"hillview"}
+  ];
+  document.getElementById('tiles').innerHTML=t.map(function(x){
+    var extra=((x.cls==='alert'||x.cls==='late')&&x.n>0)?' has':'';
+    return '<div class="tile '+x.cls+extra+(STATE.filter===x.key?' active':'')+'" data-f="'+x.key+'"><div class="n">'+x.n+'</div><div class="l">'+x.l+'</div></div>';
+  }).join('');
+  Array.prototype.forEach.call(document.querySelectorAll('.tile'),function(el){el.addEventListener('click',function(){STATE.filter=el.getAttribute('data-f');render();});});
+}
+
+function filtered(){
+  var q=STATE.search.trim().toLowerCase();
+  return STATE.all.filter(function(r){
+    if(STATE.filter==='tobuild'&&statusBucket(r)!=='tobuild')return false;
+    if(STATE.filter==='built'&&statusBucket(r)!=='built')return false;
+    if(STATE.filter==='ready'&&statusBucket(r)!=='ready')return false;
+    if(STATE.filter==='edited'&&!rowHasEdits(r))return false;   // (the edited view renders the queue -- see renderQueue)
+    if(STATE.filter==='late'&&!rowLate(r))return false;
+    if(STATE.filter==='nodate'&&!rowNoDate(r))return false;
+    if(STATE.filter==='nocolors'&&!rowNoColors(r))return false;
+    if(STATE.filter==='hillview'&&!r.hillview)return false;
+    if(q){var hay=((r.nameOfDeceased||'')+' '+(r.dealName||'')+' '+(r.casketType||'')).toLowerCase();if(hay.indexOf(q)<0)return false;}
+    return true;
+  });
+}
+
+// render one field: if current differs from original, show old -> new; else the value.
+function fld(label,orig,cur,when,opts){
+  opts=opts||{};
+  var o=(orig==null?'':(''+orig)).trim(), c=(cur==null?'':(''+cur)).trim();
+  var origSuppressed = opts.changeOnly && o===''; // e.g. casket type: only a real change counts
+  // display-only fields (body size, location, container type) are never compared for changes
+  var changed = !opts.display && (o!==c) && !origSuppressed;
+  // current value display: datetime > date > plain text (change-detection still uses the date part)
+  var showCur=function(v){return opts.datetime?fmtDateTime(opts.rawDT):(opts.date?fmtDate(v):esc(v));};
+  var body;
+  if(changed){
+    var oldTxt=o===''?'(none)':(opts.date?fmtDate(o):esc(o));
+    var newTxt=c===''?'(none)':showCur(c);
+    // ZP-TBD-102: an edit already marked as seen keeps old -> new but in grey
+    body='<span class="old">'+oldTxt+'</span><span class="arrow">→</span><span class="new'+(opts.seen?' seen':'')+'">'+newTxt+'</span><span class="final'+(opts.seen?' seen':'')+'">'+(opts.seen?'seen':'final')+'</span>'+(when?'<span class="when">· edited '+esc(when)+'</span>':'');
+  } else {
+    body= c===''?'<span class="dim">—</span>':(opts.datetime||opts.date?showCur(c):('<span class="v">'+esc(c)+'</span>'));
+  }
+  return {html:'<div class="fld'+(opts.wide?' wide':'')+'"><span class="k">'+label+'</span><span>'+body+'</span></div>', changed:changed, seen:!!opts.seen};
+}
+
+function render(){
+  renderTiles();
+  if(STATE.filter==='edited'){ renderQueue(); return; }   // ZP-TBD-102
+  var rows=filtered();
+  document.getElementById('count').textContent=rows.length+(rows.length===1?' casket':' caskets');
+  var root=document.getElementById('content');
+  if(!rows.length){root.innerHTML='<div class="empty">No caskets match this view.</div>';return;}
+  var isRepat=function(r){return (r.pipeline||'')==='Full Body Repatriation';};
+  var html='';
+  rows.forEach(function(r){
+    var o=parseSnap(r.snapshot);
+    var fs=[];
+    if(isRepat(r)){
+      // Full Body Repatriation = shipping container, no casket/colours/handles — exempt from colour flags
+      fs.push(fld('Container Type',null,r.shippingContainerType,'',{display:true}));
+      fs.push(fld('Departure Airport',null,r.departingAirport,'',{display:true}));
+    } else {
+      fs.push(fld('Casket Type',o.type,r.casketType,fmtStamp(r.typeChangedOn),{changeOnly:true,seen:groupSeen(r,'type')}));
+      fs.push(fld('Primary',o.prim,r.primaryColor,fmtStamp(r.colorsChangedOn),{seen:groupSeen(r,'colours')}));
+      fs.push(fld('Secondary',o.sec,r.secondaryColor,fmtStamp(r.colorsChangedOn),{seen:groupSeen(r,'colours')}));
+      fs.push(fld('Handles',o.hand,r.handles,fmtStamp(r.handlesChangedOn),{seen:groupSeen(r,'handles')}));
+    }
+    fs.push(fld('Body Size',null,r.deceasedSize,'',{display:true}));
+    fs.push(fld('Funeral Date/Time',o.fun,dpart(r.funeralTime),fmtStamp(r.funeralChangedOn),{date:true,datetime:true,rawDT:r.funeralTime,seen:groupSeen(r,'funeral')}));
+    fs.push(fld('FD',null,r.ownerName,'',{display:true}));
+    fs.push(fld('Location',null,stripLoc(r.caseLocation),'',{display:true,wide:true}));
+    fs.push(fld('Special Instr.',o.spec,r.specialInstructions,fmtStamp(r.specialChangedOn),{wide:true,seen:groupSeen(r,'special')}));
+
+    // ZP-TBD-102: the amber "changed" flag only for edits not yet marked as seen
+    var anyChanged=fs.some(function(f){return f.changed && !f.seen;});
+    var anySeen=fs.some(function(f){return f.changed && f.seen;});
+    var idx=STATE.all.indexOf(r);
+    // due date pill: target = funeral - 4 days
+    var duePill='';
+    var dueT=dueTarget(r);
+    if(dueT){
+      var isReady=(normStatus(r.casketStatus)==='Delivered');
+      var behind=(!isReady && new Date()>dueT);
+      duePill='<span class="pill pill-due'+(behind?' behind':'')+'">Due '+fmtDateOnly(dueTargetStr(r))+(behind?' · behind':'')+'</span>';
+    }
+    var statusPill='<span class="pill pill-status'+(isBlank(r.casketStatus)?' none':'')+'">'+esc(isBlank(r.casketStatus)?'No status':normStatus(r.casketStatus))+'</span>';
+    var changedPill=anyChanged?'<span class="pill pill-changed">⚠ changed</span>':(anySeen?'<span class="pill pill-seen">edited · seen</span>':'');
+    var hillviewPill=r.hillview?'<span class="pill pill-hillview">Hillview</span>':'';
+    var noops=r.hasOperations?'':'<span class="pill pill-changed">⚠ no ops record</span>';
+    var funMeta=isBlank(r.funeralTime)?'<span class="c-meta" style="color:var(--amber);font-weight:600">⚠ No funeral date</span>':'<span class="c-meta">Funeral '+fmtDate(r.funeralTime)+'</span>';
+
+    html+='<div class="card'+(anyChanged?' changed':'')+'" data-i="'+idx+'">'
+      +'<div class="card-top"><span class="c-name">'+esc(r.nameOfDeceased||r.dealName||'Casket')+'</span>'
+      +funMeta
+      +'<span class="c-right">'+hillviewPill+changedPill+noops+duePill+statusPill+'</span></div>'
+      +'<div class="c-grid">'+fs.map(function(f){return f.html;}).join('')+'</div></div>';
+  });
+  root.innerHTML=html;
+  Array.prototype.forEach.call(root.querySelectorAll('.card'),function(cd){
+    cd.addEventListener('click',function(){openDetail(STATE.all[parseInt(cd.getAttribute('data-i'),10)]);});
+  });
+}
+
+// ===== ZP-TBD-102: edit queue =====
+// One line per edit (casket + field). "Mark as seen" records it in Casket_Edit_Ack; seen
+// edits leave the queue and stop counting as new. A newer change to the same field gets a
+// new key, so it comes back as new.
+function stampMs(s){var d=new Date(s);return isNaN(d)?0:d.getTime();}
+function editVal(e,v){ if(v==='')return '(none)'; return e.isDate?fmtDateOnly(v):esc(v); }
+function renderQueue(){
+  var q=STATE.search.trim().toLowerCase();
+  var all=[];
+  STATE.all.forEach(function(r){
+    if(q){var hay=((r.nameOfDeceased||'')+' '+(r.dealName||'')+' '+(r.casketType||'')).toLowerCase();if(hay.indexOf(q)<0)return;}
+    rowEdits(r).forEach(function(e){all.push(e);});
+  });
+  var fresh=all.filter(function(e){return !isSeen(e);});
+  var seenList=all.filter(isSeen);
+  fresh.sort(function(a,b){return stampMs(b.stamp)-stampMs(a.stamp);});
+  // most recently seen first
+  seenList.sort(function(a,b){return stampMs((STATE.seen[b.key]||{}).at)-stampMs((STATE.seen[a.key]||{}).at);});
+  document.getElementById('count').textContent=fresh.length+(fresh.length===1?' new edit':' new edits');
+  var root=document.getElementById('content');
+  var h='';
+  if(!STATE.acksOk) h+='<div class="warn">⚠ Couldn’t load which edits were already seen, so every edit shows as new. Tap Refresh to try again.</div>';
+  h+='<div class="qbar"><span class="qcount">'+fresh.length+(fresh.length===1?' edit':' edits')+' not seen yet</span><span class="sp"></span>'
+    +'<button class="dfh-btn btn-outline" id="q_toggle"><i class="ti ti-history"></i> '+(STATE.showSeen?'Hide seen edits':'Show seen edits')+' ('+seenList.length+')</button>'
+    +'<button class="dfh-btn btn-primary" id="q_all"'+(fresh.length?'':' disabled')+'><i class="ti ti-checks"></i> Mark all as seen</button></div>';
+  function qrow(e){
+    var r=e.r, seen=STATE.seen[e.key], idx=STATE.all.indexOf(r);
+    return '<div class="qrow'+(seen?' seen':'')+'">'
+      +'<div class="qwho" data-i="'+idx+'"><div class="c-name">'+esc(r.nameOfDeceased||r.dealName||'Casket')+'</div>'
+      +'<div class="c-meta">'+(isBlank(r.funeralTime)?'No funeral date':'Funeral '+esc(fmtDate(r.funeralTime)))+'</div></div>'
+      +'<div class="qwhat"><span class="k">'+esc(e.label)+'</span>'
+      +'<span class="old">'+editVal(e,e.old)+'</span><span class="arrow">→</span><span class="new'+(seen?' seen':'')+'">'+editVal(e,e.cur)+'</span></div>'
+      +'<div class="qside"><span class="qwhen">'+(e.stamp?'Edited '+esc(fmtDateTime(e.stamp)):'Edited (date not recorded)')+'</span>'
+      +(seen?'<span class="qwhen">Seen by '+esc((''+(seen.by||'')).split('@')[0])+(seen.at?' · '+esc(fmtDateTime(seen.at)):'')+'</span>'
+            :'<button class="dfh-btn btn-outline q_one" data-k="'+esc(e.key)+'"><i class="ti ti-check"></i> Mark as seen</button>')
+      +'</div></div>';
+  }
+  // Seen edits go ABOVE the new ones -- at the bottom of a long queue they were off screen and
+  // "Show seen edits" looked like it did nothing.
+  if(STATE.showSeen){
+    h+='<div class="qhead">Seen edits ('+seenList.length+')</div>';
+    h+=seenList.length?seenList.map(qrow).join(''):'<div class="empty">No edits have been marked as seen yet.</div>';
+    h+='<div class="qhead">Not seen yet ('+fresh.length+')</div>';
+  }
+  h+=fresh.length?fresh.map(qrow).join(''):'<div class="empty">No new edits. Everything has been seen.</div>';
+  root.innerHTML=h;
+  document.getElementById('q_toggle').addEventListener('click',function(){STATE.showSeen=!STATE.showSeen;render();try{window.scrollTo(0,0);}catch(_){}});
+  var allBtn=document.getElementById('q_all');
+  if(allBtn&&fresh.length){allBtn.addEventListener('click',function(){
+    if(!window.confirm('Mark all '+fresh.length+' edits as seen?'))return;
+    acknowledge(fresh,allBtn);
+  });}
+  Array.prototype.forEach.call(root.querySelectorAll('.q_one'),function(b){
+    b.addEventListener('click',function(ev){ev.stopPropagation();var k=b.getAttribute('data-k');acknowledge(fresh.filter(function(e){return e.key===k;}),b);});
+  });
+  Array.prototype.forEach.call(root.querySelectorAll('.qwho'),function(w){
+    w.addEventListener('click',function(){openDetail(STATE.all[parseInt(w.getAttribute('data-i'),10)]);});
+  });
+}
+function acknowledge(edits,btn){
+  if(!edits.length)return;
+  var payload=edits.map(function(e){return {key:e.key,opsId:e.r.operationsId||'',name:e.r.nameOfDeceased||e.r.dealName||'',field:e.label};});
+  var label=btn.innerHTML; btn.disabled=true; btn.textContent='Saving…';
+  callApi({api_name:API_ACK,http_method:"POST",content_type:"application/json",payload:{editsJson:JSON.stringify(payload)}})
+   .then(function(resp){
+      var res=parseResult(resp);
+      if(res&&res.success){
+        edits.forEach(function(e){STATE.seen[e.key]={by:res.by||'',at:res.at||''};});
+        render();
+      } else { btn.disabled=false; btn.innerHTML=label; window.alert('Could not save: '+((res&&res.message)?res.message:'unknown error')); }
+   })
+   .catch(function(e){btn.disabled=false;btn.innerHTML=label;window.alert('Error saving. Please try again.');});
+}
+
+function openDetail(r){
+  var cur=normStatus(r.casketStatus);
+  var opts=STATUS_OPTS.map(function(o){var sel=(cur===o)?' selected':'';return '<option value="'+esc(o)+'"'+sel+'>'+esc(o)+'</option>';}).join('');
+  var noops=r.hasOperations?'':'<div class="warn">⚠ This deal has no Operations record, so there is nowhere to save. Ask an admin.</div>';
+  var html=''
+   +'<div class="modal-hdr"><h2>'+esc(r.nameOfDeceased||r.dealName||'Casket')+'</h2>'
+   +'<div class="sub">Funeral '+fmtDate(r.funeralTime)+(isBlank(r.caseLocation)?'':' · '+esc(r.caseLocation))+'</div></div>'
+   +'<div class="modal-body">'+noops
+   +'<div class="erow"><label>Casket Status</label><select id="e_status">'+opts+'</select></div>'
+   +'<div class="erow"><label>Due Date</label><div class="ro">'+(dueTargetStr(r)?esc(fmtDateOnly(dueTargetStr(r)))+' &nbsp;<span class="dim">(funeral − 4 days)</span>':'— <span class="dim">(needs a funeral date)</span>')+'</div></div>'
+   +'<div class="erow"><label>Actual Complete Date</label><input id="e_done" type="date" value="'+dpart(r.casketActualCompleteDate)+'"></div>'
+   +'<div class="actions"><button class="dfh-btn btn-outline" id="e_cancel">Close</button><button class="dfh-btn btn-primary" id="e_save"'+(r.hasOperations?'':' disabled')+'>Save</button></div>'
+   +'</div>';
+  document.getElementById('modal').innerHTML=html;
+  document.getElementById('overlay').classList.add('open');
+  document.getElementById('e_cancel').addEventListener('click',closeDetail);
+  var sb=document.getElementById('e_save');
+  if(sb&&r.hasOperations){sb.addEventListener('click',function(){saveDetail(r,sb);});}
+}
+function closeDetail(){document.getElementById('overlay').classList.remove('open');}
+document.getElementById('overlay').addEventListener('click',function(e){if(e.target.id==='overlay')closeDetail();});
+
+function saveDetail(r,btn){
+  var status=document.getElementById('e_status').value;
+  var due=dueTargetStr(r);   // read-only: always funeral - 4 days
+  var done=document.getElementById('e_done').value;
+  btn.disabled=true;btn.textContent='Saving…';
+  callApi({api_name:API_SAVE,http_method:"POST",content_type:"application/json",
+    payload:{operationsId:(r.operationsId||''),casketStatus:status,casketDueDate:due,casketActualCompleteDate:done}})
+   .then(function(resp){
+      var res=parseResult(resp);
+      if(res&&res.success){
+        r.casketStatus=(status==='-None-')?r.casketStatus:status;
+        if(due){r.casketDueDate=due;} if(done){r.casketActualCompleteDate=done;}
+        window.alert('Saved.');closeDetail();render();
+      } else { btn.disabled=false;btn.textContent='Save';window.alert('Could not save: '+((res&&res.message)?res.message:'unknown error')); }
+   })
+   .catch(function(e){btn.disabled=false;btn.textContent='Save';window.alert('Error saving. Please try again.');});
+}
+
+document.getElementById('refresh').addEventListener('click',load);
+document.getElementById('search').addEventListener('input',function(e){STATE.search=e.target.value;render();});
+
+function start(){load();}
+if(window.ZOHO && ZOHO.CREATOR && ZOHO.CREATOR.init){ ZOHO.CREATOR.init().then(start).catch(start); } else { start(); }
+</script>
+</body>
+</html>

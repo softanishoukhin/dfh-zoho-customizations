@@ -1,0 +1,298 @@
+// =====================================================================================
+// ZP-TBD-109 -- Funeral Preparation app (Andrea, 2026-10-13)
+//   1. Load list = ALL merchandise (every product line except services / vehicles / burial site)
+//      + the package contents (Deal Funeral Special Instructions) as one item with one tick
+//   2. Reconciliation marked completed automatically (widget saves check key "completed";
+//      fpFuneralList returns it and leaves it out of the tick count)
+//   3. Fix: fpViewingList transfer-trip pick had a mixed && / || condition (Creator drops the
+//      brackets) -> nested ifs (find/replace, see metadata.md)
+// Base: live export Funeral_Preparation.ds (12-Oct-2026 21:34).
+// REPLACE the whole body of: fpLoadList, fpFuneralList. Nothing else changes in these files.
+// =====================================================================================
+
+
+// ----- REPLACED: fpLoadList (helper used by fpGetCase) -------------------------------------
+list fpLoadList(map deal)
+{
+	// ZP-TBD-109: every product line is merchandise EXCEPT these parent products (services,
+	// vehicles, burial site, fees). A new parent product shows automatically; to hide one,
+	// add its exact name here (and in the Driver App / Trip Manager lists -- same list).
+	excluded = {"Caskets","Hearses & Transport","Hearse Rental","Removal Vehicles","Chapel","Catering","Hillview","Outside Cemetery","Pre Need","Exhumation","IFSLM","Headstone","Media","Cremation w/ Funeral Service","Cremation Only","HIH","UHWI","NCH","CRH"};
+	items = List();
+	// package contents: only written down in the Deal's Funeral Special Instructions
+	pkgText = (ifnull(deal.get("Funeral_Special_Instructions"),"") + "").trim();
+	if(pkgText != "")
+	{
+		pk = Map();
+		pk.put("key","pkg");
+		pk.put("source","Deal");
+		pk.put("category","Package items");
+		pk.put("name",pkgText);
+		pk.put("qty","");
+		pk.put("kind","package");
+		items.add(pk);
+	}
+	lines = List();
+	try
+	{
+		pulled = deal.get("Product_Selection");
+		if(pulled != null)
+		{
+			lines = pulled.toList();
+		}
+	}
+	catch (eSub)
+	{
+		lines = List();
+	}
+	for each  line in lines
+	{
+		parentName = "";
+		try
+		{
+			parentName = ifnull(line.get("Parent_Product").get("name"),"") + "";
+		}
+		catch (ePp)
+		{
+			parentName = "";
+		}
+		childName = "";
+		try
+		{
+			childName = ifnull(line.get("Child_Product").get("name"),"") + "";
+		}
+		catch (eCp)
+		{
+			childName = "";
+		}
+		if(parentName != "" && childName != "")
+		{
+			if(!excluded.contains(parentName))
+			{
+				it = Map();
+				it.put("key","ps:" + ifnull(line.get("id"),"") + "");
+				it.put("source","Deal");
+				it.put("category",parentName);
+				it.put("name",childName);
+				it.put("qty",ifnull(line.get("Quantity"),"") + "");
+				items.add(it);
+			}
+		}
+	}
+	// walk-in invoice (Invoices.Is_walk_in_Invoice = true)
+	dealId = ifnull(deal.get("id"),"") + "";
+	walkInId = "";
+	if(dealId != "")
+	{
+		invs = List();
+		try
+		{
+			invs = zoho.crm.getRelatedRecords("Invoices","Deals",dealId.toLong(),1,200,Map(),"zoho_oauth_connection");
+		}
+		catch (eInv)
+		{
+			invs = List();
+		}
+		for each  inv in invs
+		{
+			isWalkIn = false;
+			try
+			{
+				isWalkIn = inv.get("Is_walk_in_Invoice") == true;
+			}
+			catch (eFlag)
+			{
+				isWalkIn = false;
+			}
+			if(isWalkIn && walkInId == "")
+			{
+				walkInId = ifnull(inv.get("id"),"") + "";
+			}
+		}
+	}
+	if(walkInId != "")
+	{
+		invResp = Map();
+		try
+		{
+			invResp = invokeurl
+			[
+				url :"https://www.zohoapis.com/crm/v8/Invoices/" + walkInId
+				type :GET
+				connection:"zoho_oauth_connection"
+			];
+		}
+		catch (eInvGet)
+		{
+			invResp = Map();
+		}
+		invLines = List();
+		try
+		{
+			invData = invResp.get("data").toList();
+			if(invData.size() > 0)
+			{
+				rawItems = invData.get(0).get("Invoiced_Items");
+				if(rawItems != null)
+				{
+					invLines = rawItems.toList();
+				}
+			}
+		}
+		catch (eInvParse)
+		{
+			invLines = List();
+		}
+		for each  il in invLines
+		{
+			ipName = "";
+			try
+			{
+				ipName = ifnull(il.get("Parent_Product").get("name"),"") + "";
+			}
+			catch (eIpp)
+			{
+				ipName = "";
+			}
+			icName = "";
+			try
+			{
+				icName = ifnull(il.get("Product_Name").get("name"),"") + "";
+			}
+			catch (eIcp)
+			{
+				icName = "";
+			}
+			if(ipName != "" && icName != "")
+			{
+				if(!excluded.contains(ipName))
+				{
+					it2 = Map();
+					it2.put("key","wi:" + ifnull(il.get("id"),"") + "");
+					it2.put("source","Walk-in invoice");
+					it2.put("category",ipName);
+					it2.put("name",icName);
+					it2.put("qty",ifnull(il.get("Quantity"),"") + "");
+					items.add(it2);
+				}
+			}
+		}
+	}
+	return items;
+}
+
+
+// ----- REPLACED: fpFuneralList  -> Custom API FP_Funeral_List (POST: forDate) -------------
+// ZP-TBD-109: each row also returns "completed" ({v, by, at} when the reconciliation is
+// complete, else empty), and the "completed" key no longer counts as a tick.
+map fpFuneralList(string forDate)
+{
+	result = Map();
+	day = ifnull(forDate,"") + "";
+	if(day.length() < 10)
+	{
+		day = zoho.currentdate.addDay(1).toString("yyyy-MM-dd");
+	}
+	day = day.subString(0,10);
+	fromIso = day + "T00:00:00-05:00";
+	toIso = day + "T23:59:59-05:00";
+	lost = "'Closed Lost','Closed Lost to Competition','DFH Not Selected'";
+	hits = thisapp.fpCoql("select id from Deals where (Funeral_Time between '" + fromIso + "' and '" + toIso + "' and Stage not in (" + lost + ")) limit 2000");
+	ids = List();
+	for each  h in hits
+	{
+		ids.add(h.get("id") + "");
+	}
+	deals = thisapp.fpGetByIds("Deals",ids,"Name_of_Deceased,Deal_Name,Pipeline,Type,Stage,Funeral_Time,Church_Chapel,Place_of_Internment,Case_Location,Owner,Programmes");
+	formDeals = List();
+	openByDeal = Map();
+	checksByDeal = Map();
+	compByDeal = Map();
+	if(ids.size() > 0)
+	{
+		forms = FP_Viewing_Form[Deal_ID in ids];
+		for each  f in forms
+		{
+			formDeals.add(ifnull(f.Deal_ID,"") + "");
+		}
+		items = FP_Change_Item[Deal_ID in ids];
+		for each  it in items
+		{
+			if(it.Done != true)
+			{
+				k = ifnull(it.Deal_ID,"") + "";
+				n = 0;
+				if(openByDeal.containKey(k))
+				{
+					n = openByDeal.get(k).toLong();
+				}
+				openByDeal.put(k,n + 1);
+			}
+		}
+		cls = FP_Checklist[Deal_ID in ids];
+		for each  cl in cls
+		{
+			clDeal = ifnull(cl.Deal_ID,"") + "";
+			cnt = 0;
+			try
+			{
+				cm = (ifnull(cl.Checks,"") + "").toMap();
+				cmKeys = cm.keys();
+				for each  ck in cmKeys
+				{
+					if(ck == "completed")
+					{
+						compByDeal.put(clDeal,cm.get(ck));
+					}
+					else if(ifnull(cm.get(ck).get("v"),"") + "" != "")
+					{
+						cnt = cnt + 1;
+					}
+				}
+			}
+			catch (eCm)
+			{
+				cnt = 0;
+			}
+			checksByDeal.put(clDeal,cnt);
+		}
+	}
+	drivers = thisapp.fpFuneralDrivers(ids);
+	rows = List();
+	for each  d in deals
+	{
+		dId = d.get("id") + "";
+		row = Map();
+		row.put("deal",d);
+		row.put("viewed",formDeals.contains(dId));
+		openN = 0;
+		if(openByDeal.containKey(dId))
+		{
+			openN = openByDeal.get(dId).toLong();
+		}
+		row.put("open_changes",openN);
+		ticks = 0;
+		if(checksByDeal.containKey(dId))
+		{
+			ticks = checksByDeal.get(dId).toLong();
+		}
+		row.put("ticks",ticks);
+		comp = Map();
+		if(compByDeal.containKey(dId))
+		{
+			comp = compByDeal.get(dId);
+		}
+		row.put("completed",comp);
+		drv = "";
+		if(drivers.containKey(dId))
+		{
+			drv = drivers.get(dId) + "";
+		}
+		row.put("driver",drv);
+		rows.add(row);
+	}
+	result.put("status","success");
+	result.put("date",day);
+	result.put("rows",rows);
+	return result;
+}

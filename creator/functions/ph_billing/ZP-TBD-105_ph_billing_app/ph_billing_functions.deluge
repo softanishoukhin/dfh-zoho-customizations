@@ -1,0 +1,3067 @@
+// =============================================================================
+// ZP-TBD-105 -- Police & Hospital Billing app (new Creator app, portal + widget)
+// Creator app: Police & Hospital Billing (link name police-hospital-billing)
+// One place to follow and correct every Police / Hospital case's billing:
+// initial trip + KM, storage, Letter of No Interest / release dates, autopsy,
+// reschedule, X-ray, the Sales Orders and Invoices line by line, and a manual
+// "Billing closed" tick. Reads live CRM (+ Books for the invoice check);
+// writes back to CRM with workflows ON so the existing billing automation runs.
+// The app's own data lives in 2 Creator forms: PH_Case_Status, PH_Change_Log
+// (see metadata.md).
+// Connection: zoho_oauth_connection -- the shared Zoho OAuth connection (CRM
+//   scopes; ZohoBooks.invoices.READ is needed for the Books check, see metadata.md).
+// Add each function as a NEW function (Workflow > Functions > New Function,
+// namespace "Deluge"), one per editor, in file order -- helpers first. Then create
+// the Custom APIs listed in metadata.md. No existing workflow is changed here.
+// The 6 ph* query helpers are the Operations App ops* helpers, renamed.
+// =============================================================================
+
+
+// ----- FUNCTION: phCoqlQuery  (helper -- no Custom API) ----------------------
+map phCoqlQuery(string selectQuery)
+{
+	out = Map();
+	out.put("rows",List());
+	out.put("error","");
+	qm = Map();
+	qm.put("select_query",selectQuery);
+	resp = Map();
+	try
+	{
+		resp = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v8/coql"
+			type :POST
+			parameters:qm.toString()
+			connection:"zoho_oauth_connection"
+		];
+	}
+	catch (eReq)
+	{
+		out.put("error","COQL request failed: " + eReq.toString());
+		return out;
+	}
+	rows = List();
+	errCode = "";
+	try
+	{
+		errCode = ifnull(resp.get("code"),"") + "";
+	}
+	catch (eCode)
+	{
+		errCode = "";
+	}
+	if(errCode != "")
+	{
+		msg = "";
+		try
+		{
+			msg = ifnull(resp.get("message"),"") + "";
+		}
+		catch (eMsg)
+		{
+			msg = "";
+		}
+		out.put("error",errCode + " " + msg);
+		return out;
+	}
+	// whole page at once -- a per-row copy loop costs 2 statements a row and runs
+	// into Creator's statement limit on big lists
+	try
+	{
+		dataRaw = resp.get("data");
+		if(dataRaw != null)
+		{
+			rows.addAll(dataRaw.toList());
+		}
+	}
+	catch (eData)
+	{
+		rows = List();
+	}
+	out.put("rows",rows);
+	return out;
+}
+
+
+// ----- FUNCTION: phCoqlAll  (helper -- no Custom API) ------------------------
+// Runs a COQL query (no "limit" in it) page by page, 2000 rows a page, up to
+// 10,000 rows. Returns {"rows":[...], "error":"..."}.
+map phCoqlAll(string baseQuery)
+{
+	out = Map();
+	allRows = List();
+	errText = "";
+	pages = {0,1,2,3,4};
+	for each  pg in pages
+	{
+		res = thisapp.phCoqlQuery(baseQuery + " limit " + (pg * 2000) + ", 2000");
+		if(ifnull(res.get("error"),"") != "")
+		{
+			errText = res.get("error");
+			break;
+		}
+		part = res.get("rows");
+		allRows.addAll(part);
+		if(part.size() < 2000)
+		{
+			break;
+		}
+	}
+	out.put("rows",allRows);
+	out.put("error",errText);
+	return out;
+}
+
+
+// ----- FUNCTION: phCoql  (helper -- no Custom API) ---------------------------
+list phCoql(string selectQuery)
+{
+	res = thisapp.phCoqlQuery(selectQuery);
+	return res.get("rows");
+}
+
+
+// ----- FUNCTION: phCoqlIn  (helper -- no Custom API) -------------------------
+// Runs "<selectFrom> where <inField> in (...) [and <extraWhere>]" in batches of 50
+// ids (COQL IN-list limit). extraWhere must already be wrapped in brackets.
+list phCoqlIn(string selectFrom, string inField, list idList, string extraWhere)
+{
+	out = List();
+	cleanIds = List();
+	for each  oneId in idList
+	{
+		s = ifnull(oneId,"") + "";
+		if(s != "" && !cleanIds.contains(s))
+		{
+			cleanIds.add(s);
+		}
+	}
+	total = cleanIds.size();
+	if(total == 0)
+	{
+		return out;
+	}
+	batch = List();
+	idx = 0;
+	for each  oneId in cleanIds
+	{
+		idx = idx + 1;
+		batch.add(oneId);
+		if(batch.size() == 50 || idx == total)
+		{
+			q = selectFrom + " where (" + inField + " in ('" + batch.toString("','") + "'))";
+			if(extraWhere != "")
+			{
+				q = q + " and " + extraWhere;
+			}
+			q = q + " limit 2000";
+			part = thisapp.phCoql(q);
+			out.addAll(part);
+			batch = List();
+		}
+	}
+	return out;
+}
+
+
+// ----- FUNCTION: phGetByIds  (helper -- no Custom API) -----------------------
+// REST GET /crm/v8/<module>?ids=... in batches of 100. Lookups come back as
+// {name,id}, which COQL does not give us; formula fields (Grand_Total) work here.
+list phGetByIds(string moduleName, list idList, string fieldList)
+{
+	out = List();
+	cleanIds = List();
+	for each  oneId in idList
+	{
+		s = ifnull(oneId,"") + "";
+		if(s != "" && !cleanIds.contains(s))
+		{
+			cleanIds.add(s);
+		}
+	}
+	total = cleanIds.size();
+	if(total == 0)
+	{
+		return out;
+	}
+	batch = List();
+	idx = 0;
+	for each  oneId in cleanIds
+	{
+		idx = idx + 1;
+		batch.add(oneId);
+		if(batch.size() == 100 || idx == total)
+		{
+			resp = Map();
+			try
+			{
+				resp = invokeurl
+				[
+					url :"https://www.zohoapis.com/crm/v8/" + moduleName + "?ids=" + batch.toString(",") + "&fields=" + fieldList
+					type :GET
+					connection:"zoho_oauth_connection"
+				];
+			}
+			catch (eGet)
+			{
+				resp = Map();
+			}
+			try
+			{
+				dataRaw = resp.get("data");
+				if(dataRaw != null)
+				{
+					out.addAll(dataRaw.toList());
+				}
+			}
+			catch (eData)
+			{
+				// skip this batch
+			}
+			batch = List();
+		}
+	}
+	return out;
+}
+
+
+// ----- FUNCTION: phLkId  (helper -- no Custom API) ---------------------------
+// Lookup id from a record: handles {id,name}, {id} and a plain id string
+// (Trips.Parent_Trip reads back as a plain id).
+string phLkId(map rec, string fieldName)
+{
+	out = "";
+	try
+	{
+		rawText = ifnull(rec.get(fieldName),"") + "";
+		if(rawText.startsWith("{"))
+		{
+			out = ifnull(rawText.toMap().get("id"),"") + "";
+		}
+		else
+		{
+			out = rawText;
+		}
+	}
+	catch (eLk)
+	{
+		out = "";
+	}
+	return out;
+}
+
+
+// ----- FUNCTION: phLkName  (helper -- no Custom API) -------------------------
+string phLkName(map rec, string fieldName)
+{
+	out = "";
+	try
+	{
+		rawText = ifnull(rec.get(fieldName),"") + "";
+		if(rawText.startsWith("{"))
+		{
+			out = ifnull(rawText.toMap().get("name"),"") + "";
+		}
+	}
+	catch (eLk)
+	{
+		out = "";
+	}
+	return out;
+}
+
+
+// ----- FUNCTION: phRestGet  (helper -- no Custom API) ------------------------
+// One full record via REST v8 (keeps subforms / line items). Empty Map if missing.
+map phRestGet(string moduleName, string recId)
+{
+	rec = Map();
+	if(ifnull(recId,"") == "")
+	{
+		return rec;
+	}
+	resp = Map();
+	try
+	{
+		resp = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v8/" + moduleName + "/" + recId
+			type :GET
+			connection:"zoho_oauth_connection"
+		];
+	}
+	catch (eGet)
+	{
+		resp = Map();
+	}
+	dataList = List();
+	try
+	{
+		dataRaw = resp.get("data");
+		if(dataRaw != null)
+		{
+			dataList = dataRaw.toList();
+		}
+	}
+	catch (eData)
+	{
+		dataList = List();
+	}
+	if(dataList.size() > 0)
+	{
+		rec = dataList.get(0);
+	}
+	return rec;
+}
+
+
+// ----- FUNCTION: phNow  (helper -- no Custom API) ----------------------------
+// App time zone must be America/Jamaica (-05:00 all year, no DST).
+string phNow(int mins)
+{
+	t = zoho.currenttime.addMinutes(mins);
+	return t.toString("yyyy-MM-dd'T'HH:mm:ss") + "-05:00";
+}
+
+
+// ----- FUNCTION: phLog  (helper -- no Custom API) ----------------------------
+// One line in the case's change log (PH_Change_Log).
+void phLog(string dealId, string actionType, string detail)
+{
+	insert into PH_Change_Log
+	[
+		Added_User=zoho.loginuser
+		Deal_ID=dealId
+		Action_Type=actionType
+		Detail=detail
+		Changed_By=ifnull(zoho.loginuserid,"") + ""
+		Changed_At=thisapp.phNow(0)
+	];
+}
+
+
+// ----- FUNCTION: phInvoiceForType  (helper -- no Custom API) -----------------
+// Sales_Order_Type -> the Invoice_For value of the invoice the CRM builds from it
+// (createInvoiceBasedOnSalesOrderForPolice / ForMNSJ / ForFamily / ForHospital).
+string phInvoiceForType(string soType)
+{
+	t = ifnull(soType,"") + "";
+	if(t == "Police Cases")
+	{
+		return "Police";
+	}
+	if(t == "Police Cases - MNSJ")
+	{
+		return "MNSJ";
+	}
+	if(t == "Police Cases - Family")
+	{
+		return "Family";
+	}
+	if(t == "Hospital Cases")
+	{
+		return "Hospital";
+	}
+	return "";
+}
+
+
+// ----- FUNCTION: phInvoiceLocked  (helper -- no Custom API) ------------------
+// Invoices the app must not change (money already taken, or cancelled).
+bool phInvoiceLocked(string status)
+{
+	s = ifnull(status,"") + "";
+	if(s == "Paid" || s == "Partially Paid" || s == "Void" || s == "Cancelled")
+	{
+		return true;
+	}
+	return false;
+}
+
+
+// ----- FUNCTION: phLines  (helper -- no Custom API) --------------------------
+// Line items of a Sales Order (Ordered_Items) or Invoice (Invoiced_Items),
+// flattened for the widget. Product category / code / unit price come from
+// productIdx (id -> Products record).
+list phLines(map rec, string subformName, map productIdx)
+{
+	out = List();
+	items = List();
+	try
+	{
+		raw = rec.get(subformName);
+		if(raw != null)
+		{
+			items = raw.toList();
+		}
+	}
+	catch (eItems)
+	{
+		items = List();
+	}
+	for each  it in items
+	{
+		ln = Map();
+		ln.put("id",ifnull(it.get("id"),"") + "");
+		pid = thisapp.phLkId(it,"Product_Name");
+		ln.put("productId",pid);
+		ln.put("productName",thisapp.phLkName(it,"Product_Name"));
+		ln.put("qty",ifnull(it.get("Quantity"),0));
+		ln.put("price",ifnull(it.get("List_Price"),0));
+		ln.put("discount",ifnull(it.get("Discount"),0));
+		ln.put("tax",ifnull(it.get("Tax"),0));
+		ln.put("total",ifnull(it.get("Net_Total"),ifnull(it.get("Total"),0)));
+		ln.put("description",ifnull(it.get("Description"),"") + "");
+		cat = "";
+		code = "";
+		unit = "";
+		if(productIdx.containKey(pid))
+		{
+			p = productIdx.get(pid);
+			cat = ifnull(p.get("Product_Category"),"") + "";
+			code = ifnull(p.get("Product_Code"),"") + "";
+			unit = ifnull(p.get("Unit_Price"),"") + "";
+		}
+		ln.put("category",cat);
+		ln.put("code",code);
+		ln.put("unitPrice",unit);
+		out.add(ln);
+	}
+	return out;
+}
+
+
+// ----- FUNCTION: phBooksInvoice  (helper -- no Custom API) -------------------
+// Reads the Books copy of an invoice so the app can show CRM vs Books side by
+// side. Best effort: needs ZohoBooks.invoices.READ on zoho_oauth_connection.
+map phBooksInvoice(string booksId)
+{
+	out = Map();
+	out.put("ok",false);
+	if(ifnull(booksId,"") == "")
+	{
+		out.put("error","Not in Books yet");
+		return out;
+	}
+	resp = Map();
+	try
+	{
+		resp = invokeurl
+		[
+			url :"https://www.zohoapis.com/books/v3/invoices/" + booksId + "?organization_id=872327358"
+			type :GET
+			connection:"zoho_oauth_connection"
+		];
+	}
+	catch (eB)
+	{
+		out.put("error","Books could not be read: " + eB.toString());
+		return out;
+	}
+	inv = Map();
+	try
+	{
+		inv = resp.get("invoice");
+	}
+	catch (eInv)
+	{
+		inv = Map();
+	}
+	if(inv == null || inv.isEmpty())
+	{
+		out.put("error","Books could not be read: " + ifnull(resp.get("message"),"") + "");
+		return out;
+	}
+	out.put("ok",true);
+	out.put("number",ifnull(inv.get("invoice_number"),"") + "");
+	out.put("status",ifnull(inv.get("status"),"") + "");
+	out.put("total",ifnull(inv.get("total"),0));
+	out.put("balance",ifnull(inv.get("balance"),0));
+	out.put("date",ifnull(inv.get("date"),"") + "");
+	booksLines = List();
+	itemsRaw = List();
+	try
+	{
+		itemsRaw = inv.get("line_items").toList();
+	}
+	catch (eLi)
+	{
+		itemsRaw = List();
+	}
+	for each  li in itemsRaw
+	{
+		bl = Map();
+		bl.put("name",ifnull(li.get("name"),"") + "");
+		bl.put("qty",ifnull(li.get("quantity"),0));
+		bl.put("rate",ifnull(li.get("rate"),0));
+		bl.put("total",ifnull(li.get("item_total"),0));
+		booksLines.add(bl);
+	}
+	out.put("lines",booksLines);
+	return out;
+}
+
+
+// ----- FUNCTION: phReplaceLines  (helper -- no Custom API) -------------------
+// Replaces ALL line items of a Sales Order / Invoice with newItems, the same way
+// the CRM billing functions do (v2.1 PUT of the full list), then re-reads the
+// record and deletes any old line that is still there (v8 "_delete"), so the
+// result is exactly newItems whichever line-item semantics the API applies.
+// Returns "" on success, else the error text.
+string phReplaceLines(string moduleName, string recId, string subformName, list newItems, list oldLineIds, list keptIds)
+{
+	rec = Map();
+	rec.put(subformName,newItems);
+	dl = List();
+	dl.add(rec);
+	body = Map();
+	body.put("data",dl);
+	resp = Map();
+	try
+	{
+		resp = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v2.1/" + moduleName + "/" + recId
+			type :PUT
+			parameters:body.toString()
+			connection:"zoho_oauth_connection"
+		];
+	}
+	catch (ePut)
+	{
+		return "Update failed: " + ePut.toString();
+	}
+	code = "";
+	try
+	{
+		code = ifnull(resp.get("data").get(0).get("code"),"") + "";
+	}
+	catch (eCode)
+	{
+		code = "";
+	}
+	if(code != "SUCCESS")
+	{
+		return "Update failed: " + resp.toString();
+	}
+	// Clean-up pass: any old line (not kept by id) that survived the PUT is deleted.
+	after = thisapp.phRestGet(moduleName,recId);
+	stillThere = List();
+	afterItems = List();
+	try
+	{
+		raw = after.get(subformName);
+		if(raw != null)
+		{
+			afterItems = raw.toList();
+		}
+	}
+	catch (eAfter)
+	{
+		afterItems = List();
+	}
+	for each  it in afterItems
+	{
+		lid = ifnull(it.get("id"),"") + "";
+		if(oldLineIds.contains(lid) && !keptIds.contains(lid))
+		{
+			stillThere.add(lid);
+		}
+	}
+	if(stillThere.size() > 0)
+	{
+		// built as text: a Deluge Map can't reliably carry the JSON null "_delete" needs
+		delParts = List();
+		for each  lid in stillThere
+		{
+			delParts.add("{\"id\":\"" + lid + "\",\"_delete\":null}");
+		}
+		dbodyText = "{\"data\":[{\"" + subformName + "\":[" + delParts.toString(",") + "]}]}";
+		try
+		{
+			dresp = invokeurl
+			[
+				url :"https://www.zohoapis.com/crm/v8/" + moduleName + "/" + recId
+				type :PUT
+				parameters:dbodyText
+				connection:"zoho_oauth_connection"
+			];
+		}
+		catch (eDel)
+		{
+			return "Lines saved, but " + stillThere.size() + " old line(s) could not be removed: " + eDel.toString();
+		}
+	}
+	return "";
+}
+
+
+// ----- FUNCTION: phStampBooksSync  (helper -- no Custom API) -----------------
+// Sets Invoice_Items_Updated_At = now + 2 min with workflows on. The CRM rule
+// "Update Invoice in Books based Item Update" fires at that time and runs
+// "Create Invoice in Books" (create-or-update), which then syncs on to Xero.
+string phStampBooksSync(string invoiceId)
+{
+	upd = Map();
+	upd.put("Invoice_Items_Updated_At",thisapp.phNow(2));
+	resp = Map();
+	try
+	{
+		resp = zoho.crm.updateRecord("Invoices",invoiceId.toLong(),upd,{"trigger":{"workflow"}},"zoho_oauth_connection");
+	}
+	catch (eUpd)
+	{
+		return "Books sync could not be scheduled: " + eUpd.toString();
+	}
+	if(!resp.containKey("id"))
+	{
+		return "Books sync could not be scheduled: " + resp.toString();
+	}
+	return "";
+}
+
+
+// ----- FUNCTION: phMirrorSoToInvoice  (helper -- no Custom API) --------------
+// Copies a Sales Order's current lines onto its invoice (exactly what the CRM
+// invoice functions do), then schedules the Books update. Returns a message for
+// the user ("" = nothing to report).
+string phMirrorSoToInvoice(string dealId, string soId)
+{
+	so = thisapp.phRestGet("Sales_Orders",soId);
+	if(so.isEmpty())
+	{
+		return "Sales Order not found";
+	}
+	invFor = thisapp.phInvoiceForType(ifnull(so.get("Sales_Order_Type"),"") + "");
+	if(invFor == "")
+	{
+		return "This Sales Order type has no invoice of its own -- invoice not changed";
+	}
+	invRows = thisapp.phCoql("select id, Status from Invoices where (Deal_Name__s = '" + dealId + "') and (Invoice_For = '" + invFor + "') limit 1");
+	if(invRows.size() == 0)
+	{
+		return "No " + invFor + " invoice yet -- the CRM creates it when the case reaches invoicing; it will copy these lines";
+	}
+	invId = ifnull(invRows.get(0).get("id"),"") + "";
+	inv = thisapp.phRestGet("Invoices",invId);
+	if(thisapp.phInvoiceLocked(ifnull(inv.get("Status"),"") + ""))
+	{
+		return invFor + " invoice is " + inv.get("Status") + " -- it was NOT changed. Correct it in Books (credit note / adjustment).";
+	}
+	newItems = List();
+	soItems = List();
+	try
+	{
+		raw = so.get("Ordered_Items");
+		if(raw != null)
+		{
+			soItems = raw.toList();
+		}
+	}
+	catch (eSoItems)
+	{
+		soItems = List();
+	}
+	for each  product in soItems
+	{
+		pm = Map();
+		ppId = thisapp.phLkId(product,"Parent_Product");
+		if(ppId != "")
+		{
+			pm.put("Parent_Product",ppId);
+		}
+		pm.put("Product_Name",thisapp.phLkId(product,"Product_Name"));
+		pm.put("Quantity",product.get("Quantity"));
+		pm.put("List_Price",product.get("List_Price"));
+		pm.put("Discount",ifnull(product.get("Discount"),0));
+		pm.put("Tax",ifnull(product.get("Tax"),0));
+		pm.put("Line_Tax",ifnull(product.get("Line_Tax"),List()));
+		desc = ifnull(product.get("Description"),"") + "";
+		if(desc != "")
+		{
+			pm.put("Description",desc);
+		}
+		newItems.add(pm);
+	}
+	oldIds = List();
+	invItems = List();
+	try
+	{
+		rawInv = inv.get("Invoiced_Items");
+		if(rawInv != null)
+		{
+			invItems = rawInv.toList();
+		}
+	}
+	catch (eInvItems)
+	{
+		invItems = List();
+	}
+	for each  it in invItems
+	{
+		oldIds.add(ifnull(it.get("id"),"") + "");
+	}
+	err = thisapp.phReplaceLines("Invoices",invId,"Invoiced_Items",newItems,oldIds,List());
+	if(err != "")
+	{
+		return invFor + " invoice: " + err;
+	}
+	stampErr = thisapp.phStampBooksSync(invId);
+	if(stampErr != "")
+	{
+		return invFor + " invoice updated in CRM. " + stampErr;
+	}
+	return invFor + " invoice updated -- Books updates in about 2 minutes";
+}
+
+
+// ----- FUNCTION: phCaseList  -> Custom API PH_Case_List (POST: fromDate) ------
+// Every Police / Hospital case created on or after fromDate (default 2026-06-01):
+// Deals whose Pipeline OR Initial_Pipeline is Police Cases / Hospital Cases -- so a
+// case that later became Funeral with Burial etc. still shows.
+// FETCH ONLY: one COQL per module, each filtered through its Deal lookup, so there
+// are no per-record loops here (Creator's statement limit). The widget joins the
+// rows into cases, picks the pickup trip and works out the warnings.
+map phCaseList(string fromDate)
+{
+	result = Map();
+	fd = ifnull(fromDate,"") + "";
+	if(fd.length() < 10)
+	{
+		fd = "2026-06-01";
+	}
+	fd = fd.subString(0,10);
+	sinceText = fd + "T00:00:00-05:00";
+	phList = "('Police Cases','Hospital Cases')";
+	errors = List();
+	// Deals
+	dealWhere = " where ((Pipeline in " + phList + ") or (Initial_Pipeline in " + phList + ")) and (Created_Time >= '" + sinceText + "')";
+	dealRes = thisapp.phCoqlAll("select id, Deal_Name, Name_of_Deceased, Pipeline, Initial_Pipeline, Stage, Initial_Trip_Completed_At, Pickup_Date, Is_Deceased_In_Our_Care, Letter_of_No_Interest_Date, Receiving_Letter_of_No_Interest_Date, Hospital_Release_Date, Receiving_Release_Date, Condition, Autopsy_Required, Autopsy_Date_Time, Autopsy_Completed_Date_Time, X_Ray_Required, Registration_Number, Created_Time, Selected_Hospital, Selected_Hospital.Account_Name, Police_Account, Police_Account.Account_Name from Deals" + dealWhere + " order by Created_Time desc");
+	if(dealRes.get("error") != "")
+	{
+		result.put("status","error");
+		result.put("message","Deals: " + dealRes.get("error"));
+		return result;
+	}
+	// the same Deal filter, reached through each module's Deal lookup
+	// (lkf = the lookup field's API name on that module)
+	trWhere = " where ((Deal.Pipeline in " + phList + ") or (Deal.Initial_Pipeline in " + phList + ")) and (Deal.Created_Time >= '" + sinceText + "')";
+	tripRes = thisapp.phCoqlAll("select id, Name, Deal, Trip_Type, Trip_Status, Number_of_distance_in_km, Created_on_This_Field_Update, Completion_Time, Scheduled_Date from Trips" + trWhere);
+	if(tripRes.get("error") != "")
+	{
+		errors.add("Trips: " + tripRes.get("error"));
+	}
+	dpRes = thisapp.phCoqlAll("select id, Deal, Trip, Trip.Name, Trip.Trip_Type, Trip.Trip_Status, Trip.Number_of_distance_in_km from Deceased_Pickups" + trWhere);
+	if(dpRes.get("error") != "")
+	{
+		errors.add("Deceased pickups: " + dpRes.get("error"));
+	}
+	soWhere = " where ((Deal_Name.Pipeline in " + phList + ") or (Deal_Name.Initial_Pipeline in " + phList + ")) and (Deal_Name.Created_Time >= '" + sinceText + "')";
+	soRes = thisapp.phCoqlAll("select id, Deal_Name, Sales_Order_Type, Status, Grand_Total from Sales_Orders" + soWhere);
+	if(soRes.get("error") != "")
+	{
+		// Grand_Total is a formula field -- retry without it if COQL refuses it
+		soRes = thisapp.phCoqlAll("select id, Deal_Name, Sales_Order_Type, Status from Sales_Orders" + soWhere);
+		if(soRes.get("error") != "")
+		{
+			errors.add("Sales Orders: " + soRes.get("error"));
+		}
+	}
+	invWhere = " where ((Deal_Name__s.Pipeline in " + phList + ") or (Deal_Name__s.Initial_Pipeline in " + phList + ")) and (Deal_Name__s.Created_Time >= '" + sinceText + "')";
+	invRes = thisapp.phCoqlAll("select id, Deal_Name__s, Invoice_For, Status, Grand_Total, Books_Invoice_ID, Subject, Parent_Account, Parent_Account.Account_Name from Invoices" + invWhere);
+	if(invRes.get("error") != "")
+	{
+		invRes = thisapp.phCoqlAll("select id, Deal_Name__s, Invoice_For, Status, Books_Invoice_ID, Subject, Parent_Account, Parent_Account.Account_Name from Invoices" + invWhere);
+		if(invRes.get("error") != "")
+		{
+			errors.add("Invoices: " + invRes.get("error"));
+		}
+	}
+	// the app's own Billing-closed ticks (one statement per record)
+	closedList = List();
+	allStatus = PH_Case_Status[Billing_Closed == true];
+	for each  st in allStatus
+	{
+		closedList.add({"d":st.Deal_ID,"by":ifnull(st.Closed_By,""),"at":ifnull(st.Closed_At,"")});
+	}
+	result.put("status","success");
+	result.put("fromDate",fd);
+	result.put("deals",dealRes.get("rows"));
+	result.put("trips",tripRes.get("rows"));
+	result.put("deceasedPickups",dpRes.get("rows"));
+	result.put("salesOrders",soRes.get("rows"));
+	result.put("invoices",invRes.get("rows"));
+	result.put("closed",closedList);
+	if(errors.size() > 0)
+	{
+		result.put("message","Some details could not be loaded -- " + errors.toString(" | "));
+	}
+	return result;
+}
+
+
+// ----- FUNCTION: phGetCase  -> Custom API PH_Get_Case (POST: dealId) ----------
+// Everything about one case for the detail screen.
+map phGetCase(string dealId)
+{
+	result = Map();
+	deal = thisapp.phRestGet("Deals",dealId);
+	if(deal.isEmpty())
+	{
+		result.put("status","error");
+		result.put("message","Deal not found: " + dealId);
+		return result;
+	}
+	dealFields = {"Deal_Name","Name_of_Deceased","Pipeline","Initial_Pipeline","Stage","Initial_Trip_Completed_At","Pickup_Date","Is_Deceased_In_Our_Care","Condition","Registration_Number","Case_Number","Police_Office_Name","Police_Phone_Number","Investigating_Officer_s_Interest","Police_Interest","Letter_of_Interest_Date","Letter_of_No_Interest_Date","Receiving_Letter_of_No_Interest_Date","Hospital_Release_Date","Receiving_Release_Date","Autopsy_Required","Autopsy_Type","Autopsy_Location","Autopsy_Date_Time","Autopsy_Completed_Date_Time","X_Ray_Required","Number_of_distance_in_km","Date_of_the_transfer_trip","Created_From_Hospital_or_Police_Case_Deal_ID","Created_Time","Date_of_Death"};
+	d = Map();
+	for each  f in dealFields
+	{
+		d.put(f,ifnull(deal.get(f),"") + "");
+	}
+	lookupFields = {"Police_Account","Selected_Hospital","Autopsy_Locations","Account_Name","Contact_Name"};
+	for each  f in lookupFields
+	{
+		lk = Map();
+		lk.put("id",thisapp.phLkId(deal,f));
+		lk.put("name",thisapp.phLkName(deal,f));
+		d.put(f,lk);
+	}
+	pipe = d.get("Pipeline");
+	ipipe = d.get("Initial_Pipeline");
+	// nested ifs, not mixed && / || -- the Creator editor drops brackets in mixed conditions
+	kind = "hospital";
+	if(ipipe == "Police Cases")
+	{
+		kind = "police";
+	}
+	else if(ipipe != "Hospital Cases")
+	{
+		if(pipe == "Police Cases")
+		{
+			kind = "police";
+		}
+	}
+	result.put("deal",d);
+	result.put("kind",kind);
+	// ---- trips: on the Deal + the pickup trip via Deceased_Pickups + autopsy parents
+	tripSel = "select id, Name, Trip_Type, Trip_Status, Number_of_distance_in_km, Created_on_This_Field_Update, Scheduled_Date, Completion_Time, Parent_Trip, Autopsy_Location, Amber_Connect_Job_ID from Trips";
+	tripRows = thisapp.phCoql(tripSel + " where Deal = '" + dealId + "' order by Created_Time asc limit 200");
+	tripIdsSeen = List();
+	tripList = List();
+	for each  t in tripRows
+	{
+		tripIdsSeen.add(t.get("id") + "");
+		tripList.add(t);
+	}
+	dpRows = thisapp.phCoql("select id, Trip, Registration_Number, Condition from Deceased_Pickups where Deal = '" + dealId + "' limit 20");
+	extraTripIds = List();
+	dpInfo = List();
+	for each  dp in dpRows
+	{
+		tId = thisapp.phLkId(dp,"Trip");
+		if(tId != "" && !tripIdsSeen.contains(tId))
+		{
+			extraTripIds.add(tId);
+		}
+		dm = Map();
+		dm.put("id",dp.get("id") + "");
+		dm.put("tripId",tId);
+		dm.put("regNo",ifnull(dp.get("Registration_Number"),"") + "");
+		dm.put("condition",ifnull(dp.get("Condition"),"") + "");
+		dpInfo.add(dm);
+	}
+	parentIds = List();
+	for each  t in tripRows
+	{
+		ptId = thisapp.phLkId(t,"Parent_Trip");
+		if(ptId != "" && !tripIdsSeen.contains(ptId))
+		{
+			parentIds.add(ptId);
+		}
+	}
+	sharedTrips = List();
+	if(extraTripIds.size() > 0 || parentIds.size() > 0)
+	{
+		allExtra = List();
+		allExtra.addAll(extraTripIds);
+		allExtra.addAll(parentIds);
+		sharedTrips = thisapp.phCoqlIn(tripSel,"id",allExtra,"");
+	}
+	autopsyLocIds = List();
+	trips = List();
+	pickupTripId = "";
+	pickupTypes = {"Police Case Pickup","Initial Police Case Pickup","Hospital Storage","Hospital Pickups","Initial","Home Pickups","First Call","Regular"};
+	for each  t in tripList
+	{
+		alId = thisapp.phLkId(t,"Autopsy_Location");
+		if(alId != "")
+		{
+			autopsyLocIds.add(alId);
+		}
+	}
+	for each  t in sharedTrips
+	{
+		alId = thisapp.phLkId(t,"Autopsy_Location");
+		if(alId != "")
+		{
+			autopsyLocIds.add(alId);
+		}
+	}
+	alNames = Map();
+	if(autopsyLocIds.size() > 0)
+	{
+		als = thisapp.phCoqlIn("select id, Account_Name, Autopsy_Fixed_KM from Accounts","id",autopsyLocIds,"");
+		for each  a in als
+		{
+			am = Map();
+			am.put("name",ifnull(a.get("Account_Name"),"") + "");
+			am.put("fixedKm",ifnull(a.get("Autopsy_Fixed_KM"),"") + "");
+			alNames.put(a.get("id") + "",am);
+		}
+	}
+	both = List();
+	for each  t in tripList
+	{
+		tm = Map();
+		tm.put("t",t);
+		tm.put("rel","own");
+		both.add(tm);
+	}
+	for each  t in sharedTrips
+	{
+		tm = Map();
+		tm.put("t",t);
+		if(extraTripIds.contains(t.get("id") + ""))
+		{
+			tm.put("rel","shared");
+		}
+		else
+		{
+			tm.put("rel","parent");
+		}
+		both.add(tm);
+	}
+	for each  tm in both
+	{
+		t = tm.get("t");
+		x = Map();
+		tid = t.get("id") + "";
+		x.put("id",tid);
+		x.put("rel",tm.get("rel"));
+		x.put("name",ifnull(t.get("Name"),"") + "");
+		x.put("type",ifnull(t.get("Trip_Type"),"") + "");
+		x.put("status",ifnull(t.get("Trip_Status"),"") + "");
+		x.put("km",ifnull(t.get("Number_of_distance_in_km"),"") + "");
+		x.put("createdOn",ifnull(t.get("Created_on_This_Field_Update"),"") + "");
+		x.put("scheduled",ifnull(t.get("Scheduled_Date"),"") + "");
+		x.put("completed",ifnull(t.get("Completion_Time"),"") + "");
+		x.put("parentId",thisapp.phLkId(t,"Parent_Trip"));
+		x.put("amberJob",ifnull(t.get("Amber_Connect_Job_ID"),"") + "");
+		alId = thisapp.phLkId(t,"Autopsy_Location");
+		x.put("autopsyLocationId",alId);
+		alName = "";
+		alKm = "";
+		if(alNames.containKey(alId))
+		{
+			alName = alNames.get(alId).get("name");
+			alKm = alNames.get(alId).get("fixedKm");
+		}
+		x.put("autopsyLocation",alName);
+		x.put("fixedKm",alKm);
+		// nested ifs, not mixed && / || -- the Creator editor drops brackets in mixed conditions
+		isPickup = false;
+		if(tm.get("rel") != "parent")
+		{
+			if(x.get("createdOn") == "Initial_Trip")
+			{
+				isPickup = true;
+			}
+			if(pickupTypes.contains(x.get("type")))
+			{
+				isPickup = true;
+			}
+		}
+		x.put("isPickup",isPickup);
+		if(isPickup)
+		{
+			if(pickupTripId == "")
+			{
+				pickupTripId = tid;
+			}
+			else if(x.get("status") == "Completed")
+			{
+				pickupTripId = tid;
+			}
+		}
+		trips.add(x);
+	}
+	result.put("trips",trips);
+	result.put("pickupTripId",pickupTripId);
+	result.put("deceasedPickups",dpInfo);
+	isDropoff = false;
+	if(pickupTripId == "" && kind == "police" && d.get("Is_Deceased_In_Our_Care") == "Yes")
+	{
+		isDropoff = true;
+	}
+	result.put("isDropoff",isDropoff);
+	// ---- Operations (driver disposition at the autopsy: Outcome / Reschedule_Reason)
+	opsRows = thisapp.phCoql("select id, Name, Related_Trip, Outcome, Reschedule_Reason, Status, Condition, Registration_Number, Removed_for_Autopsy, Deceased_Status, Modified_Time from Operations where Related_Deal = '" + dealId + "' order by Created_Time asc limit 50");
+	ops = List();
+	for each  o in opsRows
+	{
+		om = Map();
+		om.put("id",o.get("id") + "");
+		om.put("name",ifnull(o.get("Name"),"") + "");
+		om.put("tripId",thisapp.phLkId(o,"Related_Trip"));
+		om.put("outcome",ifnull(o.get("Outcome"),"") + "");
+		om.put("reason",ifnull(o.get("Reschedule_Reason"),"") + "");
+		om.put("status",ifnull(o.get("Status"),"") + "");
+		om.put("condition",ifnull(o.get("Condition"),"") + "");
+		om.put("regNo",ifnull(o.get("Registration_Number"),"") + "");
+		om.put("removedForAutopsy",ifnull(o.get("Removed_for_Autopsy"),false));
+		om.put("deceasedStatus",ifnull(o.get("Deceased_Status"),"") + "");
+		om.put("modified",ifnull(o.get("Modified_Time"),"") + "");
+		ops.add(om);
+	}
+	result.put("operations",ops);
+	// ---- Sales Orders + Invoices with their lines
+	soIdRows = thisapp.phCoql("select id from Sales_Orders where Deal_Name = '" + dealId + "' limit 50");
+	invIdRows = thisapp.phCoql("select id from Invoices where Deal_Name__s = '" + dealId + "' limit 50");
+	soRecs = List();
+	for each  r in soIdRows
+	{
+		soRecs.add(thisapp.phRestGet("Sales_Orders",r.get("id") + ""));
+	}
+	invRecs = List();
+	for each  r in invIdRows
+	{
+		invRecs.add(thisapp.phRestGet("Invoices",r.get("id") + ""));
+	}
+	productIds = List();
+	for each  so in soRecs
+	{
+		items = List();
+		try
+		{
+			items = so.get("Ordered_Items").toList();
+		}
+		catch (eI)
+		{
+			items = List();
+		}
+		for each  it in items
+		{
+			productIds.add(thisapp.phLkId(it,"Product_Name"));
+		}
+	}
+	for each  iv in invRecs
+	{
+		items = List();
+		try
+		{
+			items = iv.get("Invoiced_Items").toList();
+		}
+		catch (eI2)
+		{
+			items = List();
+		}
+		for each  it in items
+		{
+			productIds.add(thisapp.phLkId(it,"Product_Name"));
+		}
+	}
+	productIdx = Map();
+	prods = thisapp.phGetByIds("Products",productIds,"Product_Name,Product_Code,Product_Category,Unit_Price");
+	for each  p in prods
+	{
+		productIdx.put(p.get("id") + "",p);
+	}
+	salesOrders = List();
+	for each  so in soRecs
+	{
+		if(!so.isEmpty())
+		{
+			sm = Map();
+			sm.put("id",so.get("id") + "");
+			sm.put("type",ifnull(so.get("Sales_Order_Type"),"") + "");
+			sm.put("status",ifnull(so.get("Status"),"") + "");
+			sm.put("subject",ifnull(so.get("Subject"),"") + "");
+			sm.put("total",ifnull(so.get("Grand_Total"),0));
+			sm.put("subTotal",ifnull(so.get("Sub_Total"),0));
+			sm.put("taxTotal",ifnull(so.get("Tax"),0));
+			sm.put("account",thisapp.phLkName(so,"Account_Name"));
+			sm.put("parentAccount",thisapp.phLkName(so,"Parent_Account"));
+			sm.put("booksId",ifnull(so.get("SO_Books_ID"),"") + "");
+			sm.put("created",ifnull(so.get("Created_Time"),"") + "");
+			sm.put("modified",ifnull(so.get("Modified_Time"),"") + "");
+			sm.put("invoiceFor",thisapp.phInvoiceForType(sm.get("type")));
+			sm.put("lines",thisapp.phLines(so,"Ordered_Items",productIdx));
+			salesOrders.add(sm);
+		}
+	}
+	result.put("salesOrders",salesOrders);
+	invoices = List();
+	for each  iv in invRecs
+	{
+		if(!iv.isEmpty())
+		{
+			im = Map();
+			im.put("id",iv.get("id") + "");
+			im.put("for",ifnull(iv.get("Invoice_For"),"") + "");
+			im.put("status",ifnull(iv.get("Status"),"") + "");
+			im.put("subject",ifnull(iv.get("Subject"),"") + "");
+			im.put("total",ifnull(iv.get("Grand_Total"),0));
+			im.put("subTotal",ifnull(iv.get("Sub_Total"),0));
+			im.put("taxTotal",ifnull(iv.get("Tax"),0));
+			im.put("paid",ifnull(iv.get("Total_Actual_Paid_Amount"),ifnull(iv.get("Total_Paid_Amount"),0)));
+			im.put("invoiceDate",ifnull(iv.get("Invoice_Date"),"") + "");
+			im.put("dueDate",ifnull(iv.get("Due_Date"),"") + "");
+			im.put("account",thisapp.phLkName(iv,"Account_Name"));
+			im.put("parentAccount",thisapp.phLkName(iv,"Parent_Account"));
+			im.put("salesOrderId",thisapp.phLkId(iv,"Sales_Order"));
+			im.put("booksId",ifnull(iv.get("Books_Invoice_ID"),"") + "");
+			im.put("booksNumber",ifnull(iv.get("Books_Invoice_Number"),"") + "");
+			im.put("notUpdatingReason",ifnull(iv.get("Reason_to_Not_Updating_Invoice"),"") + "");
+			im.put("itemsUpdatedAt",ifnull(iv.get("Invoice_Items_Updated_At"),"") + "");
+			im.put("syncToBooksAt",ifnull(iv.get("Sync_To_Books_At"),"") + "");
+			im.put("syncFromBooksAt",ifnull(iv.get("Sync_From_Books_At"),"") + "");
+			im.put("retainer",ifnull(iv.get("Retainer_Invoice"),false));
+			im.put("locked",thisapp.phInvoiceLocked(im.get("status")));
+			im.put("lines",thisapp.phLines(iv,"Invoiced_Items",productIdx));
+			im.put("books",thisapp.phBooksInvoice(im.get("booksId")));
+			invoices.add(im);
+		}
+	}
+	result.put("invoices",invoices);
+	// ---- product choices for this case (the user can also search any product)
+	suggested = List();
+	if(kind == "police")
+	{
+		suggested = thisapp.phCoql("select id, Product_Name, Product_Code, Product_Category, Unit_Price from Products where (Parent_Product = '6503357000020022236') and (Product_Active = true) limit 200");
+	}
+	else
+	{
+		hId = d.get("Selected_Hospital").get("id");
+		if(hId != "")
+		{
+			suggested = thisapp.phCoql("select id, Product_Name, Product_Code, Product_Category, Unit_Price from Products where (Product_of_This_Hospital = '" + hId + "') and (Product_Active = true) limit 200");
+		}
+	}
+	result.put("suggestedProducts",suggested);
+	// ---- the app's own status + log
+	st = Map();
+	st.put("closed",false);
+	sr = PH_Case_Status[Deal_ID == dealId];
+	if(sr.count() > 0)
+	{
+		st.put("closed",sr.Billing_Closed);
+		st.put("by",ifnull(sr.Closed_By,"") + "");
+		st.put("at",ifnull(sr.Closed_At,"") + "");
+		st.put("notes",ifnull(sr.Notes,"") + "");
+	}
+	result.put("billing",st);
+	logList = List();
+	logs = PH_Change_Log[Deal_ID == dealId] sort by Added_Time desc;
+	for each  lg in logs
+	{
+		lm = Map();
+		lm.put("action",ifnull(lg.Action_Type,"") + "");
+		lm.put("detail",ifnull(lg.Detail,"") + "");
+		lm.put("by",ifnull(lg.Changed_By,"") + "");
+		lm.put("at",ifnull(lg.Changed_At,"") + "");
+		logList.add(lm);
+	}
+	result.put("log",logList);
+	result.put("status","success");
+	return result;
+}
+
+
+// ----- FUNCTION: phSaveDeal  -> Custom API PH_Save_Deal (POST: dealId, fieldsJson)
+// Saves P/H fields on the Deal WITH workflows, so the existing billing rules run
+// exactly as if the field had been typed in CRM (LONI 2-day cap + MNSJ split,
+// hospital release storage, family invoices, autopsy trip, decomposition
+// re-pricing, DFH Selected / Not Selected cascades ...).
+// fieldsJson = {"Field_API_Name":"value", ...}; only whitelisted fields.
+map phSaveDeal(string dealId, string fieldsJson)
+{
+	result = Map();
+	result.put("status","error");
+	wl = Map();
+	wl.put("Stage","stage");
+	wl.put("Is_Deceased_In_Our_Care","picklist");
+	wl.put("Condition","picklist");
+	wl.put("Registration_Number","text");
+	wl.put("Case_Number","text");
+	wl.put("Police_Office_Name","text");
+	wl.put("Police_Phone_Number","text");
+	wl.put("Investigating_Officer_s_Interest","picklist");
+	wl.put("Police_Interest","picklist");
+	wl.put("Letter_of_Interest_Date","date");
+	wl.put("Letter_of_No_Interest_Date","date");
+	wl.put("Receiving_Letter_of_No_Interest_Date","date");
+	wl.put("Hospital_Release_Date","date");
+	wl.put("Receiving_Release_Date","date");
+	wl.put("Autopsy_Required","picklist");
+	wl.put("Autopsy_Type","picklist");
+	wl.put("Autopsy_Locations","lookup");
+	wl.put("Autopsy_Date_Time","datetime");
+	wl.put("Autopsy_Completed_Date_Time","datetime");
+	wl.put("X_Ray_Required","boolean");
+	stagesAllowed = {"Trip Completed","Autopsy Requested","Autopsy Scheduled","Autopsy Rescheduled","Autopsy Completed","Letter of No Interest","DFH Selected","DFH Not Selected","Embalming Authorization","Closed Lost"};
+	fields = Map();
+	try
+	{
+		fields = fieldsJson.toMap();
+	}
+	catch (eJson)
+	{
+		result.put("message","Bad request: " + eJson.toString());
+		return result;
+	}
+	if(fields.isEmpty())
+	{
+		result.put("message","Nothing to save");
+		return result;
+	}
+	upd = Map();
+	changed = List();
+	fieldKeys = fields.keys();
+	for each  f in fieldKeys
+	{
+		if(!wl.containKey(f))
+		{
+			result.put("message","This field can't be edited here: " + f);
+			return result;
+		}
+		typ = wl.get(f);
+		v = ifnull(fields.get(f),"") + "";
+		if(typ == "date" && v.length() >= 10)
+		{
+			v = v.subString(0,10);
+		}
+		if(typ == "stage" && v != "" && !stagesAllowed.contains(v))
+		{
+			result.put("message","Stage can't be set to " + v + " from this app");
+			return result;
+		}
+		if(typ == "boolean")
+		{
+			if(v == "true")
+			{
+				upd.put(f,true);
+			}
+			else
+			{
+				upd.put(f,false);
+			}
+		}
+		else if(typ == "lookup")
+		{
+			if(v == "")
+			{
+				upd.put(f,"");
+			}
+			else
+			{
+				lk = Map();
+				lk.put("id",v);
+				upd.put(f,lk);
+			}
+		}
+		else
+		{
+			upd.put(f,v);
+		}
+		changed.add(f + " = " + v);
+	}
+	before = thisapp.phRestGet("Deals",dealId);
+	if(before.isEmpty())
+	{
+		result.put("message","Deal not found");
+		return result;
+	}
+	resp = Map();
+	try
+	{
+		resp = zoho.crm.updateRecord("Deals",dealId.toLong(),upd,{"trigger":{"workflow"}},"zoho_oauth_connection");
+	}
+	catch (eUpd)
+	{
+		result.put("message","Save failed: " + eUpd.toString());
+		return result;
+	}
+	if(!resp.containKey("id"))
+	{
+		result.put("message","Save failed: " + resp.toString());
+		return result;
+	}
+	detail = "";
+	for each  f in fieldKeys
+	{
+		oldV = "";
+		try
+		{
+			oldRaw = ifnull(before.get(f),"") + "";
+			if(oldRaw.startsWith("{"))
+			{
+				oldV = ifnull(oldRaw.toMap().get("name"),"") + "";
+			}
+			else
+			{
+				oldV = oldRaw;
+			}
+		}
+		catch (eOld)
+		{
+			oldV = "";
+		}
+		if(detail != "")
+		{
+			detail = detail + "; ";
+		}
+		detail = detail + f + ": '" + oldV + "' -> '" + ifnull(fields.get(f),"") + "'";
+	}
+	thisapp.phLog(dealId,"Deal updated",detail);
+	result.put("status","success");
+	return result;
+}
+
+
+// ----- FUNCTION: phSaveTripKm  -> Custom API PH_Save_Trip_KM (POST: dealId, tripId, km)
+// Sets / corrects the KM on a trip (Amber left it blank or wrong) WITH workflows:
+// "updateSalesOrderOnNumberOfDistanceinKMUpdate" then patches the Sales Order
+// quantity (fixed-KM autopsy locations keep their fixed KM).
+map phSaveTripKm(string dealId, string tripId, string km)
+{
+	result = Map();
+	result.put("status","error");
+	kmText = ifnull(km,"") + "";
+	kmNum = 0;
+	try
+	{
+		kmNum = kmText.toDecimal();
+	}
+	catch (eNum)
+	{
+		result.put("message","KM must be a number");
+		return result;
+	}
+	if(kmNum < 0)
+	{
+		result.put("message","KM can't be negative");
+		return result;
+	}
+	trip = thisapp.phRestGet("Trips",tripId);
+	if(trip.isEmpty())
+	{
+		result.put("message","Trip not found");
+		return result;
+	}
+	// the trip must belong to this case: on the Deal, via Deceased_Pickups, or the
+	// parent batch trip of one of its trips
+	ok = false;
+	if(thisapp.phLkId(trip,"Deal") == dealId)
+	{
+		ok = true;
+	}
+	if(!ok)
+	{
+		dpRows = thisapp.phCoql("select id from Deceased_Pickups where (Deal = '" + dealId + "') and (Trip = '" + tripId + "') limit 1");
+		if(dpRows.size() > 0)
+		{
+			ok = true;
+		}
+	}
+	if(!ok)
+	{
+		chRows = thisapp.phCoql("select id from Trips where (Deal = '" + dealId + "') and (Parent_Trip = '" + tripId + "') limit 1");
+		if(chRows.size() > 0)
+		{
+			ok = true;
+		}
+	}
+	if(!ok)
+	{
+		result.put("message","That trip is not part of this case");
+		return result;
+	}
+	oldKm = ifnull(trip.get("Number_of_distance_in_km"),"") + "";
+	upd = Map();
+	upd.put("Number_of_distance_in_km",kmNum);
+	resp = Map();
+	try
+	{
+		resp = zoho.crm.updateRecord("Trips",tripId.toLong(),upd,{"trigger":{"workflow"}},"zoho_oauth_connection");
+	}
+	catch (eUpd)
+	{
+		result.put("message","Save failed: " + eUpd.toString());
+		return result;
+	}
+	if(!resp.containKey("id"))
+	{
+		result.put("message","Save failed: " + resp.toString());
+		return result;
+	}
+	thisapp.phLog(dealId,"Trip KM updated",ifnull(trip.get("Name"),"") + ": '" + oldKm + "' -> '" + kmText + "'");
+	result.put("status","success");
+	return result;
+}
+
+
+// ----- FUNCTION: phSaveOutcome  -> Custom API PH_Save_Outcome (POST: dealId, opsId, outcome, reason)
+// Records the autopsy disposition on the Operations record (same fields the
+// Driver App writes) WITH workflows, so "Handle Autopsy Reschedule" creates the
+// reschedule / X-ray trip and bills it exactly as from the Driver App.
+map phSaveOutcome(string dealId, string opsId, string outcome, string reason)
+{
+	result = Map();
+	result.put("status","error");
+	outcomes = {"","Return to DFH","Transfer out","Reschedule"};
+	reasons = {"","X-ray required","Problem caused by DFH","Family did not show","Officer did not show"};
+	oc = ifnull(outcome,"") + "";
+	rs = ifnull(reason,"") + "";
+	if(!outcomes.contains(oc))
+	{
+		result.put("message","Unknown outcome: " + oc);
+		return result;
+	}
+	if(!reasons.contains(rs))
+	{
+		result.put("message","Unknown reschedule reason: " + rs);
+		return result;
+	}
+	if(oc == "Reschedule" && rs == "")
+	{
+		result.put("message","Pick a reschedule reason");
+		return result;
+	}
+	ops = thisapp.phRestGet("Operations",opsId);
+	if(ops.isEmpty() || thisapp.phLkId(ops,"Related_Deal") != dealId)
+	{
+		result.put("message","That Operations record is not part of this case");
+		return result;
+	}
+	upd = Map();
+	upd.put("Outcome",oc);
+	if(oc == "Reschedule")
+	{
+		upd.put("Reschedule_Reason",rs);
+	}
+	else
+	{
+		upd.put("Reschedule_Reason","");
+	}
+	resp = Map();
+	try
+	{
+		resp = zoho.crm.updateRecord("Operations",opsId.toLong(),upd,{"trigger":{"workflow"}},"zoho_oauth_connection");
+	}
+	catch (eUpd)
+	{
+		result.put("message","Save failed: " + eUpd.toString());
+		return result;
+	}
+	if(!resp.containKey("id"))
+	{
+		result.put("message","Save failed: " + resp.toString());
+		return result;
+	}
+	thisapp.phLog(dealId,"Autopsy outcome",ifnull(ops.get("Name"),"") + ": Outcome '" + ifnull(ops.get("Outcome"),"") + "' -> '" + oc + "', Reason '" + ifnull(ops.get("Reschedule_Reason"),"") + "' -> '" + rs + "'");
+	result.put("status","success");
+	return result;
+}
+
+
+// ----- FUNCTION: phSaveLines  -> Custom API PH_Save_Lines (POST: dealId, target, recordId, linesJson)
+// Replaces the line items of one Sales Order (target "so") or one Invoice
+// (target "invoice").
+// "so": the Sales Order is changed, then its invoice is rebuilt from it (as the
+//   CRM invoice functions do) and Books is scheduled to update -- so a later
+//   automatic re-run that copies the Sales Order onto the invoice keeps the edit.
+// "invoice": for invoices with no Sales Order of their own (family invoices etc.);
+//   the invoice lines are changed and Books is scheduled to update.
+// linesJson = [{"id":"<existing line id or empty>","productId":"...","qty":"2",
+//               "price":"1500","discount":"0","description":""}, ...]
+map phSaveLines(string dealId, string target, string recordId, string linesJson)
+{
+	result = Map();
+	result.put("status","error");
+	messages = List();
+	lines = List();
+	try
+	{
+		lines = linesJson.toJSONList();
+	}
+	catch (eJson)
+	{
+		result.put("message","Bad request: " + eJson.toString());
+		return result;
+	}
+	if(lines.size() == 0)
+	{
+		result.put("message","A Sales Order / Invoice needs at least one line");
+		return result;
+	}
+	moduleName = "Sales_Orders";
+	subformName = "Ordered_Items";
+	dealField = "Deal_Name";
+	if(target == "invoice")
+	{
+		moduleName = "Invoices";
+		subformName = "Invoiced_Items";
+		dealField = "Deal_Name__s";
+	}
+	else if(target != "so")
+	{
+		result.put("message","Unknown target: " + target);
+		return result;
+	}
+	rec = thisapp.phRestGet(moduleName,recordId);
+	if(rec.isEmpty() || thisapp.phLkId(rec,dealField) != dealId)
+	{
+		result.put("message","That record is not part of this case");
+		return result;
+	}
+	if(target == "invoice" && thisapp.phInvoiceLocked(ifnull(rec.get("Status"),"") + ""))
+	{
+		result.put("message","This invoice is " + rec.get("Status") + " -- it can't be changed here. Correct it in Books (credit note / adjustment).");
+		return result;
+	}
+	oldIds = List();
+	oldSummary = List();
+	oldItems = List();
+	try
+	{
+		rawOld = rec.get(subformName);
+		if(rawOld != null)
+		{
+			oldItems = rawOld.toList();
+		}
+	}
+	catch (eOld)
+	{
+		oldItems = List();
+	}
+	for each  it in oldItems
+	{
+		oldIds.add(ifnull(it.get("id"),"") + "");
+		oldSummary.add(thisapp.phLkName(it,"Product_Name") + " x " + ifnull(it.get("Quantity"),"") + " @ " + ifnull(it.get("List_Price"),""));
+	}
+	newItems = List();
+	keptIds = List();
+	newSummary = List();
+	for each  ln in lines
+	{
+		// toJSONList() gives each line back as JSON TEXT, not a map -- turn it into a map
+		// first (ln + "" also works if it already is a map)
+		lm = (ln + "").toMap();
+		pid = ifnull(lm.get("productId"),"") + "";
+		if(pid == "")
+		{
+			result.put("message","Every line needs a product");
+			return result;
+		}
+		qty = 0;
+		price = 0;
+		disc = 0;
+		try
+		{
+			qty = (ifnull(lm.get("qty"),"0") + "").toDecimal();
+			price = (ifnull(lm.get("price"),"0") + "").toDecimal();
+			disc = (ifnull(lm.get("discount"),"0") + "").toDecimal();
+		}
+		catch (eNum)
+		{
+			result.put("message","Quantity, price and discount must be numbers");
+			return result;
+		}
+		if(qty < 0 || price < 0 || disc < 0)
+		{
+			result.put("message","Quantity, price and discount can't be negative");
+			return result;
+		}
+		pm = Map();
+		lid = ifnull(lm.get("id"),"") + "";
+		if(lid != "" && oldIds.contains(lid))
+		{
+			pm.put("id",lid);
+			keptIds.add(lid);
+		}
+		pm.put("Product_Name",pid);
+		pm.put("Quantity",qty);
+		pm.put("List_Price",price);
+		pm.put("Discount",disc);
+		desc = ifnull(lm.get("description"),"") + "";
+		if(desc != "")
+		{
+			pm.put("Description",desc);
+		}
+		newItems.add(pm);
+		newSummary.add(ifnull(lm.get("productName"),pid) + " x " + qty + " @ " + price);
+	}
+	err = thisapp.phReplaceLines(moduleName,recordId,subformName,newItems,oldIds,keptIds);
+	if(err != "")
+	{
+		result.put("message",err);
+		return result;
+	}
+	label = "Sales Order";
+	if(target == "invoice")
+	{
+		label = "Invoice";
+	}
+	label = label + " " + ifnull(rec.get("Subject"),"") + "";
+	thisapp.phLog(dealId,"Lines changed",label + " | before: " + oldSummary.toString("; ") + " | after: " + newSummary.toString("; "));
+	if(target == "so")
+	{
+		messages.add("Sales Order saved");
+		mirrorMsg = thisapp.phMirrorSoToInvoice(dealId,recordId);
+		if(mirrorMsg != "")
+		{
+			messages.add(mirrorMsg);
+		}
+	}
+	else
+	{
+		messages.add("Invoice saved");
+		stampErr = thisapp.phStampBooksSync(recordId);
+		if(stampErr != "")
+		{
+			messages.add(stampErr);
+		}
+		else
+		{
+			messages.add("Books updates in about 2 minutes");
+		}
+	}
+	result.put("status","success");
+	result.put("messages",messages);
+	return result;
+}
+
+
+// ----- FUNCTION: phResyncInvoice  -> Custom API PH_Resync_Invoice (POST: dealId, invoiceId)
+// "Push to Books" button: if the invoice has a Sales Order of its own type, its
+// lines are first re-copied from that Sales Order; then Books is scheduled to
+// update. Fixes invoices whose Books copy fell behind the CRM.
+map phResyncInvoice(string dealId, string invoiceId)
+{
+	result = Map();
+	result.put("status","error");
+	inv = thisapp.phRestGet("Invoices",invoiceId);
+	if(inv.isEmpty() || thisapp.phLkId(inv,"Deal_Name__s") != dealId)
+	{
+		result.put("message","That invoice is not part of this case");
+		return result;
+	}
+	if(thisapp.phInvoiceLocked(ifnull(inv.get("Status"),"") + ""))
+	{
+		result.put("message","This invoice is " + inv.get("Status") + " -- not pushed again");
+		return result;
+	}
+	invFor = ifnull(inv.get("Invoice_For"),"") + "";
+	soType = "";
+	if(invFor == "Police")
+	{
+		soType = "Police Cases";
+	}
+	else if(invFor == "MNSJ")
+	{
+		soType = "Police Cases - MNSJ";
+	}
+	else if(invFor == "Family")
+	{
+		soType = "Police Cases - Family";
+	}
+	else if(invFor == "Hospital")
+	{
+		soType = "Hospital Cases";
+	}
+	msg = "";
+	if(soType != "")
+	{
+		soRows = thisapp.phCoql("select id from Sales_Orders where (Deal_Name = '" + dealId + "') and (Sales_Order_Type = '" + soType + "') limit 1");
+		if(soRows.size() > 0)
+		{
+			msg = thisapp.phMirrorSoToInvoice(dealId,soRows.get(0).get("id") + "");
+		}
+	}
+	if(msg == "")
+	{
+		stampErr = thisapp.phStampBooksSync(invoiceId);
+		if(stampErr != "")
+		{
+			result.put("message",stampErr);
+			return result;
+		}
+		msg = "Books updates in about 2 minutes";
+	}
+	thisapp.phLog(dealId,"Pushed to Books",ifnull(inv.get("Subject"),"") + " -- " + msg);
+	result.put("status","success");
+	result.put("message",msg);
+	return result;
+}
+
+
+// ----- FUNCTION: phSearchProducts  -> Custom API PH_Search_Products (POST: q) --
+// Any active product by name or code, so the billed product is always choosable.
+map phSearchProducts(string q)
+{
+	result = Map();
+	s = ifnull(q,"").trim();
+	if(s.length() < 2)
+	{
+		result.put("status","success");
+		result.put("products",List());
+		return result;
+	}
+	s = s.replaceAll("'","\\\\'");
+	result.put("status","success");
+	// Parent_Product is a lookup from Products to Products itself: COQL refuses
+	// "Parent_Product.Product_Name", so no dot-notation here -- the parent's name is
+	// looked up by id instead.
+	sel = "select id, Product_Name, Product_Code, Product_Category, Unit_Price, Parent_Product from Products";
+	res = thisapp.phCoqlQuery(sel + " where ((Product_Name like '%" + s + "%') or (Product_Code like '%" + s + "%')) and (Product_Active = true) limit 80");
+	if(res.get("error") != "")
+	{
+		// simplest possible form, in case a criterion above is refused
+		res = thisapp.phCoqlQuery(sel + " where Product_Name like '%" + s + "%' limit 80");
+		if(res.get("error") != "")
+		{
+			result.put("message","Product search failed: " + res.get("error"));
+		}
+	}
+	rows = res.get("rows");
+	seen = List();
+	for each  r in rows
+	{
+		seen.add(r.get("id") + "");
+	}
+	// search by parent product: the children of any product whose name matches
+	parentIds = List();
+	pres = thisapp.phCoqlQuery("select id from Products where Product_Name like '%" + s + "%' limit 50");
+	parentRows = pres.get("rows");
+	for each  pr in parentRows
+	{
+		parentIds.add(pr.get("id") + "");
+	}
+	if(parentIds.size() > 0)
+	{
+		kids = thisapp.phCoqlIn(sel,"Parent_Product",parentIds,"(Product_Active = true)");
+		for each  k in kids
+		{
+			if(!seen.contains(k.get("id") + ""))
+			{
+				rows.add(k);
+				seen.add(k.get("id") + "");
+			}
+		}
+	}
+	// parent product names (one query)
+	pids = List();
+	for each  r in rows
+	{
+		pid = thisapp.phLkId(r,"Parent_Product");
+		if(pid != "")
+		{
+			pids.add(pid);
+		}
+	}
+	pnames = Map();
+	if(pids.size() > 0)
+	{
+		prs = thisapp.phCoqlIn("select id, Product_Name from Products","id",pids,"");
+		for each  p in prs
+		{
+			pnames.put(p.get("id") + "",ifnull(p.get("Product_Name"),"") + "");
+		}
+	}
+	for each  r in rows
+	{
+		r.put("Parent_Product.Product_Name",ifnull(pnames.get(thisapp.phLkId(r,"Parent_Product")),""));
+	}
+	result.put("products",rows);
+	return result;
+}
+
+
+// ----- FUNCTION: phSetClosed  -> Custom API PH_Set_Closed (POST: dealId, closed, notes)
+// The manual "Billing closed" tick: the case leaves the open list once invoicing
+// is correct. Untick to reopen.
+map phSetClosed(string dealId, string closed, string notes)
+{
+	result = Map();
+	closedText = ifnull(closed,"") + "";
+	isClosed = false;
+	if(closedText == "true")
+	{
+		isClosed = true;
+	}
+	byUser = ifnull(zoho.loginuserid,"") + "";
+	atText = thisapp.phNow(0);
+	notesText = ifnull(notes,"") + "";
+	recs = PH_Case_Status[Deal_ID == dealId];
+	if(recs.count() > 0)
+	{
+		r = recs;
+		r.Billing_Closed = isClosed;
+		r.Closed_By = byUser;
+		r.Closed_At = atText;
+		r.Notes = notesText;
+	}
+	else
+	{
+		insert into PH_Case_Status
+		[
+			Added_User=zoho.loginuser
+			Deal_ID=dealId
+			Billing_Closed=isClosed
+			Closed_By=byUser
+			Closed_At=atText
+			Notes=notesText
+		];
+	}
+	actionText = "Billing reopened";
+	if(isClosed)
+	{
+		actionText = "Billing closed";
+	}
+	thisapp.phLog(dealId,actionText,ifnull(notes,"") + "");
+	result.put("status","success");
+	return result;
+}
+
+
+// ----- FUNCTION: phAddNote  -> Custom API PH_Add_Note (POST: dealId, note) ----
+map phAddNote(string dealId, string note)
+{
+	result = Map();
+	n = ifnull(note,"").trim();
+	if(n == "")
+	{
+		result.put("status","error");
+		result.put("message","Note is empty");
+		return result;
+	}
+	thisapp.phLog(dealId,"Note",n);
+	result.put("status","success");
+	return result;
+}
+
+
+// ----- FUNCTION: phPicklists  -> Custom API PH_Picklists (GET) ----------------
+// Autopsy locations (Accounts of type Autopsy Location) for the autopsy editor.
+map phPicklists()
+{
+	result = Map();
+	locs = List();
+	rows = thisapp.phCoql("select id, Account_Name, Autopsy_Fixed_KM from Accounts where Account_Type = 'Autopsy Location' limit 200");
+	for each  r in rows
+	{
+		m = Map();
+		m.put("id",r.get("id") + "");
+		m.put("name",ifnull(r.get("Account_Name"),"") + "");
+		m.put("fixedKm",ifnull(r.get("Autopsy_Fixed_KM"),"") + "");
+		locs.add(m);
+	}
+	result.put("status","success");
+	result.put("autopsyLocations",locs);
+	return result;
+}
+
+
+// =============================================================================
+// ROUND 2 (Andrea 2026-10-08 / 2026-10-09)
+// Feedback box + export, monthly parent/child invoicing in Books (one monthly
+// invoice per institution: one line per case, sent + paid; the case invoices stay
+// linked to it through cf_master_invoice_id, the same fields the existing Books
+// "Create Master Invoice" button uses), Books customer per institution,
+// pre-launch delete (P/H invoices only), billing codes per scenario.
+// New Creator forms: PH_Feedback, PH_Org_Map, PH_Monthly_Batch, PH_Batch_Item
+// (see metadata.md). Mixed && / || conditions are avoided on purpose (the Creator
+// editor drops the brackets in them) -- nested ifs instead.
+// =============================================================================
+
+
+// ----- FUNCTION: phBooks  (helper -- no Custom API) --------------------------
+// One Zoho Books API call (org 872327358) through zoho_oauth_connection.
+// method GET / POST / PUT / DELETE; path e.g. "invoices/123" or "contacts?search_text=x";
+// bodyText = JSON text ("" for none); quiet = "true" stops Books custom functions /
+// workflows running on this write (X-ZOHO-Execute-CustomFunction: false, the same
+// header the existing Books functions use for marker-only writes).
+map phBooks(string method, string path, string bodyText, string quiet)
+{
+	out = Map();
+	url = "https://www.zohoapis.com/books/v3/" + path;
+	if(path.contains("?"))
+	{
+		url = url + "&organization_id=872327358";
+	}
+	else
+	{
+		url = url + "?organization_id=872327358";
+	}
+	hdr = Map();
+	if(quiet == "true")
+	{
+		hdr.put("X-ZOHO-Execute-CustomFunction","false");
+	}
+	resp = Map();
+	try
+	{
+		if(method == "GET")
+		{
+			resp = invokeurl
+			[
+				url :url
+				type :GET
+				connection:"zoho_oauth_connection"
+			];
+		}
+		else if(method == "DELETE")
+		{
+			resp = invokeurl
+			[
+				url :url
+				type :DELETE
+				connection:"zoho_oauth_connection"
+			];
+		}
+		else if(method == "POST")
+		{
+			if(bodyText == "")
+			{
+				resp = invokeurl
+				[
+					url :url
+					type :POST
+					headers:hdr
+					connection:"zoho_oauth_connection"
+				];
+			}
+			else
+			{
+				resp = invokeurl
+				[
+					url :url
+					type :POST
+					parameters:bodyText
+					headers:hdr
+					connection:"zoho_oauth_connection"
+				];
+			}
+		}
+		else
+		{
+			resp = invokeurl
+			[
+				url :url
+				type :PUT
+				parameters:bodyText
+				headers:hdr
+				connection:"zoho_oauth_connection"
+			];
+		}
+	}
+	catch (eB)
+	{
+		out.put("code",-1);
+		out.put("message","Books request failed: " + eB.toString());
+		return out;
+	}
+	return resp;
+}
+
+
+// ----- FUNCTION: phBooksOk  (helper -- no Custom API) ------------------------
+bool phBooksOk(map resp)
+{
+	c = "";
+	try
+	{
+		c = ifnull(resp.get("code"),"") + "";
+	}
+	catch (eC)
+	{
+		c = "";
+	}
+	if(c == "0")
+	{
+		return true;
+	}
+	return false;
+}
+
+
+// ----- FUNCTION: phDeleteWebhookUrl  (helper -- no Custom API) ----------------
+// The URL of the Books incoming webhook "iw_ph_delete_invoice" (metadata.md, Books
+// step). Paste the full URL shown in Books (it ends with &encapiKey=...).
+string phDeleteWebhookUrl()
+{
+	return "PASTE_THE_BOOKS_INCOMING_WEBHOOK_URL_HERE";
+}
+
+
+// ----- FUNCTION: phFeedbackAdd  -> Custom API PH_Feedback_Add (POST: dealId, caseName, feedback)
+// The "something is wrong" box on a case -- anything that is not a billing-code
+// problem (those are fixed on the invoice or under Billing codes).
+map phFeedbackAdd(string dealId, string caseName, string feedback)
+{
+	result = Map();
+	t = ifnull(feedback,"").trim();
+	if(t == "")
+	{
+		result.put("status","error");
+		result.put("message","Type the feedback first");
+		return result;
+	}
+	insert into PH_Feedback
+	[
+		Added_User=zoho.loginuser
+		Deal_ID=dealId
+		Case_Name=ifnull(caseName,"")
+		Feedback=t
+		Feedback_Status="Open"
+		Created_By=ifnull(zoho.loginuserid,"") + ""
+		Created_At=thisapp.phNow(0)
+	];
+	thisapp.phLog(dealId,"Feedback",t);
+	result.put("status","success");
+	return result;
+}
+
+
+// ----- FUNCTION: phFeedbackList  -> Custom API PH_Feedback_List (GET) ----------
+// All feedback as parallel lists (getAll = one statement per column, not per record).
+map phFeedbackList()
+{
+	result = Map();
+	recs = PH_Feedback[ID != 0];
+	result.put("ids",recs.ID.getAll());
+	// 19-digit record ids lose digits as JSON numbers in the browser -- send them as text too
+	result.put("idsText",recs.ID.getAll().toString(","));
+	result.put("dealIds",recs.Deal_ID.getAll());
+	result.put("names",recs.Case_Name.getAll());
+	result.put("texts",recs.Feedback.getAll());
+	result.put("statuses",recs.Feedback_Status.getAll());
+	result.put("createdBy",recs.Created_By.getAll());
+	result.put("createdAt",recs.Created_At.getAll());
+	result.put("doneBy",recs.Done_By.getAll());
+	result.put("doneAt",recs.Done_At.getAll());
+	result.put("status","success");
+	return result;
+}
+
+
+// ----- FUNCTION: phFeedbackSet  -> Custom API PH_Feedback_Set (POST: feedbackId, feedbackStatus)
+map phFeedbackSet(string feedbackId, string feedbackStatus)
+{
+	result = Map();
+	st = ifnull(feedbackStatus,"") + "";
+	if(st != "Open")
+	{
+		if(st != "Done")
+		{
+			result.put("status","error");
+			result.put("message","Status must be Open or Done");
+			return result;
+		}
+	}
+	r = PH_Feedback[ID == feedbackId.toLong()];
+	if(r.count() == 0)
+	{
+		result.put("status","error");
+		result.put("message","Feedback not found");
+		return result;
+	}
+	r.Feedback_Status = st;
+	if(st == "Done")
+	{
+		r.Done_By = ifnull(zoho.loginuserid,"") + "";
+		r.Done_At = thisapp.phNow(0);
+	}
+	else
+	{
+		r.Done_By = "";
+		r.Done_At = "";
+	}
+	result.put("status","success");
+	return result;
+}
+
+
+// ----- FUNCTION: phMonthlyList  -> Custom API PH_Monthly_List (GET) ------------
+// Every monthly invoice (batch), every case on one (item) and the Books customer
+// chosen for each institution -- as parallel lists (getAll, no per-record loops).
+map phMonthlyList()
+{
+	result = Map();
+	b = PH_Monthly_Batch[ID != 0];
+	bm = Map();
+	bm.put("ids",b.ID.getAll());
+	bm.put("idsText",b.ID.getAll().toString(","));
+	bm.put("orgIds",b.Org_Account_ID.getAll());
+	bm.put("orgNames",b.Org_Name.getAll());
+	bm.put("payerTypes",b.Payer_Type.getAll());
+	bm.put("months",b.Bill_Month.getAll());
+	bm.put("customerIds",b.Books_Customer_ID.getAll());
+	bm.put("customerNames",b.Books_Customer_Name.getAll());
+	bm.put("masterIds",b.Master_Invoice_ID.getAll());
+	bm.put("masterNumbers",b.Master_Invoice_Number.getAll());
+	bm.put("statuses",b.Batch_Status.getAll());
+	bm.put("sentAt",b.Sent_At.getAll());
+	bm.put("sentBy",b.Sent_By.getAll());
+	bm.put("totals",b.Total.getAll());
+	result.put("batches",bm);
+	i = PH_Batch_Item[ID != 0];
+	im = Map();
+	im.put("ids",i.ID.getAll());
+	im.put("idsText",i.ID.getAll().toString(","));
+	im.put("batchRefs",i.Batch_Ref.getAll());
+	im.put("dealIds",i.Deal_ID.getAll());
+	im.put("names",i.Case_Name.getAll());
+	im.put("crmInvoiceIds",i.CRM_Invoice_ID.getAll());
+	im.put("booksInvoiceIds",i.Books_Invoice_ID.getAll());
+	im.put("numbers",i.Invoice_Number.getAll());
+	im.put("amounts",i.Amount.getAll());
+	result.put("items",im);
+	o = PH_Org_Map[ID != 0];
+	om = Map();
+	om.put("orgIds",o.Org_Account_ID.getAll());
+	om.put("orgNames",o.Org_Name.getAll());
+	om.put("customerIds",o.Books_Customer_ID.getAll());
+	om.put("customerNames",o.Books_Customer_Name.getAll());
+	result.put("orgMap",om);
+	result.put("status","success");
+	return result;
+}
+
+
+// ----- FUNCTION: phMonthlyAdd  -> Custom API PH_Monthly_Add (POST: dealId, invoiceId, billMonth)
+// Puts one case invoice (Police / MNSJ / Hospital) on the monthly invoice of its
+// institution (the invoice's Parent Account) for billMonth (yyyy-MM). Only an
+// invoice still in Draft in Books can go on: if it were already Sent on its own,
+// the institution's balance would be counted twice.
+map phMonthlyAdd(string dealId, string invoiceId, string billMonth)
+{
+	result = Map();
+	result.put("status","error");
+	m = ifnull(billMonth,"").trim();
+	if(!m.matches("[0-9]{4}-[0-9]{2}"))
+	{
+		result.put("message","Pick the month (yyyy-MM)");
+		return result;
+	}
+	inv = thisapp.phRestGet("Invoices",invoiceId);
+	if(inv.isEmpty())
+	{
+		result.put("message","Invoice not found");
+		return result;
+	}
+	if(thisapp.phLkId(inv,"Deal_Name__s") != dealId)
+	{
+		result.put("message","That invoice is not part of this case");
+		return result;
+	}
+	invFor = ifnull(inv.get("Invoice_For"),"") + "";
+	allowed = {"Police","MNSJ","Hospital"};
+	if(!allowed.contains(invFor))
+	{
+		result.put("message","Only Police, MNSJ and Hospital invoices go on a monthly invoice. Family invoices are paid by the family.");
+		return result;
+	}
+	if(thisapp.phInvoiceLocked(ifnull(inv.get("Status"),"") + ""))
+	{
+		result.put("message","This invoice is " + inv.get("Status") + " -- it can't go on a monthly invoice");
+		return result;
+	}
+	booksId = ifnull(inv.get("Books_Invoice_ID"),"") + "";
+	if(booksId == "")
+	{
+		result.put("message","This invoice is not in Books yet -- use Push to Books first, then add it");
+		return result;
+	}
+	already = PH_Batch_Item[CRM_Invoice_ID == invoiceId];
+	if(already.count() > 0)
+	{
+		ob = PH_Monthly_Batch[ID == already.Batch_Ref.toLong()];
+		result.put("message","Already on the " + ob.Bill_Month + " monthly invoice for " + ob.Org_Name);
+		return result;
+	}
+	bk = thisapp.phBooks("GET","invoices/" + booksId,"","");
+	binv = Map();
+	try
+	{
+		binv = bk.get("invoice");
+	}
+	catch (eBi)
+	{
+		binv = Map();
+	}
+	if(binv == null)
+	{
+		binv = Map();
+	}
+	if(binv.isEmpty())
+	{
+		result.put("message","The Books invoice could not be read: " + ifnull(bk.get("message"),"") + "");
+		return result;
+	}
+	bStatus = ifnull(binv.get("status"),"") + "";
+	if(bStatus != "draft")
+	{
+		result.put("message","This invoice is already '" + bStatus + "' in Books on its own. Only invoices still in Draft in Books can go on a monthly invoice -- otherwise the balance is counted twice.");
+		return result;
+	}
+	// ROUND 3: an invoice that already went to Xero on its own (MNSJ invoices did, before
+	// MNSJ moved to monthly billing) stays a single invoice -- on a monthly invoice Xero
+	// would count it twice.
+	xeroInvId = "";
+	try
+	{
+		xeroInvId = ifnull(binv.get("custom_field_hash").get("cf_xero_invoice_id"),"") + "";
+	}
+	catch (eXr)
+	{
+		xeroInvId = "";
+	}
+	if(xeroInvId != "" && xeroInvId != "null" && xeroInvId != "Pending")
+	{
+		result.put("message","This invoice was already sent to Xero on its own, before monthly billing. It stays a single invoice: on a monthly invoice Xero would count it twice.");
+		return result;
+	}
+	linkedMaster = "";
+	try
+	{
+		linkedMaster = ifnull(binv.get("custom_field_hash").get("cf_master_invoice_id"),"") + "";
+	}
+	catch (eCf)
+	{
+		linkedMaster = "";
+	}
+	if(linkedMaster != "")
+	{
+		result.put("message","In Books this invoice is already linked to monthly invoice " + linkedMaster);
+		return result;
+	}
+	orgId = thisapp.phLkId(inv,"Parent_Account");
+	orgName = thisapp.phLkName(inv,"Parent_Account");
+	if(orgId == "")
+	{
+		result.put("message","This invoice has no institution (Parent Account) -- set it on the CRM invoice first");
+		return result;
+	}
+	batchId = "";
+	bq = PH_Monthly_Batch[Org_Account_ID == orgId && Payer_Type == invFor && Bill_Month == m];
+	if(bq.count() > 0)
+	{
+		if(bq.Batch_Status == "Sent")
+		{
+			result.put("message","The " + m + " monthly invoice for " + orgName + " is already sent -- add this case to next month");
+			return result;
+		}
+		batchId = bq.ID + "";
+	}
+	else
+	{
+		custId = "";
+		custName = "";
+		om = PH_Org_Map[Org_Account_ID == orgId];
+		if(om.count() > 0)
+		{
+			custId = ifnull(om.Books_Customer_ID,"") + "";
+			custName = ifnull(om.Books_Customer_Name,"") + "";
+		}
+		newId = insert into PH_Monthly_Batch
+		[
+			Added_User=zoho.loginuser
+			Org_Account_ID=orgId
+			Org_Name=orgName
+			Payer_Type=invFor
+			Bill_Month=m
+			Books_Customer_ID=custId
+			Books_Customer_Name=custName
+			Batch_Status="Open"
+			Total="0"
+		];
+		batchId = newId + "";
+	}
+	insert into PH_Batch_Item
+	[
+		Added_User=zoho.loginuser
+		Batch_Ref=batchId
+		Deal_ID=dealId
+		Case_Name=thisapp.phLkName(inv,"Deal_Name__s")
+		CRM_Invoice_ID=invoiceId
+		Books_Invoice_ID=booksId
+		Invoice_Number=ifnull(binv.get("invoice_number"),"") + ""
+		Amount=ifnull(inv.get("Grand_Total"),0) + ""
+		Added_By=ifnull(zoho.loginuserid,"") + ""
+		Added_At=thisapp.phNow(0)
+	];
+	thisapp.phLog(dealId,"Added to monthly invoice",invFor + " invoice " + ifnull(binv.get("invoice_number"),"") + " -> " + orgName + " " + m);
+	result.put("status","success");
+	result.put("batchId",batchId);
+	return result;
+}
+
+
+// ----- FUNCTION: phMonthlyRemove  -> Custom API PH_Monthly_Remove (POST: itemId)
+map phMonthlyRemove(string itemId)
+{
+	result = Map();
+	result.put("status","error");
+	it = PH_Batch_Item[ID == itemId.toLong()];
+	if(it.count() == 0)
+	{
+		result.put("message","Not found");
+		return result;
+	}
+	b = PH_Monthly_Batch[ID == it.Batch_Ref.toLong()];
+	if(b.Batch_Status == "Sent")
+	{
+		result.put("message","This monthly invoice is already sent -- a case can't be taken off it");
+		return result;
+	}
+	dealId = it.Deal_ID;
+	msg = "Removed";
+	if(ifnull(b.Master_Invoice_ID,"") != "")
+	{
+		// unlink the case invoice in Books; the monthly invoice needs Update afterwards
+		clearBody = "{\"custom_fields\":[{\"api_name\":\"cf_master_invoice_id\",\"value\":\"\"}]}";
+		thisapp.phBooks("PUT","invoices/" + it.Books_Invoice_ID,clearBody,"true");
+		msg = "Removed -- click 'Update monthly invoice in Books' so its lines match";
+	}
+	label = it.Invoice_Number + " from " + b.Org_Name + " " + b.Bill_Month;
+	delete from PH_Batch_Item[ID == itemId.toLong()];
+	thisapp.phLog(dealId,"Removed from monthly invoice",label);
+	result.put("status","success");
+	result.put("message",msg);
+	return result;
+}
+
+
+// ----- FUNCTION: phMonthlyBuild  -> Custom API PH_Monthly_Build (POST: batchId, send)
+// Creates (first time) or updates the monthly invoice in Books for one batch:
+// customer = the institution's Books customer, one line per case
+// ("<case invoice no.> - <case>", rate = the case invoice's CRM total, qty 1),
+// Is Master Invoice = true; every case invoice gets Master Invoice ID = it (quiet
+// write, no Books functions run). send = "true" also marks it Sent in Books. It
+// has no CRM invoice behind it, so the existing Books -> Xero sync sends it to Xero.
+map phMonthlyBuild(string batchId, string send)
+{
+	result = Map();
+	result.put("status","error");
+	b = PH_Monthly_Batch[ID == batchId.toLong()];
+	if(b.count() == 0)
+	{
+		result.put("message","Monthly invoice not found");
+		return result;
+	}
+	cust = ifnull(b.Books_Customer_ID,"") + "";
+	if(cust == "")
+	{
+		om = PH_Org_Map[Org_Account_ID == b.Org_Account_ID];
+		if(om.count() > 0)
+		{
+			cust = ifnull(om.Books_Customer_ID,"") + "";
+			b.Books_Customer_ID = cust;
+			b.Books_Customer_Name = ifnull(om.Books_Customer_Name,"") + "";
+		}
+	}
+	if(cust == "")
+	{
+		result.put("message","Choose the Books customer for " + b.Org_Name + " first");
+		return result;
+	}
+	items = PH_Batch_Item[Batch_Ref == batchId];
+	itemIds = items.ID.getAll();
+	crmIds = items.CRM_Invoice_ID.getAll();
+	booksIds = items.Books_Invoice_ID.getAll();
+	names = items.Case_Name.getAll();
+	numbers = items.Invoice_Number.getAll();
+	if(itemIds.size() == 0)
+	{
+		result.put("message","There are no cases on this monthly invoice");
+		return result;
+	}
+	// current CRM totals, so the monthly invoice always carries the corrected amounts
+	totals = Map();
+	crmRecs = thisapp.phGetByIds("Invoices",crmIds,"Grand_Total");
+	for each  cr in crmRecs
+	{
+		totals.put(cr.get("id") + "",ifnull(cr.get("Grand_Total"),0));
+	}
+	lines = List();
+	sum = 0;
+	idx = 0;
+	for each  cid in crmIds
+	{
+		amt = ifnull(totals.get(cid + ""),0);
+		ln = Map();
+		// "name" too: createinvoiceonxero sends the line NAME as the Xero Description, and Xero
+		// refuses a line without one ("The description field is mandatory for each line item")
+		ln.put("name",numbers.get(idx) + " - " + names.get(idx));
+		ln.put("description",numbers.get(idx) + " - " + names.get(idx));
+		ln.put("rate",amt);
+		ln.put("quantity",1);
+		lines.add(ln);
+		sum = sum + amt;
+		one = PH_Batch_Item[ID == itemIds.get(idx)];
+		one.Amount = amt + "";
+		idx = idx + 1;
+	}
+	body = Map();
+	body.put("customer_id",cust);
+	body.put("line_items",lines);
+	body.put("reference_number",b.Org_Name + " " + b.Payer_Type + " " + b.Bill_Month);
+	cfs = List();
+	cfs.add({"api_name":"cf_is_master_invoice","value":true});
+	body.put("custom_fields",cfs);
+	masterId = ifnull(b.Master_Invoice_ID,"") + "";
+	if(masterId == "")
+	{
+		body.put("date",zoho.currentdate.toString("yyyy-MM-dd"));
+		r = thisapp.phBooks("POST","invoices",body.toString(),"");
+		if(!thisapp.phBooksOk(r))
+		{
+			result.put("message","Books did not create the monthly invoice: " + ifnull(r.get("message"),"") + "");
+			return result;
+		}
+		masterId = r.get("invoice").get("invoice_id") + "";
+		b.Master_Invoice_ID = masterId;
+		b.Master_Invoice_Number = r.get("invoice").get("invoice_number") + "";
+	}
+	else
+	{
+		cur = thisapp.phBooks("GET","invoices/" + masterId,"","");
+		curPaid = 0;
+		try
+		{
+			curPaid = ifnull(cur.get("invoice").get("payment_made"),0);
+		}
+		catch (eCur)
+		{
+			curPaid = 0;
+		}
+		if(curPaid > 0)
+		{
+			result.put("message","The monthly invoice already has a payment -- it can't be changed here. Adjust it in Books.");
+			return result;
+		}
+		r = thisapp.phBooks("PUT","invoices/" + masterId,body.toString(),"");
+		if(!thisapp.phBooksOk(r))
+		{
+			result.put("message","Books did not update the monthly invoice: " + ifnull(r.get("message"),"") + "");
+			return result;
+		}
+	}
+	// link every case invoice to it in Books (quiet: no Books functions run)
+	stampBody = "{\"custom_fields\":[{\"api_name\":\"cf_master_invoice_id\",\"value\":\"" + masterId + "\"}]}";
+	for each  bid in booksIds
+	{
+		thisapp.phBooks("PUT","invoices/" + bid,stampBody,"true");
+	}
+	b.Total = sum + "";
+	msg = "Monthly invoice " + b.Master_Invoice_Number + " saved in Books";
+	if(send == "true")
+	{
+		s = thisapp.phBooks("POST","invoices/" + masterId + "/status/sent","","");
+		if(thisapp.phBooksOk(s))
+		{
+			b.Batch_Status = "Sent";
+			b.Sent_At = thisapp.phNow(0);
+			b.Sent_By = ifnull(zoho.loginuserid,"") + "";
+			msg = "Monthly invoice " + b.Master_Invoice_Number + " marked Sent in Books";
+			// Start the Xero sync for it. Books' "updateInvoiceToXero" rule only runs once Xero
+			// Invoice ID has a value, and the 5-minute schedule only looks at the single latest
+			// modified invoice (the case-invoice stamps above push the monthly invoice out of it).
+			// "Pending" = not in Xero yet: createinvoiceonxero creates it there and writes the real id.
+			xp = thisapp.phBooks("PUT","invoices/" + masterId,"{\"custom_fields\":[{\"api_name\":\"cf_xero_invoice_id\",\"value\":\"Pending\"}]}","");
+			if(thisapp.phBooksOk(xp))
+			{
+				msg = msg + "; it goes to Xero in about a minute";
+			}
+			else
+			{
+				msg = msg + ", but the Xero sync could not be started: " + ifnull(xp.get("message"),"") + "";
+			}
+		}
+		else
+		{
+			msg = msg + ", but Books did not mark it Sent: " + ifnull(s.get("message"),"") + "";
+		}
+	}
+	thisapp.phLog("monthly:" + batchId,"Monthly invoice",b.Org_Name + " " + b.Payer_Type + " " + b.Bill_Month + " -- " + msg + " (" + itemIds.size() + " cases, " + sum + ")");
+	result.put("status","success");
+	result.put("message",msg);
+	return result;
+}
+
+
+// ----- FUNCTION: phMonthlyStatus  -> Custom API PH_Monthly_Status (POST: batchId)
+// The monthly invoice as Books has it (status, total, balance, payments) -- the
+// payment is applied to it, and the app shows its cases as paid from this.
+map phMonthlyStatus(string batchId)
+{
+	result = Map();
+	b = PH_Monthly_Batch[ID == batchId.toLong()];
+	if(b.count() == 0)
+	{
+		result.put("status","error");
+		result.put("message","Monthly invoice not found");
+		return result;
+	}
+	masterId = ifnull(b.Master_Invoice_ID,"") + "";
+	result.put("status","success");
+	if(masterId == "")
+	{
+		result.put("inBooks",false);
+		return result;
+	}
+	r = thisapp.phBooks("GET","invoices/" + masterId,"","");
+	inv = Map();
+	try
+	{
+		inv = r.get("invoice");
+	}
+	catch (eI)
+	{
+		inv = Map();
+	}
+	if(inv == null)
+	{
+		inv = Map();
+	}
+	result.put("inBooks",true);
+	result.put("number",ifnull(inv.get("invoice_number"),"") + "");
+	result.put("booksStatus",ifnull(inv.get("status"),"") + "");
+	result.put("total",ifnull(inv.get("total"),0));
+	result.put("balance",ifnull(inv.get("balance"),0));
+	result.put("paid",ifnull(inv.get("payment_made"),0));
+	result.put("date",ifnull(inv.get("date"),"") + "");
+	result.put("dueDate",ifnull(inv.get("due_date"),"") + "");
+	result.put("lineItems",ifnull(inv.get("line_items"),List()));
+	pr = thisapp.phBooks("GET","invoices/" + masterId + "/payments","","");
+	result.put("payments",ifnull(pr.get("payments"),List()));
+	return result;
+}
+
+
+// ----- FUNCTION: phCoverData  -> Custom API PH_Cover_Data (POST: invoiceIdsJson, dealIdsJson, wantSalesOrders)
+// Raw records for the monthly cover sheet (the widget builds the rows exactly as
+// the Analytics "Police Invoicing Report" / "Hospital Invoicing Report" query
+// tables do). Called a few cases at a time.
+map phCoverData(string invoiceIdsJson, string dealIdsJson, string wantSalesOrders)
+{
+	result = Map();
+	invIds = invoiceIdsJson.toJSONList();
+	dealIds = dealIdsJson.toJSONList();
+	invoices = List();
+	for each  iid in invIds
+	{
+		invoices.add(thisapp.phRestGet("Invoices",iid + ""));
+	}
+	deals = List();
+	history = Map();
+	for each  did in dealIds
+	{
+		deals.add(thisapp.phRestGet("Deals",did + ""));
+		h = Map();
+		try
+		{
+			h = invokeurl
+			[
+				url :"https://www.zohoapis.com/crm/v8/Deals/" + did + "/Stage_History?fields=Stage"
+				type :GET
+				connection:"zoho_oauth_connection"
+			];
+		}
+		catch (eH)
+		{
+			h = Map();
+		}
+		history.put(did + "",ifnull(h.get("data"),List()));
+	}
+	salesOrders = List();
+	if(wantSalesOrders == "true")
+	{
+		soRows = thisapp.phCoqlIn("select id from Sales_Orders","Deal_Name",dealIds,"(Sales_Order_Type = 'Hospital Cases')");
+		for each  so in soRows
+		{
+			salesOrders.add(thisapp.phRestGet("Sales_Orders",so.get("id") + ""));
+		}
+	}
+	result.put("status","success");
+	result.put("invoices",invoices);
+	result.put("deals",deals);
+	result.put("stageHistory",history);
+	result.put("salesOrders",salesOrders);
+	return result;
+}
+
+
+// ----- FUNCTION: phProductInfo  -> Custom API PH_Product_Info (POST: productIdsJson)
+map phProductInfo(string productIdsJson)
+{
+	result = Map();
+	result.put("status","success");
+	result.put("products",thisapp.phGetByIds("Products",productIdsJson.toJSONList(),"Product_Name,Product_Code,Product_Category,Unit_Price"));
+	return result;
+}
+
+
+// ----- FUNCTION: phBooksCustomers  -> Custom API PH_Books_Customers (POST: q) --
+map phBooksCustomers(string q)
+{
+	result = Map();
+	s = ifnull(q,"").trim();
+	if(s.length() < 2)
+	{
+		result.put("status","success");
+		result.put("customers",List());
+		return result;
+	}
+	// Books ignored search_text here (every customer came back), so: ask by name, then by
+	// company, and keep only rows whose name or company really contains the text.
+	sl = s.toLowerCase();
+	found = List();
+	msg = "";
+	tries = {"contact_name_contains","company_name_contains"};
+	for each  param in tries
+	{
+		if(found.size() == 0)
+		{
+			r = thisapp.phBooks("GET","contacts?contact_type=customer&per_page=100&" + param + "=" + zoho.encryption.urlEncode(s),"","");
+			if(!thisapp.phBooksOk(r))
+			{
+				msg = ifnull(r.get("message"),"") + "";
+			}
+			rows = ifnull(r.get("contacts"),List());
+			for each  c in rows
+			{
+				cn = ifnull(c.get("contact_name"),"") + "";
+				co = ifnull(c.get("company_name"),"") + "";
+				isMatch = false;
+				if(cn.toLowerCase().contains(sl))
+				{
+					isMatch = true;
+				}
+				if(co.toLowerCase().contains(sl))
+				{
+					isMatch = true;
+				}
+				if(isMatch)
+				{
+					one = Map();
+					one.put("contact_id",ifnull(c.get("contact_id"),"") + "");
+					one.put("contact_name",cn);
+					one.put("company_name",co);
+					found.add(one);
+				}
+			}
+		}
+	}
+	result.put("status","success");
+	result.put("customers",found);
+	if(msg != "")
+	{
+		result.put("message",msg);
+	}
+	return result;
+}
+
+
+// ----- FUNCTION: phOrgMapSave  -> Custom API PH_Org_Map_Save (POST: orgAccountId, orgName, customerId, customerName)
+// Remembers which Books customer an institution is billed as; open monthly
+// invoices of that institution take it too.
+map phOrgMapSave(string orgAccountId, string orgName, string customerId, string customerName)
+{
+	result = Map();
+	if(ifnull(orgAccountId,"") == "")
+	{
+		result.put("status","error");
+		result.put("message","Missing institution");
+		return result;
+	}
+	om = PH_Org_Map[Org_Account_ID == orgAccountId];
+	if(om.count() > 0)
+	{
+		om.Books_Customer_ID = customerId;
+		om.Books_Customer_Name = customerName;
+		om.Org_Name = orgName;
+	}
+	else
+	{
+		insert into PH_Org_Map
+		[
+			Added_User=zoho.loginuser
+			Org_Account_ID=orgAccountId
+			Org_Name=orgName
+			Books_Customer_ID=customerId
+			Books_Customer_Name=customerName
+		];
+	}
+	openB = PH_Monthly_Batch[Org_Account_ID == orgAccountId && Batch_Status == "Open"];
+	for each  ob in openB
+	{
+		ob.Books_Customer_ID = customerId;
+		ob.Books_Customer_Name = customerName;
+	}
+	thisapp.phLog("monthly:org:" + orgAccountId,"Books customer",orgName + " -> " + customerName + " (" + customerId + ")");
+	result.put("status","success");
+	return result;
+}
+
+
+// ----- FUNCTION: phDeleteInvoice  -> Custom API PH_Delete_Invoice (POST: dealId, invoiceId)
+// PRE-LAUNCH CLEAN-UP ONLY (Andrea 2026-10-09): takes a Police / MNSJ / Hospital
+// test invoice out of Xero (voided -- Xero can't delete an approved invoice),
+// Books (deleted) and the CRM (deleted, so it can't sync back to Books). Refused
+// for family invoices, invoices with a payment, and invoices on a monthly invoice.
+map phDeleteInvoice(string dealId, string invoiceId)
+{
+	result = Map();
+	result.put("status","error");
+	inv = thisapp.phRestGet("Invoices",invoiceId);
+	if(inv.isEmpty())
+	{
+		result.put("message","Invoice not found");
+		return result;
+	}
+	if(thisapp.phLkId(inv,"Deal_Name__s") != dealId)
+	{
+		result.put("message","That invoice is not part of this case");
+		return result;
+	}
+	invFor = ifnull(inv.get("Invoice_For"),"") + "";
+	allowed = {"Police","MNSJ","Hospital"};
+	if(!allowed.contains(invFor))
+	{
+		result.put("message","Only Police, MNSJ and Hospital invoices can be deleted here (not family invoices)");
+		return result;
+	}
+	onBatch = PH_Batch_Item[CRM_Invoice_ID == invoiceId];
+	if(onBatch.count() > 0)
+	{
+		result.put("message","This invoice is on a monthly invoice -- take it off the monthly invoice first");
+		return result;
+	}
+	booksId = ifnull(inv.get("Books_Invoice_ID"),"") + "";
+	if(booksId != "")
+	{
+		bk = thisapp.phBooks("GET","invoices/" + booksId,"","");
+		paidAmt = 0;
+		try
+		{
+			paidAmt = ifnull(bk.get("invoice").get("payment_made"),0);
+		}
+		catch (eP)
+		{
+			paidAmt = 0;
+		}
+		if(paidAmt > 0)
+		{
+			result.put("message","This invoice has a payment in Books -- it can't be deleted");
+			return result;
+		}
+		hook = thisapp.phDeleteWebhookUrl();
+		if(!hook.startsWith("http"))
+		{
+			result.put("message","The Books delete webhook URL is not set yet (function phDeleteWebhookUrl)");
+			return result;
+		}
+		wr = Map();
+		try
+		{
+			wr = invokeurl
+			[
+				url :hook + "&invoice_id=" + booksId
+				type :GET
+			];
+		}
+		catch (eW)
+		{
+			result.put("message","Books / Xero delete failed: " + eW.toString());
+			return result;
+		}
+		ok = false;
+		wmsg = "";
+		try
+		{
+			ok = wr.get("response").get("ok");
+			wmsg = ifnull(wr.get("response").get("message"),"") + "";
+		}
+		catch (eR)
+		{
+			ok = false;
+			wmsg = wr.toString();
+		}
+		if(ok != true)
+		{
+			result.put("message","Books / Xero delete failed: " + wmsg);
+			return result;
+		}
+	}
+	dresp = Map();
+	try
+	{
+		dresp = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v8/Invoices/" + invoiceId
+			type :DELETE
+			connection:"zoho_oauth_connection"
+		];
+	}
+	catch (eD)
+	{
+		result.put("message","Removed from Books / Xero, but the CRM invoice could not be deleted: " + eD.toString());
+		return result;
+	}
+	thisapp.phLog(dealId,"Invoice deleted (pre-launch clean-up)",invFor + " invoice " + ifnull(inv.get("Subject"),"") + " -- Books " + booksId);
+	result.put("status","success");
+	result.put("message","Deleted from Xero, Books and the CRM");
+	return result;
+}
+
+
+// ----- FUNCTION: phDeleteMonthly  -> Custom API PH_Delete_Monthly (POST: batchId)
+// PRE-LAUNCH CLEAN-UP ONLY: removes a test monthly invoice from Xero and Books,
+// unlinks its case invoices and deletes the batch. Refused once it has a payment.
+map phDeleteMonthly(string batchId)
+{
+	result = Map();
+	result.put("status","error");
+	b = PH_Monthly_Batch[ID == batchId.toLong()];
+	if(b.count() == 0)
+	{
+		result.put("message","Monthly invoice not found");
+		return result;
+	}
+	masterId = ifnull(b.Master_Invoice_ID,"") + "";
+	items = PH_Batch_Item[Batch_Ref == batchId];
+	booksIds = items.Books_Invoice_ID.getAll();
+	if(masterId != "")
+	{
+		bk = thisapp.phBooks("GET","invoices/" + masterId,"","");
+		paidAmt = 0;
+		try
+		{
+			paidAmt = ifnull(bk.get("invoice").get("payment_made"),0);
+		}
+		catch (eP)
+		{
+			paidAmt = 0;
+		}
+		if(paidAmt > 0)
+		{
+			result.put("message","The monthly invoice has a payment -- it can't be deleted");
+			return result;
+		}
+		hook = thisapp.phDeleteWebhookUrl();
+		if(!hook.startsWith("http"))
+		{
+			result.put("message","The Books delete webhook URL is not set yet (function phDeleteWebhookUrl)");
+			return result;
+		}
+		wr = Map();
+		try
+		{
+			wr = invokeurl
+			[
+				url :hook + "&invoice_id=" + masterId
+				type :GET
+			];
+		}
+		catch (eW)
+		{
+			result.put("message","Books / Xero delete failed: " + eW.toString());
+			return result;
+		}
+		ok = false;
+		try
+		{
+			ok = wr.get("response").get("ok");
+		}
+		catch (eR)
+		{
+			ok = false;
+		}
+		if(ok != true)
+		{
+			result.put("message","Books / Xero delete failed: " + wr.toString());
+			return result;
+		}
+		clearBody = "{\"custom_fields\":[{\"api_name\":\"cf_master_invoice_id\",\"value\":\"\"}]}";
+		for each  bid in booksIds
+		{
+			thisapp.phBooks("PUT","invoices/" + bid,clearBody,"true");
+		}
+	}
+	label = b.Org_Name + " " + b.Payer_Type + " " + b.Bill_Month + " " + ifnull(b.Master_Invoice_Number,"");
+	delete from PH_Batch_Item[Batch_Ref == batchId];
+	delete from PH_Monthly_Batch[ID == batchId.toLong()];
+	thisapp.phLog("monthly:" + batchId,"Monthly invoice deleted (pre-launch clean-up)",label);
+	result.put("status","success");
+	result.put("message","Monthly invoice deleted");
+	return result;
+}
+
+
+// ----- FUNCTION: phBillingCodes  -> Custom API PH_Billing_Codes (GET) ----------
+// Which product each billing scenario uses today. Police scenarios = products
+// under the police parent (6503357000020022236) by category; hospital scenarios =
+// products tagged Product_of_This_Hospital by category; "fixed" = product ids
+// written into CRM functions (can't be changed from here yet).
+map phBillingCodes()
+{
+	result = Map();
+	result.put("police",thisapp.phCoql("select id, Product_Name, Product_Code, Product_Category, Unit_Price, Product_Active from Products where Parent_Product = '6503357000020022236' limit 200"));
+	result.put("hospital",thisapp.phCoql("select id, Product_Name, Product_Code, Product_Category, Unit_Price, Product_Active, Product_of_This_Hospital, Product_of_This_Hospital.Account_Name from Products where Product_of_This_Hospital is not null limit 500"));
+	// ROUND 3: every scenario follows its tag now; these are only the products the CRM falls
+	// back to when nothing is linked (shown under each empty scenario).
+	fixedIds = {"6503357000002869122","6503357000002869275","6503357000019249225","6503357000002869270","6503357000004300027","6503357000004300032","6503357000003769464","6503357000078744158","6503357000019249158"};
+	result.put("fixed",thisapp.phGetByIds("Products",fixedIds,"Product_Name,Product_Code,Product_Category,Unit_Price"));
+	result.put("status","success");
+	return result;
+}
+
+
+// ----- FUNCTION: phSetBillingCode  -> Custom API PH_Set_Billing_Code (POST: scope, category, productId)
+// Makes productId THE product billed for a scenario from now on:
+// scope "police" -> Parent_Product = police parent; scope <hospital Account id> ->
+// Product_of_This_Hospital = that hospital; Product_Category = category. Any other
+// product that matched the same scenario is unlinked (its category is kept, so old
+// invoices still report correctly). The CRM billing functions pick the product by
+// exactly this tag, so no code change is needed for these scenarios.
+map phSetBillingCode(string scope, string category, string productId)
+{
+	result = Map();
+	result.put("status","error");
+	policeParent = "6503357000020022236";
+	policeCats = {"Pickup","Storage","Decompose Storage","Autopsy Trip","Storage - Family","Decomp Fee","Transfer Trip","Reschedule Trip","X-ray Trip"};
+	hospCats = {"Pickup","Storage","Storage - Family","Autopsy Trip","PME Fee","PME Transport Fee","Decompose","Transfer Trip"};
+	linkField = "";
+	linkId = "";
+	if(scope == "police")
+	{
+		if(!policeCats.contains(category))
+		{
+			result.put("message","This police scenario can't be changed here: " + category);
+			return result;
+		}
+		linkField = "Parent_Product";
+		linkId = policeParent;
+	}
+	else
+	{
+		if(!hospCats.contains(category))
+		{
+			result.put("message","This hospital scenario can't be changed here: " + category);
+			return result;
+		}
+		linkField = "Product_of_This_Hospital";
+		linkId = scope;
+	}
+	newP = thisapp.phRestGet("Products",productId);
+	if(newP.isEmpty())
+	{
+		result.put("message","Product not found");
+		return result;
+	}
+	// ROUND 3: a product carries one category, so it can bill only one scenario. Re-tagging
+	// a product that already bills another scenario here would silently empty that one.
+	curCat = ifnull(newP.get("Product_Category"),"") + "";
+	curLink = thisapp.phLkId(newP,linkField);
+	if(curCat != "" && curCat != category)
+	{
+		if(curLink == linkId)
+		{
+			result.put("message","This product already bills '" + curCat + "' here. A product can bill only one scenario: pick another product, or make a copy of it in CRM.");
+			return result;
+		}
+	}
+	if(scope != "police")
+	{
+		if(curLink != "" && curLink != linkId)
+		{
+			result.put("message","This product belongs to another hospital. Pick a product of this hospital, or make a copy of it in CRM.");
+			return result;
+		}
+	}
+	current = thisapp.phCoql("select id, Product_Name from Products where (" + linkField + " = '" + linkId + "') and (Product_Category = '" + category + "') limit 50");
+	unlinkParts = List();
+	oldNames = List();
+	for each  cp in current
+	{
+		cid = cp.get("id") + "";
+		if(cid != productId)
+		{
+			unlinkParts.add("{\"id\":\"" + cid + "\",\"" + linkField + "\":null}");
+			oldNames.add(ifnull(cp.get("Product_Name"),"") + "");
+		}
+	}
+	if(unlinkParts.size() > 0)
+	{
+		ubody = "{\"data\":[" + unlinkParts.toString(",") + "]}";
+		try
+		{
+			ur = invokeurl
+			[
+				url :"https://www.zohoapis.com/crm/v8/Products"
+				type :PUT
+				parameters:ubody
+				connection:"zoho_oauth_connection"
+			];
+		}
+		catch (eU)
+		{
+			result.put("message","Could not unlink the old product: " + eU.toString());
+			return result;
+		}
+	}
+	rec = Map();
+	rec.put("id",productId);
+	rec.put("Product_Category",category);
+	rec.put(linkField,{"id":linkId});
+	dl = List();
+	dl.add(rec);
+	body = Map();
+	body.put("data",dl);
+	nr = Map();
+	try
+	{
+		nr = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v8/Products"
+			type :PUT
+			parameters:body.toString()
+			connection:"zoho_oauth_connection"
+		];
+	}
+	catch (eN)
+	{
+		result.put("message","Could not set the new product: " + eN.toString());
+		return result;
+	}
+	code = "";
+	try
+	{
+		code = nr.get("data").get(0).get("code") + "";
+	}
+	catch (eC)
+	{
+		code = "";
+	}
+	if(code != "SUCCESS")
+	{
+		result.put("message","Could not set the new product: " + nr.toString());
+		return result;
+	}
+	thisapp.phLog("billing-codes","Billing code changed",scope + " / " + category + ": " + oldNames.toString(", ") + " -> " + ifnull(newP.get("Product_Name"),"") + "");
+	result.put("status","success");
+	return result;
+}

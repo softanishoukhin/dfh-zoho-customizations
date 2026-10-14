@@ -1,0 +1,114 @@
+string standalone.rebuildAutopsyTripSummary(String parentTripId)
+{
+// ZP-TBD-106 (2026-10-08): rebuilds Deceased_Names_Summary on a "Multi Deceased Autopsy Trip"
+// from the Operations.Autopsy_Trip lookup -- the per-deceased link to the shared autopsy trip.
+// Called by groupAutopsyTrips, createOperationsRecordOnTripCreation and the ZP-TBD-106 cleanup.
+// COQL (not searchRecords) so it reads live data, not the lagging search index.
+pId = ifnull(parentTripId,"").trim();
+if(pId == "")
+{
+	return "no parent id";
+}
+opsRows = List();
+try
+{
+	opsPayload = Map();
+	opsPayload.put("select_query","select id, Related_Deal from Operations where Autopsy_Trip = '" + pId + "' order by Created_Time asc limit 200");
+	opsResp = invokeurl
+	[
+		url :"https://www.zohoapis.com/crm/v7/coql"
+		type :POST
+		parameters:opsPayload.toString()
+		headers:{"Content-Type":"application/json"}
+		connection:"zohooauth"
+	];
+	opsText = opsResp.toString();
+	if(opsText.contains("\"data\""))
+	{
+		opsRows = opsText.toMap().get("data");
+	}
+}
+catch (eOps)
+{
+	return "Operations query failed: " + eOps.toString();
+}
+// One name per Deal, in the order the deceased were linked (a Deal with two
+// Operations rows -- e.g. a duplicate child trip -- is only listed once)
+dealIds = List();
+for each  opRow in opsRows
+{
+	dId = "";
+	try
+	{
+		dId = ifnull(opRow.get("Related_Deal").get("id"),"") + "";
+	}
+	catch (eRd)
+	{
+		dId = "";
+	}
+	if(dId != "" && !dealIds.contains(dId))
+	{
+		dealIds.add(dId);
+	}
+}
+names = List();
+if(dealIds.size() > 0)
+{
+	idCsv = "";
+	for each  did in dealIds
+	{
+		if(idCsv != "")
+		{
+			idCsv = idCsv + ",";
+		}
+		idCsv = idCsv + "'" + did + "'";
+	}
+	nameRows = List();
+	try
+	{
+		namePayload = Map();
+		namePayload.put("select_query","select id, Name_of_Deceased from Deals where id in (" + idCsv + ")");
+		nameResp = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v7/coql"
+			type :POST
+			parameters:namePayload.toString()
+			headers:{"Content-Type":"application/json"}
+			connection:"zohooauth"
+		];
+		nameText = nameResp.toString();
+		if(nameText.contains("\"data\""))
+		{
+			nameRows = nameText.toMap().get("data");
+		}
+	}
+	catch (eNames)
+	{
+		return "Deals query failed: " + eNames.toString();
+	}
+	nameById = Map();
+	for each  nr in nameRows
+	{
+		nameById.put(ifnull(nr.get("id"),"") + "",ifnull(nr.get("Name_of_Deceased"),""));
+	}
+	for each  did in dealIds
+	{
+		nm = ifnull(nameById.get(did),"");
+		if(nm != "")
+		{
+			names.add(nm);
+		}
+	}
+}
+summaryMap = Map();
+summaryMap.put("Deceased_Names_Summary",names.toString());
+try
+{
+	zoho.crm.updateRecord("Trips",pId.toLong(),summaryMap);
+}
+catch (eUpd)
+{
+	return "Summary update failed: " + eUpd.toString();
+}
+return names.toString();
+}

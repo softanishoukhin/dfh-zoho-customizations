@@ -1,0 +1,423 @@
+string standalone.zptbd106AutopsyGroupingCleanup(String fromDate, String toDate, String applyChanges)
+{
+// ZP-TBD-106 one-off cleanup. fromDate / toDate = "yyyy-MM-dd" (autopsy day window, inclusive).
+// applyChanges = "yes" to write; anything else = DRY RUN (report only, nothing changed).
+//
+// For "Multi Deceased Autopsy Trip" parents in the window:
+//  1. Twin parents (same Autopsy_Location + same day): keep one (a started/assigned one first, then
+//     the one with most deceased, then the oldest). An untouched twin (Scheduled/Requested, no
+//     driver/vehicle) has its deceased moved to the kept parent, then is deleted with its own
+//     Ops record. A twin that was already started/assigned is only REPORTED (MANUAL).
+//  2. Empty parents (no deceased) that are untouched: deleted with their Ops record.
+//  3. Every deceased under a kept parent: Operations.Autopsy_Trip lookup back-filled.
+//  4. Same Deal twice under one parent (duplicate child trip): REPORTED only.
+//  5. Deceased_Names_Summary rebuilt on every kept parent.
+NL = zoho.encryption.urlDecode("%0A");
+doApply = ifnull(applyChanges,"").trim().toLowerCase() == "yes";
+fromStr = ifnull(fromDate,"").trim();
+toStr = ifnull(toDate,"").trim();
+if(fromStr == "" || toStr == "")
+{
+	return "fromDate and toDate are required (yyyy-MM-dd)";
+}
+report = "ZP-TBD-106 cleanup " + fromStr + " to " + toStr;
+if(doApply)
+{
+	report = report + " -- APPLY MODE" + NL;
+}
+else
+{
+	report = report + " -- DRY RUN (nothing changed)" + NL;
+}
+// ---- 1. Parents in the window, oldest first ----
+parents = List();
+offsets = {0,200,400,600,800};
+for each  off in offsets
+{
+	pageRows = List();
+	try
+	{
+		pq = "select id, Name, Autopsy_Location, Scheduled_Date, Trip_Status, Driver, Vehicle, Amber_Vehicle, Created_Time from Trips where (Trip_Type = 'Multi Deceased Autopsy Trip' and (Scheduled_Date >= '" + fromStr + "T00:00:00-05:00' and Scheduled_Date <= '" + toStr + "T23:59:59-05:00')) order by Created_Time asc limit " + off + ", 200";
+		pp = Map();
+		pp.put("select_query",pq);
+		pr = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v7/coql"
+			type :POST
+			parameters:pp.toString()
+			headers:{"Content-Type":"application/json"}
+			connection:"zohooauth"
+		];
+		prText = pr.toString();
+		if(prText.contains("\"data\""))
+		{
+			pageRows = prText.toMap().get("data");
+		}
+	}
+	catch (eP)
+	{
+		report = report + "ERROR reading parents: " + eP.toString() + NL;
+		return report;
+	}
+	for each  r in pageRows
+	{
+		parents.add(r);
+	}
+	if(pageRows.size() < 200)
+	{
+		break;
+	}
+}
+report = report + "Parents in window: " + parents.size() + NL;
+// ---- 2. Children per parent + group parents by location|day ----
+childrenByParent = Map();
+touchedById = Map();
+groups = Map();
+groupOrder = List();
+for each  p in parents
+{
+	pid = ifnull(p.get("id"),"") + "";
+	kids = List();
+	try
+	{
+		cp = Map();
+		cp.put("select_query","select id, Deal, Trip_Status from Trips where Parent_Trip = '" + pid + "' limit 200");
+		cr = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v7/coql"
+			type :POST
+			parameters:cp.toString()
+			headers:{"Content-Type":"application/json"}
+			connection:"zohooauth"
+		];
+		crText = cr.toString();
+		if(crText.contains("\"data\""))
+		{
+			kids = crText.toMap().get("data");
+		}
+	}
+	catch (eC)
+	{
+		report = report + "ERROR reading children of " + pid + ": " + eC.toString() + NL;
+	}
+	childrenByParent.put(pid,kids);
+	st = ifnull(p.get("Trip_Status"),"") + "";
+	touched = false;
+	if(st != "Scheduled" && st != "Requested" && st != "")
+	{
+		touched = true;
+	}
+	assignFields = {"Driver","Vehicle","Amber_Vehicle"};
+	for each  af in assignFields
+	{
+		av = "";
+		try
+		{
+			av = ifnull(p.get(af).get("id"),"") + "";
+		}
+		catch (eAv)
+		{
+			av = "";
+		}
+		if(av != "")
+		{
+			touched = true;
+		}
+	}
+	touchedById.put(pid,touched);
+	locKey = "";
+	try
+	{
+		locKey = ifnull(p.get("Autopsy_Location").get("id"),"") + "";
+	}
+	catch (eL)
+	{
+		locKey = "";
+	}
+	dayKey = (ifnull(p.get("Scheduled_Date"),"") + "").subString(0,10);
+	gk = locKey + "|" + dayKey;
+	gList = List();
+	if(groups.containKey(gk))
+	{
+		gList = groups.get(gk);
+	}
+	else
+	{
+		groupOrder.add(gk);
+	}
+	gList.add(pid);
+	groups.put(gk,gList);
+}
+// helper data for reporting
+parentInfo = Map();
+for each  p in parents
+{
+	pid = ifnull(p.get("id"),"") + "";
+	locName = "";
+	try
+	{
+		locName = ifnull(p.get("Autopsy_Location").get("name"),"") + "";
+	}
+	catch (eLn)
+	{
+		locName = "";
+	}
+	if(locName == "")
+	{
+		locName = "location " + ifnull(p.get("Autopsy_Location"),"");
+	}
+	parentInfo.put(pid,ifnull(p.get("Name"),"") + " [" + pid + ", " + ifnull(p.get("Trip_Status"),"") + ", " + locName + "]");
+}
+// ---- 3. Twins: elect a keeper per group, merge/delete untouched losers ----
+keptParents = List();
+toDelete = List();
+for each  gk in groupOrder
+{
+	gList = groups.get(gk);
+	keeper = "";
+	keeperTouched = false;
+	keeperKids = -1;
+	for each  gp in gList
+	{
+		gTouched = touchedById.get(gp);
+		gKidList = childrenByParent.get(gp);
+		gKids = gKidList.size();
+		better = false;
+		if(keeper == "")
+		{
+			better = true;
+		}
+		else if(gTouched && !keeperTouched)
+		{
+			better = true;
+		}
+		else if(gTouched == keeperTouched && gKids > keeperKids)
+		{
+			better = true;
+		}
+		if(better)
+		{
+			keeper = gp;
+			keeperTouched = gTouched;
+			keeperKids = gKids;
+		}
+	}
+	keptParents.add(keeper);
+	if(gList.size() > 1)
+	{
+		report = report + NL + "TWINS on " + gk + " -> keep " + parentInfo.get(keeper) + NL;
+	}
+	for each  gp in gList
+	{
+		if(gp != keeper)
+		{
+			loserKids = childrenByParent.get(gp);
+			if(touchedById.get(gp))
+			{
+				report = report + "  MANUAL: " + parentInfo.get(gp) + " is started/assigned, left as is. Deceased on it: " + loserKids.size() + NL;
+				keptParents.add(gp);
+			}
+			else
+			{
+				report = report + "  MERGE+DELETE: " + parentInfo.get(gp) + ", moving " + loserKids.size() + " deceased to keeper" + NL;
+				keeperKidList = childrenByParent.get(keeper);
+				for each  lk in loserKids
+				{
+					lkId = ifnull(lk.get("id"),"") + "";
+					if(doApply && lkId != "")
+					{
+						mv = Map();
+						mv.put("Parent_Trip",keeper);
+						try
+						{
+							zoho.crm.updateRecord("Trips",lkId.toLong(),mv);
+						}
+						catch (eMv)
+						{
+							report = report + "    ERROR moving child " + lkId + ": " + eMv.toString() + NL;
+						}
+					}
+					keeperKidList.add(lk);
+				}
+				childrenByParent.put(keeper,keeperKidList);
+				toDelete.add(gp);
+			}
+		}
+	}
+}
+// ---- 4. Empty untouched parents ----
+for each  kp in keptParents
+{
+	kpKids = childrenByParent.get(kp);
+	if(kpKids.size() == 0 && !touchedById.get(kp))
+	{
+		report = report + NL + "EMPTY+DELETE: " + parentInfo.get(kp) + " has no deceased" + NL;
+		toDelete.add(kp);
+	}
+}
+// ---- 5. Delete (parents + their own Ops record) ----
+for each  dp in toDelete
+{
+	if(doApply)
+	{
+		try
+		{
+			op = Map();
+			op.put("select_query","select id from Operations where Related_Trip = '" + dp + "'");
+			orr = invokeurl
+			[
+				url :"https://www.zohoapis.com/crm/v7/coql"
+				type :POST
+				parameters:op.toString()
+				headers:{"Content-Type":"application/json"}
+				connection:"zohooauth"
+			];
+			orText = orr.toString();
+			if(orText.contains("\"data\""))
+			{
+				orRows = orText.toMap().get("data");
+				for each  orow in orRows
+				{
+					oid = ifnull(orow.get("id"),"") + "";
+					if(oid != "")
+					{
+						delOps = invokeurl
+						[
+							url :"https://www.zohoapis.com/crm/v7/Operations?ids=" + oid
+							type :DELETE
+							connection:"zohooauth"
+						];
+					}
+				}
+			}
+			delResp = invokeurl
+			[
+				url :"https://www.zohoapis.com/crm/v7/Trips?ids=" + dp
+				type :DELETE
+				connection:"zohooauth"
+			];
+			report = report + "  deleted " + dp + ": " + delResp.toString() + NL;
+		}
+		catch (eDel)
+		{
+			report = report + "  ERROR deleting " + dp + ": " + eDel.toString() + NL;
+		}
+	}
+}
+// ---- 6. Back-fill Operations.Autopsy_Trip, flag duplicate children, rebuild summaries ----
+report = report + NL + "LINKS (Operations.Autopsy_Trip):" + NL;
+for each  kp in keptParents
+{
+	if(!toDelete.contains(kp))
+	{
+		kpKids = childrenByParent.get(kp);
+		seenDeals = Map();
+		linkedNow = 0;
+		alreadyOk = 0;
+		noOps = 0;
+		for each  ch in kpKids
+		{
+			chId = ifnull(ch.get("id"),"") + "";
+			chDeal = "";
+			try
+			{
+				chDeal = ifnull(ch.get("Deal").get("id"),"") + "";
+			}
+			catch (eCd)
+			{
+				chDeal = "";
+			}
+			if(chDeal != "")
+			{
+				if(seenDeals.containKey(chDeal))
+				{
+					report = report + "  DUPLICATE CHILD (MANUAL): Deal " + chDeal + " has trips " + seenDeals.get(chDeal) + " and " + chId + " under " + parentInfo.get(kp) + NL;
+				}
+				else
+				{
+					seenDeals.put(chDeal,chId);
+				}
+			}
+			opsRows = List();
+			try
+			{
+				oq = Map();
+				oq.put("select_query","select id, Autopsy_Trip from Operations where Related_Trip = '" + chId + "'");
+				oqr = invokeurl
+				[
+					url :"https://www.zohoapis.com/crm/v7/coql"
+					type :POST
+					parameters:oq.toString()
+					headers:{"Content-Type":"application/json"}
+					connection:"zohooauth"
+				];
+				oqText = oqr.toString();
+				if(oqText.contains("\"data\""))
+				{
+					opsRows = oqText.toMap().get("data");
+				}
+			}
+			catch (eOq)
+			{
+				report = report + "  ERROR reading Ops of child " + chId + ": " + eOq.toString() + NL;
+			}
+			if(opsRows.size() == 0)
+			{
+				noOps = noOps + 1;
+				report = report + "  NO OPS RECORD: child trip " + chId + " under " + parentInfo.get(kp) + NL;
+			}
+			for each  orow in opsRows
+			{
+				oid = ifnull(orow.get("id"),"") + "";
+				cur = "";
+				try
+				{
+					cur = ifnull(orow.get("Autopsy_Trip").get("id"),"") + "";
+				}
+				catch (eCur)
+				{
+					cur = "";
+				}
+				if(cur == kp)
+				{
+					alreadyOk = alreadyOk + 1;
+				}
+				else
+				{
+					linkedNow = linkedNow + 1;
+					if(doApply && oid != "")
+					{
+						ou = Map();
+						am = Map();
+						am.put("id",kp);
+						ou.put("Autopsy_Trip",am);
+						try
+						{
+							zoho.crm.updateRecord("Operations",oid.toLong(),ou);
+						}
+						catch (eOu)
+						{
+							report = report + "  ERROR linking Ops " + oid + ": " + eOu.toString() + NL;
+						}
+					}
+				}
+			}
+		}
+		report = report + "  " + parentInfo.get(kp) + ": " + kpKids.size() + " deceased, " + linkedNow + " to link, " + alreadyOk + " already linked, " + noOps + " without Ops record" + NL;
+		if(doApply)
+		{
+			try
+			{
+				summary = standalone.rebuildAutopsyTripSummary(kp);
+				report = report + "    summary -> " + summary + NL;
+			}
+			catch (eSum)
+			{
+				report = report + "    ERROR rebuilding summary: " + eSum.toString() + NL;
+			}
+		}
+	}
+}
+info report;
+return report;
+}

@@ -1,0 +1,738 @@
+// =====================================================================================
+// ZP-TBD-107 -- Funeral Preparation app: DFH review changes (Andrea, 2026-10-08)
+// Creator app "Funeral Preparation". Base = live export Funeral_Preparation.ds (07-Oct-2026 21:07).
+//
+// NEW functions (add):      fpContactNames, fpFuneralDrivers, fpActionsByDeal,
+//                           fpWriteDeceasedStatus, fpToggleAction
+// REPLACED functions:       fpViewingList (whole function), fpFuneralList (whole function),
+//                           fpGetCase (whole function)
+// Not changed:              every other fp* function. fpSetStatus stays (no longer called).
+// Needs the new form FP_Action first (see metadata.md).
+// =====================================================================================
+
+
+// ----- NEW helper: fpContactNames -- CRM Contact id -> display name ---------------------
+map fpContactNames(list contactIds)
+{
+	out = Map();
+	recs = thisapp.fpGetByIds("Contacts",contactIds,"Full_Name,First_Name,Last_Name");
+	for each  c in recs
+	{
+		nm = (ifnull(c.get("Full_Name"),"") + "").trim();
+		if(nm == "")
+		{
+			nm = ((ifnull(c.get("First_Name"),"") + "") + " " + (ifnull(c.get("Last_Name"),"") + "")).trim();
+		}
+		out.put(c.get("id") + "",nm);
+	}
+	return out;
+}
+
+
+// ----- NEW helper: fpFuneralDrivers -- Deal id -> driver name on its Funeral trip --------
+// Driver lookup first, Driver App User if no Driver. Deals without a funeral trip or without
+// a driver are simply not in the map.
+map fpFuneralDrivers(list dealIds)
+{
+	out = Map();
+	if(dealIds.size() == 0)
+	{
+		return out;
+	}
+	trips = thisapp.fpCoqlIn("select id, Deal, Driver, Driver_App_User, Scheduled_Date from Trips","Deal",dealIds,"Trip_Type = 'Funeral'");
+	pick = Map();
+	contactIds = List();
+	for each  t in trips
+	{
+		dId = thisapp.fpLkId(t,"Deal");
+		cId = thisapp.fpLkId(t,"Driver");
+		if(cId == "")
+		{
+			cId = thisapp.fpLkId(t,"Driver_App_User");
+		}
+		if(dId != "" && cId != "" && !pick.containKey(dId))
+		{
+			pick.put(dId,cId);
+			if(!contactIds.contains(cId))
+			{
+				contactIds.add(cId);
+			}
+		}
+	}
+	names = thisapp.fpContactNames(contactIds);
+	pickKeys = pick.keys();
+	for each  dk in pickKeys
+	{
+		cid = pick.get(dk) + "";
+		if(names.containKey(cid))
+		{
+			out.put(dk,names.get(cid));
+		}
+	}
+	return out;
+}
+
+
+// ----- NEW helper: fpActionsByDeal -- the viewing person's buttons, per Deal -------------
+// Deal id -> { action key -> {on, by, at} }. Keys: ready_viewing, ready_id, id_done, transfer_done.
+map fpActionsByDeal(list dealIds)
+{
+	out = Map();
+	if(dealIds.size() == 0)
+	{
+		return out;
+	}
+	recs = FP_Action[Deal_ID in dealIds];
+	for each  r in recs
+	{
+		dk = ifnull(r.Deal_ID,"") + "";
+		ak = ifnull(r.Action_Key,"") + "";
+		if(dk != "" && ak != "")
+		{
+			m = Map();
+			if(out.containKey(dk))
+			{
+				m = out.get(dk);
+			}
+			a = Map();
+			a.put("on",r.Is_On == true);
+			a.put("by",ifnull(r.Done_By,"") + "");
+			a.put("at",ifnull(r.Done_At,"") + "");
+			m.put(ak,a);
+			out.put(dk,m);
+		}
+	}
+	return out;
+}
+
+
+// ----- NEW helper: fpWriteDeceasedStatus -- CRM Operations Deceased_Status ---------------
+// Same record and mirror as fpSetStatus, but an empty status CLEARS the picklist (used by Undo).
+map fpWriteDeceasedStatus(string dealId, string status)
+{
+	result = Map();
+	result.put("status","error");
+	idList = List();
+	idList.add(dealId);
+	opsByDeal = thisapp.fpBestOpsByDeal(idList);
+	if(!opsByDeal.containKey(dealId))
+	{
+		result.put("message","This deceased has no Operations record in CRM yet, so the status can't be saved.");
+		return result;
+	}
+	opsId = opsByDeal.get(dealId).get("id") + "";
+	// one REST update with workflows on; an empty value is sent as JSON null
+	q = zoho.encryption.urlDecode("%22");
+	rec = Map();
+	rec.put("id",opsId);
+	if(status == "")
+	{
+		rec.put("Deceased_Status","__FP_NULL__");
+	}
+	else
+	{
+		rec.put("Deceased_Status",status);
+	}
+	dataList = List();
+	dataList.add(rec);
+	trig = List();
+	trig.add("workflow");
+	bodyMap = Map();
+	bodyMap.put("data",dataList);
+	bodyMap.put("trigger",trig);
+	body = bodyMap.toString().replaceAll(q + "__FP_NULL__" + q,"null");
+	resp = Map();
+	try
+	{
+		resp = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v8/Operations"
+			type :PUT
+			parameters:body
+			connection:"zoho_oauth_connection"
+		];
+	}
+	catch (eUpd)
+	{
+		result.put("message","Could not save the status: " + eUpd.toString());
+		return result;
+	}
+	code = "";
+	try
+	{
+		code = ifnull(resp.get("data").toList().get(0).get("code"),"") + "";
+	}
+	catch (eCode)
+	{
+		code = "";
+	}
+	if(code != "SUCCESS")
+	{
+		result.put("message","Could not save the status: " + resp.toString());
+		return result;
+	}
+	result.put("status","success");
+	result.put("ops_id",opsId);
+	// mirror onto the Operations App Deceased record (best effort -- never fails the save)
+	mirror = "";
+	try
+	{
+		deal = zoho.crm.getRecordById("Deals",dealId.toLong(),{"connection":"zoho_oauth_connection"});
+		creatorId = ifnull(deal.get("Creator_Deceased_Record_ID"),"") + "";
+		if(creatorId != "")
+		{
+			payload = Map();
+			cm = Map();
+			cm.put("Deceased_Status",status);
+			payload.put("data",cm);
+			skipList = List();
+			skipList.add("all");
+			payload.put("skip_workflow",skipList);
+			cResp = invokeurl
+			[
+				url :"https://www.zohoapis.com/creator/v2.1/data/delapenhafuneralhome/operations-app/report/Deceased_Records/" + creatorId
+				type :PATCH
+				parameters:payload.toString()
+				connection:"zoho_oauth_connection"
+			];
+			mirror = cResp.toString();
+		}
+	}
+	catch (eMirror)
+	{
+		mirror = "mirror failed: " + eMirror.toString();
+	}
+	result.put("mirror",mirror);
+	return result;
+}
+
+
+// ----- NEW: fpToggleAction  -> Custom API FP_Toggle_Action (POST: dealId, actionKey, turnOn) ----
+// One button = one action key. turnOn "true" = press, "false" = Undo.
+//   ready_viewing  -> also CRM Operations Deceased_Status = Ready for Viewing; Undo puts back
+//                     the status it had before (or clears it)
+//   ready_id, id_done, transfer_done -> kept in the app only (FP_Action)
+map fpToggleAction(string dealId, string actionKey, string turnOn)
+{
+	result = Map();
+	result.put("status","error");
+	allowed = {"ready_viewing","ready_id","id_done","transfer_done"};
+	if(ifnull(dealId,"") == "" || !allowed.contains(actionKey))
+	{
+		result.put("message","Unknown action: " + actionKey);
+		return result;
+	}
+	isOn = turnOn == "true";
+	nowText = zoho.currenttime.toString("yyyy-MM-dd'T'HH:mm:ss") + "-05:00";
+	byUser = ifnull(zoho.loginuserid,"") + "";
+	recs = FP_Action[Deal_ID == dealId && Action_Key == actionKey];
+	prevStatus = "";
+	if(recs.count() > 0)
+	{
+		prevStatus = ifnull(recs.Prev_Status,"") + "";
+	}
+	if(actionKey == "ready_viewing")
+	{
+		writeResp = Map();
+		if(isOn)
+		{
+			idList = List();
+			idList.add(dealId);
+			opsByDeal = thisapp.fpBestOpsByDeal(idList);
+			if(!opsByDeal.containKey(dealId))
+			{
+				result.put("message","This deceased has no Operations record in CRM yet, so the status can't be saved.");
+				return result;
+			}
+			cur = ifnull(opsByDeal.get(dealId).get("Deceased_Status"),"") + "";
+			// remember what it was, so Undo can put it back
+			if(cur != "Ready for Viewing")
+			{
+				prevStatus = cur;
+			}
+			writeResp = thisapp.fpWriteDeceasedStatus(dealId,"Ready for Viewing");
+		}
+		else
+		{
+			writeResp = thisapp.fpWriteDeceasedStatus(dealId,prevStatus);
+		}
+		if(writeResp.get("status") != "success")
+		{
+			return writeResp;
+		}
+		result.put("deceased_status","Ready for Viewing");
+		if(!isOn)
+		{
+			result.put("deceased_status",prevStatus);
+		}
+	}
+	if(recs.count() > 0)
+	{
+		r = recs;
+		r.Is_On=isOn;
+		r.Prev_Status=prevStatus;
+		r.Done_By=byUser;
+		r.Done_At=nowText;
+	}
+	else
+	{
+		insert into FP_Action
+		[
+			Added_User=zoho.loginuser
+			Deal_ID=dealId
+			Action_Key=actionKey
+			Is_On=isOn
+			Prev_Status=prevStatus
+			Done_By=byUser
+			Done_At=nowText
+		]
+	}
+	result.put("status","success");
+	result.put("on",isOn);
+	result.put("by",byUser);
+	result.put("at",nowText);
+	return result;
+}
+
+
+// ----- REPLACED: fpViewingList  -> Custom API FP_Viewing_List (GET) -----------------------
+// ZP-TBD-107: three lists for the viewing person, each row tagged with its category.
+//  service  -- Funeral with Burial / Cremation with Service, funeral today .. today+7,
+//              embalming completed (Operations Embalming Request Status = Completed).
+//              Leaves the list once the funeral date has passed.
+//  id       -- Deal ID Date today .. today+7 (any deal type).
+//  transfer -- a "Transfer to Other Funeral Home" trip scheduled today .. today+7, or still open
+//              with no date yet.
+// Lost / not-selected Deals are left out. (Was: Stage = Family Visit, any funeral date or none.)
+map fpViewingList()
+{
+	result = Map();
+	todayKey = zoho.currentdate.toString("yyyy-MM-dd");
+	endKey = zoho.currentdate.addDay(7).toString("yyyy-MM-dd");
+	fromIso = todayKey + "T00:00:00-05:00";
+	toIso = endKey + "T23:59:59-05:00";
+	lost = "'Closed Lost','Closed Lost to Competition','DFH Not Selected'";
+	lostList = {"Closed Lost","Closed Lost to Competition","DFH Not Selected"};
+	svcPipes = {"Funeral with Burial","Cremation with Service"};
+	// ---- 1. Service Viewings: funeral within the week ----
+	svcIds = List();
+	svcHits = thisapp.fpCoql("select id from Deals where ((Funeral_Time between '" + fromIso + "' and '" + toIso + "') and Stage not in (" + lost + ")) limit 2000");
+	for each  h in svcHits
+	{
+		svcIds.add(h.get("id") + "");
+	}
+	// embalming completed = an Embalming Request work order with Status Completed
+	embalmed = List();
+	if(svcIds.size() > 0)
+	{
+		ems = thisapp.fpCoqlIn("select id, Related_Deal, Status from Operations","Related_Deal",svcIds,"Work_Order_Type = 'Embalming Request'");
+		for each  em in ems
+		{
+			if(ifnull(em.get("Status"),"") + "" == "Completed")
+			{
+				emDeal = thisapp.fpLkId(em,"Related_Deal");
+				if(emDeal != "" && !embalmed.contains(emDeal))
+				{
+					embalmed.add(emDeal);
+				}
+			}
+		}
+	}
+	// ---- 2. ID Viewings: ID Date within the week ----
+	idIds = List();
+	idHits = thisapp.fpCoql("select id from Deals where ((ID_Date between '" + todayKey + "' and '" + endKey + "') and Stage not in (" + lost + ")) limit 2000");
+	for each  h2 in idHits
+	{
+		idIds.add(h2.get("id") + "");
+	}
+	// ---- 3. Transfers: transfer trips within the week, or open with no date ----
+	trByDeal = Map();
+	trHits = thisapp.fpCoql("select id, Deal, Scheduled_Date, Trip_Status, Driver, Driver_App_User, Destination_Street_Address, Destination_City from Trips where ((Trip_Type = 'Transfer to Other Funeral Home') and ((Scheduled_Date between '" + fromIso + "' and '" + toIso + "') or (Scheduled_Date is null))) limit 2000");
+	driverIds = List();
+	for each  t in trHits
+	{
+		tDeal = thisapp.fpLkId(t,"Deal");
+		tStatus = ifnull(t.get("Trip_Status"),"") + "";
+		tWhen = ifnull(t.get("Scheduled_Date"),"") + "";
+		keepTrip = tDeal != "" && tStatus != "DO NOT SCHEDULE";
+		if(tWhen == "" && tStatus == "Completed")
+		{
+			keepTrip = false;
+		}
+		if(keepTrip)
+		{
+			// one trip per deal: the soonest dated one
+			useIt = true;
+			if(trByDeal.containKey(tDeal))
+			{
+				prevWhen = ifnull(trByDeal.get(tDeal).get("Scheduled_Date"),"") + "";
+				if(prevWhen != "" && (tWhen == "" || thisapp.fpStamp(tWhen) >= thisapp.fpStamp(prevWhen)))
+				{
+					useIt = false;
+				}
+			}
+			if(useIt)
+			{
+				trByDeal.put(tDeal,t);
+			}
+			dr = thisapp.fpLkId(t,"Driver");
+			if(dr == "")
+			{
+				dr = thisapp.fpLkId(t,"Driver_App_User");
+			}
+			if(dr != "" && !driverIds.contains(dr))
+			{
+				driverIds.add(dr);
+			}
+		}
+	}
+	trIds = trByDeal.keys();
+	// ---- one fetch of every Deal involved ----
+	allIds = List();
+	for each  a1 in svcIds
+	{
+		if(embalmed.contains(a1) && !allIds.contains(a1))
+		{
+			allIds.add(a1);
+		}
+	}
+	for each  a2 in idIds
+	{
+		if(!allIds.contains(a2))
+		{
+			allIds.add(a2);
+		}
+	}
+	for each  a3 in trIds
+	{
+		if(!allIds.contains(a3))
+		{
+			allIds.add(a3);
+		}
+	}
+	deals = thisapp.fpGetByIds("Deals",allIds,"Name_of_Deceased,Deal_Name,Pipeline,Type,Stage,Funeral_Time,Owner,Case_Location,Service_Type,Church_Chapel,ID_Date,Pre_Visit_Viewing_Date");
+	// viewing forms, open appearance changes, Operations status, button states
+	formByDeal = Map();
+	openByDeal = Map();
+	if(allIds.size() > 0)
+	{
+		forms = FP_Viewing_Form[Deal_ID in allIds];
+		for each  f in forms
+		{
+			fm = Map();
+			fm.put("id",f.ID + "");
+			fm.put("submitted_at",ifnull(f.Submitted_At,"") + "");
+			fm.put("submitted_by",ifnull(f.Submitted_By,"") + "");
+			formByDeal.put(ifnull(f.Deal_ID,"") + "",fm);
+		}
+		items = FP_Change_Item[Deal_ID in allIds];
+		for each  it in items
+		{
+			if(it.Done != true)
+			{
+				k = ifnull(it.Deal_ID,"") + "";
+				n = 0;
+				if(openByDeal.containKey(k))
+				{
+					n = openByDeal.get(k).toLong();
+				}
+				openByDeal.put(k,n + 1);
+			}
+		}
+	}
+	opsByDeal = thisapp.fpBestOpsByDeal(allIds);
+	actByDeal = thisapp.fpActionsByDeal(allIds);
+	driverNames = thisapp.fpContactNames(driverIds);
+	rows = List();
+	for each  d in deals
+	{
+		dId = d.get("id") + "";
+		stage = ifnull(d.get("Stage"),"") + "";
+		if(!lostList.contains(stage))
+		{
+			ops = Map();
+			if(opsByDeal.containKey(dId))
+			{
+				ops = opsByDeal.get(dId);
+			}
+			acts = Map();
+			if(actByDeal.containKey(dId))
+			{
+				acts = actByDeal.get(dId);
+			}
+			form = Map();
+			if(formByDeal.containKey(dId))
+			{
+				form = formByDeal.get(dId);
+			}
+			openN = 0;
+			if(openByDeal.containKey(dId))
+			{
+				openN = openByDeal.get(dId).toLong();
+			}
+			cats = List();
+			if(embalmed.contains(dId) && svcPipes.contains(ifnull(d.get("Pipeline"),"") + ""))
+			{
+				cats.add("service");
+			}
+			if(idIds.contains(dId))
+			{
+				cats.add("id");
+			}
+			if(trByDeal.containKey(dId))
+			{
+				cats.add("transfer");
+			}
+			for each  cat in cats
+			{
+				row = Map();
+				row.put("category",cat);
+				row.put("deal",d);
+				row.put("deceased_status",ifnull(ops.get("Deceased_Status"),"") + "");
+				row.put("has_ops",ops.size() > 0);
+				row.put("actions",acts);
+				row.put("form",form);
+				row.put("open_changes",openN);
+				row.put("version",thisapp.fpFormVersion(d));
+				if(cat == "transfer")
+				{
+					t = trByDeal.get(dId);
+					trip = Map();
+					trip.put("id",ifnull(t.get("id"),"") + "");
+					trip.put("when",ifnull(t.get("Scheduled_Date"),"") + "");
+					trip.put("status",ifnull(t.get("Trip_Status"),"") + "");
+					trip.put("to",((ifnull(t.get("Destination_Street_Address"),"") + "") + " " + (ifnull(t.get("Destination_City"),"") + "")).trim());
+					dr = thisapp.fpLkId(t,"Driver");
+					if(dr == "")
+					{
+						dr = thisapp.fpLkId(t,"Driver_App_User");
+					}
+					drName = "";
+					if(dr != "" && driverNames.containKey(dr))
+					{
+						drName = driverNames.get(dr);
+					}
+					trip.put("driver",drName);
+					row.put("trip",trip);
+				}
+				rows.add(row);
+			}
+		}
+	}
+	result.put("status","success");
+	result.put("from",todayKey);
+	result.put("to",endKey);
+	result.put("rows",rows);
+	return result;
+}
+
+
+// ----- REPLACED: fpFuneralList  -> Custom API FP_Funeral_List (POST: forDate) -------------
+// ZP-TBD-107: each row also carries the funeral trip's driver name ("driver").
+// (Case_Location was already in the Deal fields.) Everything else unchanged.
+map fpFuneralList(string forDate)
+{
+	result = Map();
+	day = ifnull(forDate,"") + "";
+	if(day.length() < 10)
+	{
+		day = zoho.currentdate.addDay(1).toString("yyyy-MM-dd");
+	}
+	day = day.subString(0,10);
+	fromIso = day + "T00:00:00-05:00";
+	toIso = day + "T23:59:59-05:00";
+	lost = "'Closed Lost','Closed Lost to Competition','DFH Not Selected'";
+	hits = thisapp.fpCoql("select id from Deals where (Funeral_Time between '" + fromIso + "' and '" + toIso + "' and Stage not in (" + lost + ")) limit 2000");
+	ids = List();
+	for each  h in hits
+	{
+		ids.add(h.get("id") + "");
+	}
+	deals = thisapp.fpGetByIds("Deals",ids,"Name_of_Deceased,Deal_Name,Pipeline,Type,Stage,Funeral_Time,Church_Chapel,Place_of_Internment,Case_Location,Owner,Programmes");
+	formDeals = List();
+	openByDeal = Map();
+	checksByDeal = Map();
+	if(ids.size() > 0)
+	{
+		forms = FP_Viewing_Form[Deal_ID in ids];
+		for each  f in forms
+		{
+			formDeals.add(ifnull(f.Deal_ID,"") + "");
+		}
+		items = FP_Change_Item[Deal_ID in ids];
+		for each  it in items
+		{
+			if(it.Done != true)
+			{
+				k = ifnull(it.Deal_ID,"") + "";
+				n = 0;
+				if(openByDeal.containKey(k))
+				{
+					n = openByDeal.get(k).toLong();
+				}
+				openByDeal.put(k,n + 1);
+			}
+		}
+		cls = FP_Checklist[Deal_ID in ids];
+		for each  cl in cls
+		{
+			cnt = 0;
+			try
+			{
+				cm = (ifnull(cl.Checks,"") + "").toMap();
+				cmKeys = cm.keys();
+				for each  ck in cmKeys
+				{
+					if(ifnull(cm.get(ck).get("v"),"") + "" != "")
+					{
+						cnt = cnt + 1;
+					}
+				}
+			}
+			catch (eCm)
+			{
+				cnt = 0;
+			}
+			checksByDeal.put(ifnull(cl.Deal_ID,"") + "",cnt);
+		}
+	}
+	drivers = thisapp.fpFuneralDrivers(ids);
+	rows = List();
+	for each  d in deals
+	{
+		dId = d.get("id") + "";
+		row = Map();
+		row.put("deal",d);
+		row.put("viewed",formDeals.contains(dId));
+		openN = 0;
+		if(openByDeal.containKey(dId))
+		{
+			openN = openByDeal.get(dId).toLong();
+		}
+		row.put("open_changes",openN);
+		ticks = 0;
+		if(checksByDeal.containKey(dId))
+		{
+			ticks = checksByDeal.get(dId).toLong();
+		}
+		row.put("ticks",ticks);
+		drv = "";
+		if(drivers.containKey(dId))
+		{
+			drv = drivers.get(dId) + "";
+		}
+		row.put("driver",drv);
+		rows.add(row);
+	}
+	result.put("status","success");
+	result.put("date",day);
+	result.put("rows",rows);
+	return result;
+}
+
+
+// ----- REPLACED: fpGetCase  -> Custom API FP_Get_Case (POST: dealId) ----------------------
+// ZP-TBD-107: also returns the funeral trip's driver ("driver") and the viewing person's
+// button states ("actions"). Everything else unchanged.
+map fpGetCase(string dealId)
+{
+	result = Map();
+	result.put("status","error");
+	deal = thisapp.fpGetDeal(dealId);
+	if(!deal.containKey("id"))
+	{
+		result.put("message","Deal not found: " + dealId);
+		return result;
+	}
+	d = Map();
+	fieldList = {"id","Name_of_Deceased","Deal_Name","Pipeline","Type","Stage","Funeral_Time","Date_of_Death","Casket_Type","Grave_Type","Changes_in_Deceased_Appearence","New_Requested_Funeral_Date_and_Time","Programmes","Church_Chapel","Place_of_Internment","Case_Location","Service_Type","Service_Format_Type","Funeral_Special_Instructions","ID_Date","Pre_Visit_Viewing_Date"};
+	for each  fName in fieldList
+	{
+		d.put(fName,deal.get(fName));
+	}
+	try
+	{
+		d.put("Owner",ifnull(deal.get("Owner").get("name"),"") + "");
+	}
+	catch (eOwn)
+	{
+		d.put("Owner","");
+	}
+	result.put("deal",d);
+	result.put("version",thisapp.fpFormVersion(deal));
+	idList = List();
+	idList.add(dealId);
+	opsByDeal = thisapp.fpBestOpsByDeal(idList);
+	ops = Map();
+	if(opsByDeal.containKey(dealId))
+	{
+		ops = opsByDeal.get(dealId);
+	}
+	result.put("ops_id",ifnull(ops.get("id"),"") + "");
+	result.put("deceased_status",ifnull(ops.get("Deceased_Status"),"") + "");
+	// funeral trip driver
+	drivers = thisapp.fpFuneralDrivers(idList);
+	drv = "";
+	if(drivers.containKey(dealId))
+	{
+		drv = drivers.get(dealId) + "";
+	}
+	result.put("driver",drv);
+	// the viewing person's buttons
+	acts = Map();
+	actByDeal = thisapp.fpActionsByDeal(idList);
+	if(actByDeal.containKey(dealId))
+	{
+		acts = actByDeal.get(dealId);
+	}
+	result.put("actions",acts);
+	// viewing form saved in the app
+	form = Map();
+	forms = FP_Viewing_Form[Deal_ID == dealId];
+	for each  f in forms
+	{
+		form.put("id",f.ID + "");
+		form.put("version",ifnull(f.Form_Version,"") + "");
+		form.put("deceased_name",ifnull(f.Deceased_Name,"") + "");
+		form.put("date_of_death",ifnull(f.Date_of_Death,"") + "");
+		form.put("casket_type",ifnull(f.Casket_Type,"") + "");
+		form.put("grave_type",ifnull(f.Grave_Type,"") + "");
+		form.put("funeral_time",ifnull(f.Funeral_Time_Shown,"") + "");
+		form.put("time_change",ifnull(f.Time_Change_Requested,"") + "");
+		form.put("new_funeral_time",ifnull(f.New_Funeral_Time,"") + "");
+		form.put("contact_name",ifnull(f.Family_Contact_Name,"") + "");
+		form.put("contact_phone",ifnull(f.Family_Contact_Phone,"") + "");
+		form.put("staff_initials",ifnull(f.Staff_Initials,"") + "");
+		form.put("changes_text",ifnull(f.Appearance_Changes,"") + "");
+		form.put("submitted_at",ifnull(f.Submitted_At,"") + "");
+		form.put("submitted_by",ifnull(f.Submitted_By,"") + "");
+	}
+	result.put("form",form);
+	changes = List();
+	items = FP_Change_Item[Deal_ID == dealId] sort by Sort_Order;
+	for each  it in items
+	{
+		c = Map();
+		c.put("id",it.ID + "");
+		c.put("text",ifnull(it.Change_Text,"") + "");
+		c.put("done",it.Done == true);
+		c.put("done_by",ifnull(it.Done_By,"") + "");
+		c.put("done_at",ifnull(it.Done_At,"") + "");
+		changes.add(c);
+	}
+	result.put("changes",changes);
+	result.put("checks",thisapp.fpChecks(dealId));
+	load = thisapp.fpLoadList(deal);
+	result.put("load",load);
+	lighting = false;
+	for each  li in load
+	{
+		if((ifnull(li.get("name"),"") + "").toLowerCase().contains("lighting"))
+		{
+			lighting = true;
+		}
+	}
+	result.put("lighting",lighting);
+	result.put("status","success");
+	return result;
+}

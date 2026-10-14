@@ -1,0 +1,87 @@
+// =============================================================================
+// ZP-TBD-102 -- Casket Management: edit queue (acknowledge each edit)
+// Creator app: Casket Management. Two NEW functions; the existing casketBuildList
+// and updateCasketFields are NOT changed.
+// An "edit" is one casket field group (Casket Type / Colours / Handles / Special
+// Instructions / Funeral Date) whose current value differs from the casket's saved
+// spec snapshot. The widget builds a key per edit:
+//     <Operations id>|<group>|<that group's ..._Changed_On stamp>
+// so a NEW change to the same field (new stamp) gets a new key and shows as new again.
+// Acknowledged keys are stored in the new form Casket_Edit_Ack (see metadata.md).
+// Both functions return a string (out.toString()), like the app's existing ones.
+// =============================================================================
+
+
+// ----- FUNCTION: casketEditAcks  -> Custom API Casket_Edit_Acks (GET) -----------
+// Every acknowledged edit key, with who acknowledged it and when.
+string casketEditAcks()
+{
+	out = Map();
+	seen = Map();
+	recs = Casket_Edit_Ack[ID != 0];
+	for each  r in recs
+	{
+		k = ifnull(r.Edit_Key,"") + "";
+		if(k != "")
+		{
+			s = Map();
+			s.put("by",ifnull(r.Acknowledged_By,"") + "");
+			s.put("at",ifnull(r.Acknowledged_At,"") + "");
+			seen.put(k,s);
+		}
+	}
+	out.put("success",true);
+	out.put("seen",seen);
+	return out.toString();
+}
+
+
+// ----- FUNCTION: acknowledgeCasketEdits  -> Custom API Acknowledge_Casket_Edits (POST: editsJson) --
+// editsJson: [{"key":"...","opsId":"...","name":"...","field":"..."}, ...]
+// Records each edit as seen (an edit already recorded is skipped).
+string acknowledgeCasketEdits(String editsJson)
+{
+	out = Map();
+	out.put("success",false);
+	edits = List();
+	try
+	{
+		edits = ifnull(editsJson,"[]").toJSONList();
+	}
+	catch (eParse)
+	{
+		out.put("message","Could not read the edits sent.");
+		return out.toString();
+	}
+	byUser = ifnull(zoho.loginuserid,"") + "";
+	atText = zoho.currenttime.toString("yyyy-MM-dd'T'HH:mm:ss") + "-05:00";
+	added = 0;
+	for each  e in edits
+	{
+		m = e.toString().toMap();
+		k = ifnull(m.get("key"),"") + "";
+		if(k != "")
+		{
+			existing = Casket_Edit_Ack[Edit_Key == k];
+			if(existing.count() == 0)
+			{
+				insert into Casket_Edit_Ack
+				[
+					Added_User=zoho.loginuser
+					Edit_Key=k
+					Operations_ID=ifnull(m.get("opsId"),"") + ""
+					Deceased_Name=ifnull(m.get("name"),"") + ""
+					Field_Name=ifnull(m.get("field"),"") + ""
+					Acknowledged_By=byUser
+					Acknowledged_At=atText
+				];
+				added = added + 1;
+			}
+		}
+	}
+	out.put("success",true);
+	out.put("added",added);
+	out.put("by",byUser);
+	out.put("at",atText);
+	return out.toString();
+}

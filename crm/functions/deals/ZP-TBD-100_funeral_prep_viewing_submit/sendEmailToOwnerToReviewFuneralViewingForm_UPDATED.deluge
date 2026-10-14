@@ -1,0 +1,264 @@
+void automation.sendEmailToOwnerToReviewFuneralViewingForm(Int recordId)
+{
+recordInfo = zoho.crm.getRecordById("Deals",recordId);
+// Calculate current time and time 2 minutes ago
+start_time = zoho.currenttime.subMinutes(10).toString("yyyy-MM-dd'T'HH:mm:ssXXX");
+end_time = zoho.currenttime.toString("yyyy-MM-dd'T'HH:mm:ssXXX");
+// Construct the filter map
+filter_map = Map();
+filter_map.put("comparator","between");
+field_map = Map();
+field_map.put("api_name","audited_time");
+filter_map.put("field",field_map);
+timeList = list();
+timeList.add(start_time);
+timeList.add(end_time);
+filter_map.put("value",timeList);
+// Final API call
+url = "https://www.zohoapis.com/crm/v8/Deals/" + recordId + "/__timeline";
+params = Map();
+params.put("filters",filter_map.toString());
+params.put("sort_by","audited_time");
+// serialize the map
+timelineHistory = invokeurl
+[
+	url :url
+	type :GET
+	parameters:params
+	connection:"zohooauth"
+];
+requiredFieldUpdated = false;
+timelines = timelineHistory.get("__timeline");
+//info timelines;
+// ===== ZP-TBD-100: the Funeral Preparation app (Creator) submits the viewing form through the
+// CRM API, so its Timeline entry is not source "zoho_forms". Accept either:
+//   - a Zoho Forms update (as before), or
+//   - any non-workflow update whose field history contains Funeral_Viewing_Form_Submitted
+//     (the app sets that flag in the SAME update as the form answers).
+// "workflow" entries are skipped so the rule's own "Unselect Funeral Viewing Form Submitted"
+// field update is never mistaken for the submission. The first matching entry is processed
+// and the loop stops (before: only the very first Timeline entry was ever looked at). =====
+for each  timeline in timelines
+{
+	isSubmission = false;
+	tlSource = ifnull(timeline.get("source"),"") + "";
+	if(timeline.get("action") == "updated" && tlSource != "workflow")
+	{
+		if(tlSource == "zoho_forms")
+		{
+			isSubmission = true;
+		}
+		else
+		{
+			try
+			{
+				fhList = timeline.get("field_history").toList();
+				for each  fhCheck in fhList
+				{
+					if(ifnull(fhCheck.get("api_name"),"") == "Funeral_Viewing_Form_Submitted")
+					{
+						isSubmission = true;
+					}
+				}
+			}
+			catch (eFh)
+			{
+				isSubmission = false;
+			}
+		}
+	}
+	if(isSubmission)
+	{
+		for each  fieldHistory in timeline.get("field_history")
+		{
+			fieldAPIName = fieldHistory.get("api_name");
+			//info fieldAPIName;
+			if(fieldAPIName == "New_Requested_Funeral_Date_and_Time" && !isNull(recordInfo.get("New_Requested_Funeral_Date_and_Time")))
+			{
+				dealMap = Map();
+				dealMap.put("Old_Funeral_Date_and_Time",recordInfo.get("Funeral_Time"));
+				dealMap.put("Funeral_Time",recordInfo.get("New_Requested_Funeral_Date_and_Time"));
+				resutl = zoho.crm.updateRecord("Deals",recordId,dealMap,{"trigger":{"workflow"}});
+				// 			info resutl;
+				mp = Map();
+				mp.put("Subject","Review Funeral Viewing Form - Funeral Date Changed");
+				mp.put("$se_module","Deals");
+				mp.put("What_Id",recordId);
+				mp.put("Owner",recordInfo.get("Owner").get("id"));
+				mp.put("Due_Date",zoho.currenttime.toDate());
+				//mp.put("Due_Date",leadDetails.get("Created_Time").toDate().addDay(2));
+				//mp.put("Remind_At",{"ALARM":"FREQ=NONE;ACTION=EMAIL;TRIGGER=DATE-TIME:" + reminderTime.toString("yyyy-MM-dd'T'HH:mm:ss'+05:30'")});
+				mp.put("Status","Not Started");
+				mp.put("Send_Notification_Email",true);
+				mp.put("Related_Funeral_Date",recordInfo.get("Funeral_Time"));
+				createTask = zoho.crm.createRecord("Tasks",mp);
+				requiredFieldUpdated = true;
+				caseLocation = ifnull(recordInfo.get("Case_Location"),"");
+				locationContact = "";
+				if(caseLocation.contains("Montego Bay"))
+				{
+					locationContact = "dfhmorguem@gmail.com";
+					// Mr. Samuels — need exact email from Andrea
+				}
+				else if(caseLocation.contains("Kingston"))
+				{
+					locationContact = "dfhmorguek@gmail.com";
+					// Mrs. Foster — need exact email from Andrea
+				}
+				if(locationContact != "")
+				{
+					standalone.sendEmail(locationContact,"6503357000076550001","Deals",recordId);
+				}
+			}
+			else if(fieldAPIName == "Changes_in_Deceased_Appearence" && !isNull(recordInfo.get("Changes_in_Deceased_Appearence")))
+			{
+				mp = Map();
+				mp.put("Subject","Follow up on family visit comments");
+				mp.put("$se_module","Deals");
+				mp.put("What_Id",recordId);
+				mp.put("Owner",recordInfo.get("Owner").get("id"));
+				mp.put("Due_Date",zoho.currenttime.toDate());
+				//mp.put("Due_Date",leadDetails.get("Created_Time").toDate().addDay(2));
+				//mp.put("Remind_At",{"ALARM":"FREQ=NONE;ACTION=EMAIL;TRIGGER=DATE-TIME:" + reminderTime.toString("yyyy-MM-dd'T'HH:mm:ss'+05:30'")});
+				mp.put("Status","Not Started");
+				mp.put("Send_Notification_Email",true);
+				mp.put("Related_Funeral_Date",recordInfo.get("Funeral_Time"));
+				createTask = zoho.crm.createRecord("Tasks",mp);
+				requiredFieldUpdated = true;
+				standalone.sendEmail("dfhviewing45@gmail.com","6503357000076087329","Deals",recordId);
+				//standalone.sendEmail("softanis.sadia@gmail.com","6503357000076087329","Deals",recordId);
+			}
+			else if(fieldAPIName == "Grave_Type" && !isNull(recordInfo.get("Grave_Type")))
+			{
+				mp = Map();
+				mp.put("Subject","Review Funeral Viewing Form - Grave Type Changed");
+				mp.put("$se_module","Deals");
+				mp.put("What_Id",recordId);
+				mp.put("Owner",recordInfo.get("Owner").get("id"));
+				mp.put("Due_Date",zoho.currenttime.toDate());
+				mp.put("Status","Not Started");
+				mp.put("Send_Notification_Email",true);
+				mp.put("Related_Funeral_Date",recordInfo.get("Funeral_Time"));
+				createTask = zoho.crm.createRecord("Tasks",mp);
+				try
+				{
+					trips = zoho.crm.getRelatedRecords("Trips","Deals",recordId.toLong());
+					for each  trip in trips
+					{
+						tt = ifnull(trip.get("Trip_Type"),"");
+						if(tt == "Funeral")
+						{
+							tid = trip.get("id");
+							tMap = Map();
+							tMap.put("Grave_Type_Change_Alert",true);
+							zoho.crm.updateRecord("Trips",tid.toLong(),tMap);
+						}
+					}
+				}
+				catch (eTripAlert)
+				{
+				}
+				requiredFieldUpdated = true;
+				// same location routing as Item 3 — reuse once Samuels/Foster emails + template exist
+				caseLocation = ifnull(recordInfo.get("Case_Location"),"");
+				locationContact = "";
+				if(caseLocation.contains("Montego Bay"))
+				{
+					locationContact = "dfhmorguem@gmail.com";
+				}
+				else if(caseLocation.contains("Kingston"))
+				{
+					locationContact = "dfhmorguek@gmail.com";
+				}
+				if(locationContact != "")
+				{
+					standalone.sendEmail(locationContact,"6503357000076550004","Deals",recordId);
+				}
+			}
+		}
+		break;
+	}
+}
+//info timelineHistory;
+if(requiredFieldUpdated == true)
+{
+	// 	getUrl("https://httpstat.us/200?sleep=20000");
+	try
+	{
+		getUrl("https://www.zohoapis.com/creator/custom/delapenhafuneralhome/Sleep_API?publickey=69fNOfX03TwjyaAgAYyRTJSBd&seconds=20");
+	}
+	catch (e)
+	{
+		info e;
+	}
+	alist = List();
+	attachments = zoho.crm.getRelatedRecords("Attachments","Deals",recordId);
+	for each  record in attachments
+	{
+		if(record.get("File_Name").contains("FuneralViewingFormCremationwithService") || record.get("File_Name").contains("FuneralViewingFormFuneralwithBurial") || record.get("File_Name").contains("FuneralViewingForm"))
+		{
+			// 		info record;
+			// 		file_id = record.get("id");
+			// 		downloadFileNew = invokeurl
+			// 		[
+			// 			url :"https://www.zohoapis.com/crm/v2.1/Deals/" + recordId + "/Attachments/" + file_id
+			// 			type :GET
+			// 			connection:"zohooauth"
+			// 		];
+			downloadFileNew = invokeurl
+			[
+				url :"https://download.zoho.com/v1/workdrive/download/" + record.get("$file_id")
+				type :GET
+				connection:"zohooauth"
+			];
+			// 		info test;
+			downloadFileNew.setParamName("file");
+			//info downloadFileNew;
+			//resultFrom = zoho.crm.attachFile("Deals",recordId,downloadFileNew);
+			//info resultFrom;
+			response = invokeurl
+			[
+				url :"https://www.zohoapis.com/crm/v2.1/files"
+				type :POST
+				files:downloadFileNew
+				connection:"zohooauth"
+			];
+			//info response;
+			fid = response.get("data").get(0).get("details").get("id");
+			attachmap = Map();
+			attachmap.put("id",fid);
+			alist.add(attachmap);
+			break;
+		}
+	}
+	sendto = Map();
+	sendto.put("email",recordInfo.get("Owner").get("email"));
+	//sendto.put("email","softanis.sadia@gmail.com");
+	tolist = List();
+	tolist.add(sendto);
+	sendfrom = Map();
+	sendfrom.put("email",zoho.crm.getOrgVariable("globalFromEmail"));
+	tempmp = Map();
+	tempmp.put("id","6503357000008120001");
+	//email template id
+	mp = Map();
+	mp.put("from",sendfrom);
+	mp.put("to",tolist);
+	mp.put("template",tempmp);
+	mp.put("attachments",alist);
+	mp.put("org_email",true);
+	dlist = List();
+	dlist.add(mp);
+	data = Map();
+	data.put("data",dlist);
+	//info data;
+	sendmail = invokeurl
+	[
+		url :"https://www.zohoapis.com/crm/v5/Deals/" + recordId + "/actions/send_mail"
+		type :POST
+		parameters:data + ""
+		connection:"zohooauth"
+	];
+	//info sendmail;
+}
+}

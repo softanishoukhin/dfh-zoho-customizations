@@ -1,0 +1,181 @@
+void automation.createTripOnTheDayOfAutopsyDateWithTask(Int crmid)
+{
+// updatedFieldAPIName = standalone.getWhichFieldUpdate(crmid);
+// info updatedFieldAPIName;
+dealDetails = invokeurl
+[
+	url :"https://www.zohoapis.com/crm/v7/Deals/" + crmid
+	type :GET
+	connection:"zohooauth"
+];
+// current_time = zoho.currenttime.toTime();
+// start_time = (zoho.currentdate + " 09:00:00").toTime();
+// end_time = (zoho.currentdate + " 17:00:00").toTime();
+recordInfo = dealDetails.get("data").get(0);
+pipeline = recordInfo.get("Pipeline");
+trips = zoho.crm.getRelatedRecords("Trips","Deals",crmid);
+//Arrival Time Confirmed
+tripAvailable = false;
+tripId = null;
+for each  trip in trips
+{
+	if(trip.get("Trip_Type") == "Autopsy Initial" && trip.get("Created_on_This_Field_Update") == "Autopsy_Date")
+	{
+		tripId = trip.get("id");
+		tripAvailable = true;
+		break;
+	}
+}
+tripMap = Map();
+isInCare = ifnull(recordInfo.get("Is_Deceased_In_Our_Care"),"");
+if(isInCare == "Yes")
+{
+	// Scenario A: Pickup = DFH location from Operations, Destination = autopsy facility
+	opsCriteria = "(Related_Deal:equals:" + crmid + ")";
+	opsRecords = zoho.crm.searchRecords("Operations",opsCriteria,1,1);
+	for each  op in opsRecords
+	{
+		if(ifnull(op.get("id"),"") != "")
+		{
+			opsLocation = ifnull(op.get("Location"),"");
+			if(opsLocation == "Kingston")
+			{
+				tripMap.put("Pickup_Street_Address","20A W. Kings House Rd.");
+				tripMap.put("Pickup_City","Kingston");
+			}
+			else if(opsLocation == "Montego Bay")
+			{
+				tripMap.put("Pickup_Street_Address","45 Union St.");
+				tripMap.put("Pickup_City","Montego Bay");
+			}
+			else if(opsLocation != "")
+			{
+				tripMap.put("Pickup_Street_Address",opsLocation);
+				tripMap.put("Pickup_City","Montego Bay");
+			}
+			break;
+		}
+	}
+	// Destination = autopsy facility
+	if(!isNull(recordInfo.get("Autopsy_Locations")))
+	{
+		try
+		{
+			autopsyAcct = zoho.crm.getRecordById("Accounts",recordInfo.get("Autopsy_Locations").get("id"));
+			tripMap.put("Destination_Street_Address",ifnull(autopsyAcct.get("Billing_Street"),""));
+			tripMap.put("Destination_City",ifnull(autopsyAcct.get("Billing_City"),""));
+		}
+		catch (eAcct)
+		{
+		}
+	}
+}
+else
+{
+	// Scenario B: Pickup = autopsy facility, Destination = DFH
+	if(!isNull(recordInfo.get("Autopsy_Locations")))
+	{
+		try
+		{
+			autopsyAcct = zoho.crm.getRecordById("Accounts",recordInfo.get("Autopsy_Locations").get("id"));
+			tripMap.put("Pickup_Street_Address",ifnull(autopsyAcct.get("Billing_Street"),""));
+			tripMap.put("Pickup_City",ifnull(autopsyAcct.get("Billing_City"),""));
+		}
+		catch (eAcct)
+		{
+		}
+	}
+	tripMap.put("Destination_Street_Address","45 Union St.");
+	tripMap.put("Destination_City","Montego Bay");
+}
+// Link the Autopsy Location on the Trip (set the Trip lookup by id from the Deal lookup Autopsy_Locations)
+if(!isNull(recordInfo.get("Autopsy_Locations")))
+{
+	autopsyLocId = "";
+	try
+	{
+		autopsyLocId = ifnull(recordInfo.get("Autopsy_Locations").get("id"),"");
+	}
+	catch (eLoc)
+	{
+		autopsyLocId = "";
+	}
+	if(autopsyLocId != "")
+	{
+		locMap = Map();
+		locMap.put("id",autopsyLocId);
+		tripMap.put("Autopsy_Location",locMap);
+	}
+}
+// Set Scheduled_Date so the child carries it at create time (required for autopsy grouping)
+if(!isNull(recordInfo.get("Autopsy_Date_Time")))
+{
+	tripMap.put("Scheduled_Date",recordInfo.get("Autopsy_Date_Time"));
+	mp = Map();
+	mp.put("Subject","Follow Up Completion of Form E for " + recordInfo.get("Account_Name").get("name"));
+	mp.put("$se_module","Deals");
+	mp.put("What_Id",crmid);
+	mp.put("Owner",recordInfo.get("Owner").get("id"));
+	mp.put("Due_Date",recordInfo.get("Autopsy_Date_Time").toDate().addDay(2));
+	//mp.put("Due_Date",leadDetails.get("Created_Time").toDate().addDay(2));
+	//mp.put("Remind_At",{"ALARM":"FREQ=NONE;ACTION=EMAIL;TRIGGER=DATE-TIME:" + reminderTime.toString("yyyy-MM-dd'T'HH:mm:ss'+05:30'")});
+	mp.put("Status","Not Started");
+	mp.put("Send_Notification_Email",true);
+	//mp.put("Task_Created_on_Burial_Order_Received",true);
+	//mp.put("Task_for_Embalming_Auth_Form_Received",true);
+	mp.put("Task_Type","Completion of Form E");
+	createTask = zoho.crm.createRecord("Tasks",mp);
+}
+if(tripAvailable == false)
+{
+	// 	if(pipeline == "Funeral with Burial")
+	// 	{
+	// 		if(!isNull(recordInfo.get("Selected_Hospital")))
+	// 		{
+	// 			tripMap.put("Name",recordInfo.get("Account_Name").get("name") + " at " + recordInfo.get("Selected_Hospital").get("name"));
+	// 			tripMap.put("Trip_Type","Hospital Pickups");
+	// 		}
+	// 		else
+	// 		{
+	// 			tripMap.put("Name","Initial Home Pickup for " + recordInfo.get("Account_Name").get("name"));
+	// 			tripMap.put("Trip_Type","Home Pickups");
+	// 		}
+	// 	}
+	// 	else
+	// 	{
+	tripMap.put("Name","Autopsy Trip");
+	tripMap.put("Trip_Type","Autopsy Initial");
+	// 	}
+	tripMap.put("Trip_Status","DO NOT SCHEDULE");
+	tripMap.put("Deal",crmid);
+	tripMap.put("Created_on_This_Field_Update","Autopsy_Date");
+	// 	if(current_time >= start_time && current_time <= end_time)
+	// 	{
+	// 		tripMap.put("Owner","6503357000007169001");
+	// 		//Kristie Robinson
+	// 	}
+	// 	else
+	// 	{
+	tripMap.put("Owner",recordInfo.get("Owner").get("id"));
+	// 	}
+	tripCreationResult = zoho.crm.createRecord("Trips",tripMap,{"trigger":{"workflow"}});
+	info tripCreationResult;
+	tripAccountRelation = Map();
+	tripAccountRelation.put("Trips",tripCreationResult.get("id"));
+	tripAccountRelation.put("Related_Account_Record",recordInfo.get("Account_Name").get("id"));
+	zoho.crm.createRecord("Trips_Accounts_Relation",tripAccountRelation);
+	dealMap = Map();
+	dealMap.put("Trips",tripCreationResult.get("id"));
+	zoho.crm.updateRecord("Deals",crmid,dealMap);
+}
+else
+{
+	zoho.crm.updateRecord("Trips",tripId,tripMap,{"trigger":{"workflow"}});
+	// 	standalone.groupAutopsyTrips(tripId);
+	result = invokeurl
+	[
+		url :"https://www.zohoapis.com/crm/v7/functions/groupautopsytrips/actions/execute?auth_type=apikey&zapikey=<KEEP_THE_LIVE_ZAPIKEY>&childTripId=" + tripId
+		type :GET
+	];
+}
+}

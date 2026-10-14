@@ -1,0 +1,38 @@
+	//ZP-TBD-102: stamp the casket "changed on" fields on the deal's newest Operations record (read by Casket Management)
+	casketStampMap = Map();
+	casketStampNow = zoho.currenttime.toString("yyyy-MM-dd'T'HH:mm:ss","America/Jamaica");
+	if(returnedValue.contains("Casket_Type"))
+	{
+		casketStampMap.put("Casket_Type_Changed_On",casketStampNow);
+	}
+	if(returnedValue.contains("Primary_Color") || returnedValue.contains("Secondary_Color"))
+	{
+		casketStampMap.put("Colors_Changed_On",casketStampNow);
+	}
+	if(returnedValue.contains("Handles"))
+	{
+		casketStampMap.put("Handles_Changed_On",casketStampNow);
+	}
+	if(returnedValue.contains("Special_Instructions1"))
+	{
+		casketStampMap.put("Special_Instructions_Changed_On",casketStampNow);
+	}
+	if(returnedValue.contains("Funeral_Time"))
+	{
+		casketStampMap.put("Funeral_Date_Changed_On",casketStampNow);
+	}
+	if(casketStampMap.size() > 0)
+	{
+		casketOpsRows = standalone.COQLQuery("select id from Operations where Related_Deal = '" + crmid + "' order by Created_Time desc limit 1");
+		if(casketOpsRows.size() > 0)
+		{
+			casketOpsRows = casketOpsRows.toList();
+			casketOpsId = ifnull(casketOpsRows.get(0).get("id"),"");
+			if(casketOpsId != "")
+			{
+				casketStampResp = zoho.crm.updateRecord("Operations",casketOpsId,casketStampMap);
+				info casketStampResp;
+			}
+		}
+	}
+	//End ZP-TBD-102 casket stamps

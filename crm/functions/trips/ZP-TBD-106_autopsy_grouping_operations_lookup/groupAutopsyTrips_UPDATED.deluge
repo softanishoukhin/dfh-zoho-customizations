@@ -1,0 +1,368 @@
+void automation.groupAutopsyTrips(Int childTripId)
+{
+// ZP-TBD-106 (2026-10-08):
+//  1. Race fix. This function is started up to 3 times at once for the same child (rule "Group
+//     Autopsy Trip Under Parent" on create, rule "On Edit - Group Autopsy Trip Under Parent", and
+//     the direct REST call in createTripOnTheDayOfAutopsyDateWithTask). The old check-then-create
+//     let each parallel run create its own parent ("twin" parents, deceased split across them).
+//     A new parent now carries Autopsy_Group_Key = "MDAT|<locationId>|<yyyy-MM-dd>", a field set
+//     to "Do not allow duplicate values": CRM accepts only one, the other runs get DUPLICATE_DATA
+//     and join the winner's parent instead.
+//  2. Link. Each deceased's Operations record now points at the shared parent through the new
+//     Operations.Autopsy_Trip lookup. Parent_Trip (text) is still written so DA/TM code keeps working.
+//  3. Deceased_Names_Summary is rebuilt from that lookup (standalone.rebuildAutopsyTripSummary).
+cId = ifnull(childTripId,"").trim();
+if(cId == "")
+{
+	return;
+}
+childTrip = Map();
+try
+{
+	childTrip = zoho.crm.getRecordById("Trips",cId.toLong());
+}
+catch (e)
+{
+	return;
+}
+if(!childTrip.containKey("id"))
+{
+	return;
+}
+// Parent_Trip is a TEXT field holding the parent id (not a lookup) -- read it as a plain value
+oldParentId = "";
+try
+{
+	oldParentId = ifnull(childTrip.get("Parent_Trip"),"") + "";
+}
+catch (eOldParent)
+{
+	oldParentId = "";
+}
+tripType = ifnull(childTrip.get("Trip_Type"),"");
+if(tripType != "Autopsy Initial")
+{
+	return;
+}
+// Read the Autopsy_Location and Scheduled_Date
+locId = "";
+try
+{
+	locLk = childTrip.get("Autopsy_Location");
+	locId = ifnull(locLk.get("id"),"");
+}
+catch (eLocLk)
+{
+	locId = "";
+}
+// A0 durable fix: Trip's Autopsy_Location can be blank due to a creation race
+// (trip created before the Deal's lookup is readable). Fall back to the Deal —
+// it is the source of truth and is populated by the time grouping runs.
+if(locId == "")
+{
+	try
+	{
+		dealLk = childTrip.get("Deal");
+		dealId = ifnull(dealLk.get("id"),"");
+		if(dealId != "")
+		{
+			dealRec = zoho.crm.getRecordById("Deals",dealId.toLong());
+			dealLocLk = dealRec.get("Autopsy_Locations");
+			locId = ifnull(dealLocLk.get("id"),"");
+			if(locId != "")
+			{
+				// Re-stamp the Trip so future reads (DA, TM, this function) don't need to fall back again
+				stampMap = Map();
+				locStampMap = Map();
+				locStampMap.put("id",locId);
+				stampMap.put("Autopsy_Location",locStampMap);
+				try
+				{
+					zoho.crm.updateRecord("Trips",cId.toLong(),stampMap);
+				}
+				catch (eRestamp)
+				{
+				}
+			}
+		}
+	}
+	catch (eDealFallback)
+	{
+		locId = "";
+	}
+}
+schedDate = ifnull(childTrip.get("Scheduled_Date"),"");
+if(schedDate != "")
+{
+	schedDate = ("" + schedDate).subString(0,10);
+}
+if(locId == "" || schedDate == "")
+{
+	return;
+}
+groupKey = "MDAT|" + locId + "|" + schedDate;
+dayStart = schedDate + "T00:00:00-05:00";
+dayEnd = schedDate + "T23:59:59-05:00";
+// Search for existing parent trip with same location + date using COQL.
+// Oldest first, so every run (and any pre-existing twin) resolves to the same parent.
+parentId = "";
+try
+{
+	coqlQuery = "select id from Trips where ((Trip_Type = 'Multi Deceased Autopsy Trip' and Autopsy_Location = '" + locId + "') and (Scheduled_Date >= '" + dayStart + "' and Scheduled_Date <= '" + dayEnd + "')) order by Created_Time asc limit 1";
+	coqlPayload = Map();
+	coqlPayload.put("select_query",coqlQuery);
+	coqlResp = invokeurl
+	[
+		url :"https://www.zohoapis.com/crm/v7/coql"
+		type :POST
+		parameters:coqlPayload.toString()
+		headers:{"Content-Type":"application/json"}
+		connection:"zohooauth"
+	];
+	coqlText = coqlResp.toString();
+	if(coqlText.contains("\"data\""))
+	{
+		coqlData = coqlText.toMap().get("data");
+		if(coqlData.size() > 0)
+		{
+			parentId = ifnull(coqlData.get(0).get("id"),"") + "";
+		}
+	}
+}
+catch (eSearch)
+{
+	parentId = "";
+}
+if(parentId != "")
+{
+	try
+	{
+		syncMap = Map();
+		syncMap.put("Scheduled_Date",childTrip.get("Scheduled_Date"));
+		zoho.crm.updateRecord("Trips",parentId.toLong(),syncMap);
+	}
+	catch (eSync)
+	{
+	}
+}
+// Create parent if none found
+if(parentId == "")
+{
+	parentMap = Map();
+	parentMap.put("Trip_Type","Multi Deceased Autopsy Trip");
+	parentMap.put("Scheduled_Date",childTrip.get("Scheduled_Date"));
+	locMap = Map();
+	locMap.put("id",locId);
+	parentMap.put("Autopsy_Location",locMap);
+	parentMap.put("Name","Autopsy Trip " + schedDate);
+	parentMap.put("Pickup_City",ifnull(childTrip.get("Pickup_City"),""));
+	parentMap.put("Pickup_Street_Address",ifnull(childTrip.get("Pickup_Street_Address"),""));
+	parentMap.put("Destination_City",ifnull(childTrip.get("Destination_City"),""));
+	parentMap.put("Destination_Street_Address",ifnull(childTrip.get("Destination_Street_Address"),""));
+	parentMap.put("Trip_Status","Scheduled");
+	parentMap.put("Autopsy_Group_Key",groupKey);
+	// Two attempts: the 2nd only runs if the key is held by a parent that has since been
+	// moved to another day/location (its key is cleared first, see below)
+	attempts = {1,2};
+	for each  attemptNo in attempts
+	{
+		if(parentId != "")
+		{
+			break;
+		}
+		createResult = Map();
+		try
+		{
+			createResult = zoho.crm.createRecord("Trips",parentMap);
+		}
+		catch (eCreate)
+		{
+			createResult = Map();
+		}
+		newId = ifnull(createResult.get("id"),"") + "";
+		if(newId != "")
+		{
+			parentId = newId;
+			break;
+		}
+		// Lost the race: another run created this group's parent a moment ago and the unique
+		// Autopsy_Group_Key rejected ours. Use theirs (CRM returns its id in details.id).
+		keyedId = "";
+		try
+		{
+			keyedId = ifnull(createResult.get("details").get("id"),"") + "";
+		}
+		catch (eDupId)
+		{
+			keyedId = "";
+		}
+		if(keyedId == "")
+		{
+			try
+			{
+				keyPayload = Map();
+				keyPayload.put("select_query","select id from Trips where Autopsy_Group_Key = '" + groupKey + "' limit 1");
+				keyResp = invokeurl
+				[
+					url :"https://www.zohoapis.com/crm/v7/coql"
+					type :POST
+					parameters:keyPayload.toString()
+					headers:{"Content-Type":"application/json"}
+					connection:"zohooauth"
+				];
+				keyText = keyResp.toString();
+				if(keyText.contains("\"data\""))
+				{
+					keyData = keyText.toMap().get("data");
+					if(keyData.size() > 0)
+					{
+						keyedId = ifnull(keyData.get(0).get("id"),"") + "";
+					}
+				}
+			}
+			catch (eKeyFind)
+			{
+				keyedId = "";
+			}
+		}
+		if(keyedId == "")
+		{
+			info "ZP-TBD-106: could not create or find parent for " + groupKey + " -> " + createResult;
+			break;
+		}
+		// The key holder normally IS this group's parent (twin race). If it was since moved to a
+		// different day or location, free its key and try once more.
+		keyedTrip = Map();
+		try
+		{
+			keyedTrip = zoho.crm.getRecordById("Trips",keyedId.toLong());
+		}
+		catch (eKeyed)
+		{
+			keyedTrip = Map();
+		}
+		kDate = ifnull(keyedTrip.get("Scheduled_Date"),"") + "";
+		if(kDate.length() >= 10)
+		{
+			kDate = kDate.subString(0,10);
+		}
+		kLoc = "";
+		try
+		{
+			kLoc = ifnull(keyedTrip.get("Autopsy_Location").get("id"),"") + "";
+		}
+		catch (eKLoc)
+		{
+			kLoc = "";
+		}
+		if(kDate == schedDate && kLoc == locId)
+		{
+			parentId = keyedId;
+			break;
+		}
+		clearMap = Map();
+		clearMap.put("Autopsy_Group_Key","");
+		try
+		{
+			zoho.crm.updateRecord("Trips",keyedId.toLong(),clearMap);
+		}
+		catch (eClear)
+		{
+		}
+	}
+	if(parentId == "")
+	{
+		return;
+	}
+}
+// Stamp Parent_Trip on the child (text -- kept for DA/TM/cascade code that reads it).
+// Must happen BEFORE the Operations lookup below: createOperationsRecordOnTripCreation relies on
+// this order to catch an Operations record created in parallel with this run.
+if(parentId != "")
+{
+	childUpdate = Map();
+	childUpdate.put("Parent_Trip",parentId);
+	try
+	{
+		zoho.crm.updateRecord("Trips",cId.toLong(),childUpdate);
+	}
+	catch (eStamp)
+	{
+	}
+}
+// ZP-TBD-106: the real link -- this deceased's Operations record -> shared autopsy trip.
+// If the Operations record doesn't exist yet, createOperationsRecordOnTripCreation stamps it.
+if(parentId != "")
+{
+	opsRows = List();
+	try
+	{
+		opsPayload = Map();
+		opsPayload.put("select_query","select id, Autopsy_Trip from Operations where Related_Trip = '" + cId + "'");
+		opsResp = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v7/coql"
+			type :POST
+			parameters:opsPayload.toString()
+			headers:{"Content-Type":"application/json"}
+			connection:"zohooauth"
+		];
+		opsText = opsResp.toString();
+		if(opsText.contains("\"data\""))
+		{
+			opsRows = opsText.toMap().get("data");
+		}
+	}
+	catch (eOpsFind)
+	{
+	}
+	for each  opRow in opsRows
+	{
+		opId = ifnull(opRow.get("id"),"") + "";
+		curAt = "";
+		try
+		{
+			curAt = ifnull(opRow.get("Autopsy_Trip").get("id"),"") + "";
+		}
+		catch (eCurAt)
+		{
+			curAt = "";
+		}
+		if(opId != "" && curAt != parentId)
+		{
+			opUpd = Map();
+			atMap = Map();
+			atMap.put("id",parentId);
+			opUpd.put("Autopsy_Trip",atMap);
+			try
+			{
+				zoho.crm.updateRecord("Operations",opId.toLong(),opUpd);
+			}
+			catch (eOpUpd)
+			{
+			}
+		}
+	}
+}
+// Rebuild the deceased-name summary on the parent (and on the old parent if the child moved)
+if(parentId != "")
+{
+	try
+	{
+		standalone.rebuildAutopsyTripSummary(parentId);
+	}
+	catch (eSummary)
+	{
+	}
+	if(oldParentId != "" && oldParentId != "null" && oldParentId != parentId)
+	{
+		try
+		{
+			standalone.rebuildAutopsyTripSummary(oldParentId);
+		}
+		catch (eOldSummary)
+		{
+		}
+	}
+}
+}

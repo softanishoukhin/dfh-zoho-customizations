@@ -1,0 +1,292 @@
+void automation.groupAutopsyTrips(Int childTripId)
+{
+// try
+// {
+// 	getUrl("https://www.zohoapis.com/creator/custom/delapenhafuneralhome/Sleep_API?publickey=69fNOfX03TwjyaAgAYyRTJSBd&seconds=10");
+// }
+// catch (e)
+// {
+// 	info e;
+// }
+cId = ifnull(childTripId,"").trim();
+if(cId == "")
+{
+	return;
+}
+childTrip = Map();
+try
+{
+	childTrip = zoho.crm.getRecordById("Trips",cId.toLong());
+}
+catch (e)
+{
+	return;
+}
+if(!childTrip.containKey("id"))
+{
+	return;
+}
+oldParentId = "";
+try
+{
+	oldParentLk = childTrip.get("Parent_Trip");
+	oldParentId = ifnull(oldParentLk,"");
+}
+catch (eOldParent)
+{
+	oldParentId = "";
+}
+tripType = ifnull(childTrip.get("Trip_Type"),"");
+if(tripType != "Autopsy Initial")
+{
+	return;
+}
+// Read the Autopsy_Location and Scheduled_Date
+locId = "";
+try
+{
+	locLk = childTrip.get("Autopsy_Location");
+	locId = ifnull(locLk.get("id"),"");
+}
+catch (eLocLk)
+{
+	locId = "";
+}
+// A0 durable fix: Trip's Autopsy_Location can be blank due to a creation race
+// (trip created before the Deal's lookup is readable). Fall back to the Deal —
+// it is the source of truth and is populated by the time grouping runs.
+if(locId == "")
+{
+	try
+	{
+		dealLk = childTrip.get("Deal");
+		dealId = ifnull(dealLk.get("id"),"");
+		if(dealId != "")
+		{
+			dealRec = zoho.crm.getRecordById("Deals",dealId.toLong());
+			dealLocLk = dealRec.get("Autopsy_Locations");
+			locId = ifnull(dealLocLk.get("id"),"");
+			if(locId != "")
+			{
+				// Re-stamp the Trip so future reads (DA, TM, this function) don't need to fall back again
+				stampMap = Map();
+				locStampMap = Map();
+				locStampMap.put("id",locId);
+				stampMap.put("Autopsy_Location",locStampMap);
+				try
+				{
+					zoho.crm.updateRecord("Trips",cId.toLong(),stampMap);
+				}
+				catch (eRestamp)
+				{
+				}
+			}
+		}
+	}
+	catch (eDealFallback)
+	{
+		locId = "";
+	}
+}
+schedDate = ifnull(childTrip.get("Scheduled_Date"),"");
+if(schedDate != "")
+{
+	schedDate = ("" + schedDate).subString(0,10);
+}
+if(locId == "" || schedDate == "")
+{
+	return;
+}
+// Search for existing parent trip with same location + date using COQL
+parentId = "";
+try
+{
+	dayStart = schedDate + "T00:00:00-05:00";
+	dayEnd = schedDate + "T23:59:59-05:00";
+	coqlQuery = "select id from Trips where ((Trip_Type = 'Multi Deceased Autopsy Trip' and Autopsy_Location = '" + locId + "') and (Scheduled_Date >= '" + dayStart + "' and Scheduled_Date <= '" + dayEnd + "'))  limit 1";
+	coqlPayload = Map();
+	coqlPayload.put("select_query",coqlQuery);
+	coqlResp = invokeurl
+	[
+		url :"https://www.zohoapis.com/crm/v7/coql"
+		type :POST
+		parameters:coqlPayload.toString()
+		headers:{"Content-Type":"application/json"}
+		connection:"zohooauth"
+	];
+	if(coqlResp.containKey("data"))
+	{
+		coqlData = coqlResp.get("data");
+		if(!isNull(coqlData) && coqlData.size() > 0)
+		{
+			parentId = ifnull(coqlData.get(0).get("id"),"");
+		}
+	}
+}
+catch (eSearch)
+{
+	parentId = "";
+}
+if(parentId != "")
+{
+	try
+	{
+		syncMap = Map();
+		syncMap.put("Scheduled_Date",childTrip.get("Scheduled_Date"));
+		zoho.crm.updateRecord("Trips",parentId.toLong(),syncMap);
+	}
+	catch (eSync)
+	{
+	}
+}
+// Create parent if none found
+if(parentId == "")
+{
+	parentMap = Map();
+	parentMap.put("Trip_Type","Multi Deceased Autopsy Trip");
+	parentMap.put("Scheduled_Date",childTrip.get("Scheduled_Date"));
+	locMap = Map();
+	locMap.put("id",locId);
+	parentMap.put("Autopsy_Location",locMap);
+	parentMap.put("Name","Autopsy Trip " + schedDate);
+	parentMap.put("Pickup_City",ifnull(childTrip.get("Pickup_City"),""));
+	parentMap.put("Pickup_Street_Address",ifnull(childTrip.get("Pickup_Street_Address"),""));
+	parentMap.put("Destination_City",ifnull(childTrip.get("Destination_City"),""));
+	parentMap.put("Destination_Street_Address",ifnull(childTrip.get("Destination_Street_Address"),""));
+	parentMap.put("Trip_Status","Scheduled");
+	try
+	{
+		createResult = zoho.crm.createRecord("Trips",parentMap);
+		parentId = ifnull(createResult.get("id"),"");
+	}
+	catch (eCreate)
+	{
+		return;
+	}
+}
+// Stamp Parent_Trip on the child
+if(parentId != "")
+{
+	childUpdate = Map();
+	childUpdate.put("Parent_Trip",parentId);
+	try
+	{
+		zoho.crm.updateRecord("Trips",cId.toLong(),childUpdate);
+	}
+	catch (eStamp)
+	{
+	}
+}
+// NEW-2 (c): Rebuild the deceased-name summary on the parent every time a child groups onto it
+// (COQL used instead of zoho.crm.searchRecords -- searchRecords reads from Zoho's search index,
+// which lags a few seconds behind real writes, so a rebuild run immediately after the
+// Parent_Trip stamp above could still see stale results. COQL reads live data.)
+if(parentId != "")
+{
+	try
+	{
+		newChildQuery = "select id, Deal from Trips where Parent_Trip = '" + parentId + "'";
+		newChildResults = standalone.COQLQuery(newChildQuery);
+		newDealIds = List();
+		for each  nch in newChildResults
+		{
+			try
+			{
+				nchDealLk = nch.get("Deal");
+				nchDealId = ifnull(nchDealLk.get("id"),"");
+				if(nchDealId != "")
+				{
+					newDealIds.add(nchDealId);
+				}
+			}
+			catch (eNchDeal)
+			{
+			}
+		}
+		names = List();
+		if(newDealIds.size() > 0)
+		{
+			newIdCsv = "";
+			for each  nid in newDealIds
+			{
+				if(newIdCsv != "")
+				{
+					newIdCsv = newIdCsv + ",";
+				}
+				newIdCsv = newIdCsv + "'" + nid + "'";
+			}
+			nameQuery = "select id, Name_of_Deceased from Deals where id in (" + newIdCsv + ")";
+			nameResults = standalone.COQLQuery(nameQuery);
+			for each  nr in nameResults
+			{
+				nm = ifnull(nr.get("Name_of_Deceased"),"");
+				if(nm != "")
+				{
+					names.add(nm);
+				}
+			}
+		}
+		summaryStr = names.toString();
+		summaryMap = Map();
+		summaryMap.put("Deceased_Names_Summary",summaryStr);
+		zoho.crm.updateRecord("Trips",parentId.toLong(),summaryMap);
+	}
+	catch (eSummary)
+	{
+	}
+	// Rebuild the old parent's summary too, since the child just left it
+	if(oldParentId != "" && oldParentId != parentId)
+	{
+		try
+		{
+			oldChildQuery = "select id, Deal from Trips where Parent_Trip = '" + oldParentId + "'";
+			oldChildResults = standalone.COQLQuery(oldChildQuery);
+			oldDealIds = List();
+			for each  och in oldChildResults
+			{
+				try
+				{
+					ochDealLk = och.get("Deal");
+					ochDealId = ifnull(ochDealLk.get("id"),"");
+					if(ochDealId != "")
+					{
+						oldDealIds.add(ochDealId);
+					}
+				}
+				catch (eOchDeal)
+				{
+				}
+			}
+			oldNames = List();
+			if(oldDealIds.size() > 0)
+			{
+				oldIdCsv = "";
+				for each  oid in oldDealIds
+				{
+					if(oldIdCsv != "")
+					{
+						oldIdCsv = oldIdCsv + ",";
+					}
+					oldIdCsv = oldIdCsv + "'" + oid + "'";
+				}
+				oldNameQuery = "select id, Name_of_Deceased from Deals where id in (" + oldIdCsv + ")";
+				oldNameResults = standalone.COQLQuery(oldNameQuery);
+				for each  onr in oldNameResults
+				{
+					onm = ifnull(onr.get("Name_of_Deceased"),"");
+					if(onm != "")
+					{
+						oldNames.add(onm);
+					}
+				}
+			}
+			oldSummaryMap = Map();
+			oldSummaryMap.put("Deceased_Names_Summary",oldNames.toString());
+			zoho.crm.updateRecord("Trips",oldParentId.toLong(),oldSummaryMap);
+		}
+		catch (eOldSummary)
+		{
+		}
+	}
+}
+}

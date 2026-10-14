@@ -1,0 +1,158 @@
+// =============================================================================
+// ZP-TBD-105 -- Books incoming webhook "iw_ph_delete_invoice"
+// PRE-LAUNCH CLEAN-UP ONLY (Andrea 2026-10-09): called by the Police & Hospital
+// Billing app (Creator functions phDeleteInvoice / phDeleteMonthly) to take a P/H
+// test invoice -- or a test monthly invoice -- out of Xero and Books.
+//   1. refuses if the Books invoice has any payment
+//   2. Xero: if the invoice was sent to Xero (cf_xero_invoice_id set, or found by
+//      its invoice number): DRAFT / SUBMITTED -> DELETED, AUTHORISED -> VOIDED
+//      (Xero can't delete an approved invoice), already VOIDED / DELETED -> skip
+//   3. deletes the invoice in Books
+// Returns {"ok":true|false,"message":"..."} (Books wraps it in "response").
+//
+// HOW TO CREATE IT: Books > Settings > Developer Space > Incoming Webhooks > New,
+// the same way as the existing "iw_deleteexistingpaymentsfromx". Then:
+//   (a) read the invoice_id query parameter EXACTLY the way
+//       iw_deleteexistingpaymentsfromx reads its invoice_id (copy that line over
+//       the line marked COPY-1 below);
+//   (b) replace the block marked COPY-2 with the Xero token block from
+//       createinvoiceonxero (the lines from "xeroRefreshToken = zoho.crm.getOrgVariable"
+//       down to and including the "responseVariableUpdate = invokeurl [...]" call) --
+//       it refreshes the Xero token and saves the new refresh token back, exactly
+//       like every other Xero function. The client id / secret are NOT stored in
+//       this repo.
+// =============================================================================
+organizationID = "872327358";
+// COPY-1: read the invoice_id parameter like iw_deleteexistingpaymentsfromx does
+invoiceID = "";
+out = Map();
+out.put("ok",false);
+if(invoiceID == "")
+{
+	out.put("message","invoice_id missing");
+	return out;
+}
+invoiceDetails = zoho.books.getRecordsByID("Invoices",organizationID,invoiceID,"zohobooksconnection");
+invoiceData = Map();
+try
+{
+	invoiceData = invoiceDetails.get("invoice");
+}
+catch (e)
+{
+	invoiceData = Map();
+}
+if(invoiceData == null || invoiceData.isEmpty())
+{
+	out.put("message","Books invoice not found: " + invoiceID);
+	return out;
+}
+paidAmt = ifnull(invoiceData.get("payment_made"),0);
+if(paidAmt > 0)
+{
+	out.put("message","The invoice has a payment -- not deleted");
+	return out;
+}
+// ---- Xero ----
+xeroInvoiceId = "";
+for each  customField in invoiceData.get("custom_fields")
+{
+	if(customField.get("api_name") == "cf_xero_invoice_id")
+	{
+		v = ifnull(customField.get("value"),"") + "";
+		if(v != "" && v != "null" && v != "Pending")
+		{
+			xeroInvoiceId = v;
+		}
+	}
+}
+xeroNote = "not in Xero";
+// COPY-2: Xero token block from createinvoiceonxero goes here (it sets "response",
+// whose access_token is used below)
+response = Map();
+headers = Map();
+headers.put("xero-tenant-id","879c4d25-cee8-46c1-89f9-80dcfe572eb2");
+headers.put("Authorization","Bearer " + response.get("access_token"));
+headers.put("Accept","application/json");
+headers.put("Content-Type","application/json");
+xeroInv = Map();
+try
+{
+	if(xeroInvoiceId != "")
+	{
+		xeroInv = getUrl("https://api.xero.com/api.xro/2.0/Invoices/" + xeroInvoiceId,headers).get("Invoices").get(0);
+	}
+	else
+	{
+		// not stamped: look it up by the Books invoice number (that is the Xero InvoiceNumber)
+		xeroInv = getUrl("https://api.xero.com/api.xro/2.0/Invoices/" + invoiceData.get("invoice_number"),headers).get("Invoices").get(0);
+	}
+}
+catch (e)
+{
+	xeroInv = Map();
+}
+if(!xeroInv.isEmpty())
+{
+	xStatus = ifnull(xeroInv.get("Status"),"") + "";
+	xId = xeroInv.get("InvoiceID");
+	newStatus = "";
+	if(xStatus == "DRAFT" || xStatus == "SUBMITTED")
+	{
+		newStatus = "DELETED";
+	}
+	else if(xStatus == "AUTHORISED")
+	{
+		newStatus = "VOIDED";
+	}
+	if(newStatus != "")
+	{
+		xBody = Map();
+		xBody.put("InvoiceID",xId);
+		xBody.put("Status",newStatus);
+		xResp = invokeurl
+		[
+			url :"https://api.xero.com/api.xro/2.0/Invoices/" + xId
+			type :POST
+			body:xBody.toString()
+			headers:headers
+		];
+		xOk = false;
+		try
+		{
+			if(xResp.get("Invoices").get(0).get("Status") == newStatus)
+			{
+				xOk = true;
+			}
+		}
+		catch (e)
+		{
+			xOk = false;
+		}
+		if(!xOk)
+		{
+			out.put("message","Xero did not accept " + newStatus + ": " + xResp.toString());
+			return out;
+		}
+		xeroNote = "Xero " + newStatus;
+	}
+	else
+	{
+		xeroNote = "Xero already " + xStatus;
+	}
+}
+// ---- Books ----
+delResp = invokeurl
+[
+	url :"https://www.zohoapis.com/books/v3/invoices/" + invoiceID + "?organization_id=" + organizationID
+	type :DELETE
+	connection:"zohobooksconnection"
+];
+if(ifnull(delResp.get("code"),"") + "" != "0")
+{
+	out.put("message",xeroNote + "; Books did not delete it: " + ifnull(delResp.get("message"),"") + "");
+	return out;
+}
+out.put("ok",true);
+out.put("message",xeroNote + "; deleted in Books");
+return out;

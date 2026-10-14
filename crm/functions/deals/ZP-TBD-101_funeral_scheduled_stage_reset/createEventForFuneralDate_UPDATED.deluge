@@ -1,0 +1,127 @@
+void automation.createEventForFuneralDate(Int crmid, String pipeline)
+{
+dealDetails = invokeurl
+[
+	url :"https://www.zohoapis.com/crm/v7/Deals/" + crmid
+	type :GET
+	connection:"zohooauth"
+];
+recordInfo = dealDetails.get("data").get(0);
+standalone.createEventsOnChangingValueOfKeyDatesSection(crmid,"Funeral","Funeral_Time");
+//=============================================
+// Determine pickup address from Case_Location
+caseLocation = ifnull(recordInfo.get("Case_Location"),"");
+pickupStreet = "45 Union Street";
+pickupCity = "Montego Bay";
+if(caseLocation.contains("Kingston"))
+{
+	pickupStreet = "20A West Kings House Road";
+	pickupCity = "Kingston";
+}
+// Determine destination from Church_Chapel (first stop on funeral day)
+churchChapel = ifnull(recordInfo.get("Church_Chapel"),"");
+destinationStreet = churchChapel;
+destinationCity = pickupCity;
+if(churchChapel.contains("Kingston"))
+{
+	destinationCity = "Kingston";
+}
+else if(churchChapel.contains("Montego Bay") || churchChapel.contains("MoBay"))
+{
+	destinationCity = "Montego Bay";
+}
+//=============================================
+pipeline = recordInfo.get("Pipeline");
+trips = zoho.crm.getRelatedRecords("Trips","Deals",crmid);
+tripAvailable = false;
+tripId = null;
+// ===== ZP-TBD-101: remember the funeral trip's current time (used below to tell whether the
+// funeral time actually changed in this save) =====
+tripScheduledBefore = "";
+for each  trip in trips
+{
+	if(trip.get("Trip_Type") == "Funeral" && trip.get("Created_on_This_Field_Update") == "Trip_on_Funeral_Date")
+	{
+		tripId = trip.get("id");
+		tripAvailable = true;
+		tripScheduledBefore = ifnull(trip.get("Scheduled_Date"),"") + "";
+		break;
+	}
+}
+tripMap = Map();
+selectedProductsInDeal = recordInfo.get("Product_Selection");
+for each  selectedProductInDeal in selectedProductsInDeal
+{
+	try
+	{
+		if(selectedProductInDeal.get("Parent_Product").get("id") == "6503357000020030033" && selectedProductInDeal.get("Child_Product").get("id") != "6503357000062770001")
+		{
+			childProduct = zoho.crm.getRecordById("Products",selectedProductInDeal.get("Child_Product").get("id"));
+			if(childProduct.get("Availability_Based") == true)
+			{
+				tripMap.put("Vehicle",selectedProductInDeal.get("Child_Product").get("id"));
+				break;
+			}
+		}
+	}
+	catch (e)
+	{
+		info e;
+	}
+}
+raw = recordInfo.get("Funeral_Time");
+clean = raw.replaceAll("[-+][0-9]{2}:[0-9]{2}$","");
+ft = clean.toDateTime("yyyy-MM-dd'T'HH:mm:ss");
+result = ft.addHour(-2);
+tripTimeNew = result.toString("yyyy-MM-dd'T'HH:mm:ss");
+// ===== ZP-TBD-101: Stage -> "Funeral Scheduled" ONLY when the funeral is scheduled for the first
+// time (no funeral trip yet) or the Funeral Date and Time really changed (the funeral trip's time,
+// funeral minus 2 hours, no longer matches). This function runs on EVERY Deal save (workflow
+// "Create or Update Chapel Booking" fires on any create/edit with a funeral time), so before this
+// change any edit at all pushed later stages (Family Visit, Ready for Driver, ...) back to
+// "Funeral Scheduled". Completed stages are still never touched. =====
+funeralTimeChanged = true;
+if(tripAvailable && tripScheduledBefore.length() >= 16)
+{
+	if(tripScheduledBefore.subString(0,16) == tripTimeNew.subString(0,16))
+	{
+		funeralTimeChanged = false;
+	}
+}
+completedStages = {"Completed","Cremation Completed","Funeral Completed"};
+currentStage = ifnull(recordInfo.get("Stage"),"");
+if(funeralTimeChanged && !completedStages.contains(currentStage))
+{
+	dealMap = Map();
+	dealMap.put("Stage","Funeral Scheduled");
+	zoho.crm.updateRecord("Deals",crmid,dealMap);
+}
+tripMap.put("Scheduled_Date",tripTimeNew);
+tripMap.put("Destination_Street_Address",destinationStreet);
+tripMap.put("Destination_City",destinationCity);
+if(tripAvailable == false)
+{
+	tripMap.put("Name","Funeral Trip for " + recordInfo.get("Account_Name").get("name"));
+	tripMap.put("Trip_Type","Funeral");
+	tripMap.put("Trip_Status","Requested");
+	tripMap.put("Pickup_Street_Address",pickupStreet);
+	tripMap.put("Pickup_City",pickupCity);
+	tripMap.put("Deal",crmid);
+	tripMap.put("Created_on_This_Field_Update","Trip_on_Funeral_Date");
+	tripMap.put("Owner",zoho.crm.getOrgVariable("tripOwnerID"));
+	tripCreationResult = zoho.crm.createRecord("Trips",tripMap,{"trigger":{"workflow"}});
+	tripAccountRelation = Map();
+	tripAccountRelation.put("Trips",tripCreationResult.get("id"));
+	tripAccountRelation.put("Related_Account_Record",recordInfo.get("Account_Name").get("id"));
+	zoho.crm.createRecord("Trips_Accounts_Relation",tripAccountRelation);
+	dealMap2 = Map();
+	dealMap2.put("Trips",tripCreationResult.get("id"));
+	zoho.crm.updateRecord("Deals",crmid,dealMap2);
+}
+else
+{
+	tripMap.put("Pickup_Street_Address",pickupStreet);
+	tripMap.put("Pickup_City",pickupCity);
+	zoho.crm.updateRecord("Trips",tripId,tripMap,{"trigger":{"workflow"}});
+}
+}

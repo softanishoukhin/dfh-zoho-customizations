@@ -1,0 +1,349 @@
+// =====================================================================================
+// ZP-TBD-108 item 1 -- Driver App "Transfer Out" screens: two NEW functions.
+// Add both under Driver App > Workflow > Functions (namespace: none / same as
+// Complete_Crematory_Dropoff). Nothing existing is replaced.
+// =====================================================================================
+
+
+// -------------------------------------------------------------------------------------
+// 1) getTransferPickupInfo  ->  Custom API "Get_Transfer_Pickup_Info" (POST, tripId)
+// -------------------------------------------------------------------------------------
+// Where the deceased is stored + who is receiving them, for a "Transfer to Other Funeral
+// Home" trip.
+//
+// WHY NOT the trip's own Operations record: CRM "Create Operations Record On Trip Creation"
+// makes a NEW, blank Operations record for every new trip, so the transfer trip's record has
+// no position. The position (Location / Room / Refrigerator / Row / Drawer / In_Fridge_Aisle)
+// was written at check-in on the Deal's EARLIER Operations record, and the Ops App syncs
+// edits back to it. So: search Operations by Related_Deal, skip the transfer trip's own
+// record, and take the most recently modified one that has a Location.
+map getTransferPickupInfo(string tripId)
+{
+	result = Map();
+	result.put("status","error");
+	result.put("message","");
+	tId = ifnull(tripId,"").trim();
+	if(tId == "")
+	{
+		result.put("message","Missing tripId.");
+		return result;
+	}
+	tripRec = Map();
+	try
+	{
+		tripRec = zoho.crm.getRecordById("Trips",tId.toLong(),{"connection":"zohocrm_driverapp"});
+	}
+	catch (eTrip)
+	{
+		result.put("message","Could not read Trip " + tId + ": " + eTrip.toString());
+		return result;
+	}
+	dealId = "";
+	try
+	{
+		dealLk = tripRec.get("Deal");
+		dealId = ifnull(dealLk.get("id"),"");
+	}
+	catch (eDealLk)
+	{
+		dealId = "";
+	}
+	if(dealId == "")
+	{
+		result.put("message","This trip is not linked to a case.");
+		return result;
+	}
+	// ---- Receiving funeral home (entered on the Deal when the family chose another home).
+	receivingHome = "";
+	receivingContact = "";
+	receivingPhone = "";
+	deceasedName = "";
+	try
+	{
+		dealRec = zoho.crm.getRecordById("Deals",dealId.toLong(),{"connection":"zohocrm_driverapp"});
+		receivingHome = ifnull(dealRec.get("Name_of_Receiving_Funeral_Home"),"");
+		receivingContact = ifnull(dealRec.get("Funeral_Home_Contact_Person"),"");
+		receivingPhone = ifnull(dealRec.get("Funeral_Home_Contact_Number"),"");
+		deceasedName = ifnull(dealRec.get("Name_of_Deceased"),"");
+	}
+	catch (eDeal)
+	{
+	}
+	// ---- Position: newest Operations record on this Deal that has a Location, excluding the
+	//      transfer trip's own (blank) record.
+	opsRows = List();
+	try
+	{
+		opsRows = zoho.crm.searchRecords("Operations","(Related_Deal:equals:" + dealId + ")",1,200,{"connection":"zohocrm_driverapp"});
+	}
+	catch (eOps)
+	{
+		opsRows = List();
+	}
+	// Modified_Time is compared as a number (yyyyMMddHHmmss): every value carries the same
+	// org offset (-05:00), so the first 14 digits order correctly.
+	bestModified = 0;
+	pos = Map();
+	for each  op in opsRows
+	{
+		opTripId = "";
+		try
+		{
+			rtLk = op.get("Related_Trip");
+			opTripId = ifnull(rtLk.get("id"),"") + "";
+		}
+		catch (eRt)
+		{
+			opTripId = "";
+		}
+		if(opTripId == tId)
+		{
+			continue;
+		}
+		opLoc = ifnull(op.get("Location"),"") + "";
+		if(opLoc == "" || opLoc == "null" || opLoc == "-None-")
+		{
+			continue;
+		}
+		opModifiedDigits = (ifnull(op.get("Modified_Time"),"") + "").replaceAll("[^0-9]","");
+		opModified = 0;
+		if(opModifiedDigits.length() >= 14)
+		{
+			opModified = opModifiedDigits.subString(0,14).toLong();
+		}
+		if(pos.isEmpty() || opModified > bestModified)
+		{
+			bestModified = opModified;
+			pos = Map();
+			pos.put("operations_id",ifnull(op.get("id"),"") + "");
+			pos.put("location",opLoc);
+			pos.put("room",ifnull(op.get("Room"),"") + "");
+			pos.put("refrigerator",ifnull(op.get("Refrigerator"),"") + "");
+			pos.put("row",ifnull(op.get("Row"),"") + "");
+			pos.put("drawer",ifnull(op.get("Drawer"),"") + "");
+			aisleVal = ifnull(op.get("In_Fridge_Aisle"),false) + "";
+			pos.put("in_fridge_aisle",aisleVal);
+		}
+	}
+	result.put("status","success");
+	result.put("deal_id",dealId);
+	result.put("deceased_name",deceasedName);
+	result.put("receiving_home",receivingHome);
+	result.put("receiving_contact",receivingContact);
+	result.put("receiving_phone",receivingPhone);
+	if(pos.isEmpty())
+	{
+		result.put("position_found","false");
+	}
+	else
+	{
+		result.put("position_found","true");
+		result.put("operations_id",pos.get("operations_id"));
+		result.put("location",pos.get("location"));
+		result.put("room",pos.get("room"));
+		result.put("refrigerator",pos.get("refrigerator"));
+		result.put("row",pos.get("row"));
+		result.put("drawer",pos.get("drawer"));
+		result.put("in_fridge_aisle",pos.get("in_fridge_aisle"));
+	}
+	return result;
+}
+
+
+// -------------------------------------------------------------------------------------
+// 2) Complete_Transfer_Out  ->  Custom API "Complete_Transfer_Out" (POST)
+//    input: tripId, receivingHome, receivedBy, pickupCondition, deliveryCondition,
+//           author, completionTime
+// -------------------------------------------------------------------------------------
+// Same pattern as Complete_Crematory_Dropoff:
+//   1. Trip -> Trip_Status = Completed + Completion_Time, with workflow trigger (so every
+//      existing Trip_Status rule still fires exactly as for other trips).
+//   2. The trip's Operations record -> Receiving_Attendant = receivedBy.
+//      (Operations.Funeral_Home_Name is NOT written: it is a picklist of crematory names.)
+//   3. One Note on the Deal holding the full delivery record, in the same
+//      [[author|timestamp]] format the Driver App already reads, so it shows on the Deal
+//      timeline and in the app's Deal notes.
+// Steps 2 and 3 are secondary: if either fails the trip still completes and the problem
+// is returned as a warning.
+// Close-out of the deceased (Transferred Out / not in our care) is ZP-TBD-108 item 2 and is
+// deliberately NOT done here.
+map Complete_Transfer_Out(string tripId, string receivingHome, string receivedBy, string pickupCondition, string deliveryCondition, string author, string completionTime)
+{
+	response = Map();
+	response.put("status","error");
+	tId = ifnull(tripId,"").trim();
+	home = ifnull(receivingHome,"").trim();
+	recvBy = ifnull(receivedBy,"").trim();
+	pickCond = ifnull(pickupCondition,"").trim();
+	delivCond = ifnull(deliveryCondition,"").trim();
+	auth = ifnull(author,"").trim();
+	doneAt = ifnull(completionTime,"").trim();
+	if(tId == "")
+	{
+		response.put("message","Missing tripId.");
+		return response;
+	}
+	missing = List();
+	if(home == "")
+	{
+		missing.add("receiving funeral home");
+	}
+	if(recvBy == "")
+	{
+		missing.add("received by");
+	}
+	if(delivCond == "")
+	{
+		missing.add("condition at delivery");
+	}
+	if(missing.size() > 0)
+	{
+		missingStr = "";
+		for each  m in missing
+		{
+			if(missingStr == "")
+			{
+				missingStr = m;
+			}
+			else
+			{
+				missingStr = missingStr + ", " + m;
+			}
+		}
+		response.put("message","Missing: " + missingStr + ".");
+		return response;
+	}
+	tripRec = Map();
+	try
+	{
+		tripRec = zoho.crm.getRecordById("Trips",tId.toLong(),{"connection":"zohocrm_driverapp"});
+	}
+	catch (eTrip)
+	{
+		response.put("message","Could not read Trip " + tId + ": " + eTrip.toString());
+		return response;
+	}
+	if(ifnull(tripRec.get("Trip_Type"),"") != "Transfer to Other Funeral Home")
+	{
+		response.put("message","This is not a Transfer to Other Funeral Home trip.");
+		return response;
+	}
+	if(ifnull(tripRec.get("Trip_Status"),"") == "Completed")
+	{
+		response.put("status","success");
+		response.put("message","Trip was already completed.");
+		return response;
+	}
+	dealId = "";
+	try
+	{
+		dealLk = tripRec.get("Deal");
+		dealId = ifnull(dealLk.get("id"),"");
+	}
+	catch (eDealLk)
+	{
+		dealId = "";
+	}
+	// ---- 1. Complete the trip (same call shape as Complete_Crematory_Dropoff).
+	tripUpdate = Map();
+	tripUpdate.put("Trip_Status","Completed");
+	if(doneAt != "")
+	{
+		tripUpdate.put("Completion_Time",doneAt);
+	}
+	updResp = zoho.crm.updateRecord("Trips",tId.toLong(),tripUpdate,{"trigger":{"workflow"}});
+	updOk = false;
+	try
+	{
+		if(ifnull(updResp.get("id"),"") != "")
+		{
+			updOk = true;
+		}
+	}
+	catch (eUpd)
+	{
+		updOk = false;
+	}
+	if(updOk == false)
+	{
+		response.put("message","Trip could not be completed: " + updResp.toString());
+		return response;
+	}
+	warnings = List();
+	// ---- 2. Receiving attendant on the trip's Operations record.
+	try
+	{
+		// Same calls as Complete_Crematory_Dropoff (proven live).
+		opsRows = zoho.crm.searchRecords("Operations","(Related_Trip:equals:" + tId + ")");
+		if(opsRows != null && opsRows.size() > 0)
+		{
+			opsUpdate = Map();
+			opsUpdate.put("Receiving_Attendant",recvBy);
+			zoho.crm.updateRecord("Operations",opsRows.get(0).get("id").toLong(),opsUpdate);
+		}
+		else
+		{
+			warnings.add("No Operations record on this trip; receiving attendant not saved there.");
+		}
+	}
+	catch (eOpsUpd)
+	{
+		warnings.add("Operations update failed: " + eOpsUpd.toString());
+	}
+	// ---- 3. Delivery record as a Deal note ([[author|timestamp]] header, plain text).
+	if(dealId != "")
+	{
+		stamp = zoho.currenttime.toString("yyyy-MM-dd h:mm a");
+		pickText = pickCond;
+		if(pickText == "")
+		{
+			pickText = "Not recorded";
+		}
+		bodyText = "Transfer out - delivered to " + home + "\n" + "Received by: " + recvBy + "\n" + "Condition at pickup: " + pickText + "\n" + "Condition at delivery: " + delivCond;
+		noteContent = "[[" + auth + "|" + stamp + "]]" + "\n" + bodyText;
+		noteRow = Map();
+		noteRow.put("Note_Content",noteContent);
+		noteList = List();
+		noteList.add(noteRow);
+		notePayload = Map();
+		notePayload.put("data",noteList);
+		try
+		{
+			noteResp = invokeurl
+			[
+				url :"https://www.zohoapis.com/crm/v7/Deals/" + dealId + "/Notes"
+				type :POST
+				parameters:notePayload.toString()
+				headers:{"Content-Type":"application/json"}
+				connection:"zohocrm_connection"
+			];
+			noteCode = "";
+			try
+			{
+				noteCode = ifnull(noteResp.get("data").get(0).get("code"),"");
+			}
+			catch (eCode)
+			{
+				noteCode = "";
+			}
+			if(noteCode != "SUCCESS")
+			{
+				warnings.add("Delivery note not saved: " + noteResp.toString());
+			}
+		}
+		catch (eNote)
+		{
+			warnings.add("Delivery note not saved: " + eNote.toString());
+		}
+	}
+	else
+	{
+		warnings.add("Trip has no linked Deal; delivery note not saved.");
+	}
+	response.put("status","success");
+	if(warnings.size() > 0)
+	{
+		response.put("warnings",warnings);
+	}
+	return response;
+}
