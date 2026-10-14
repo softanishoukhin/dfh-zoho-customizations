@@ -1,0 +1,67 @@
+			// ZP-TBD-110: re-syncing a payment that is already in Books must never convert it a second time.
+			// After Books records it, allprocessonpaymentcreateandupdate writes the Books (JMD) amount back to this row's
+			// Amount_Paid while Payment_Mode stays e.g. "Online Credit Card USD"; the code above then multiplies that JMD
+			// figure by the USD rate again (US$2,000 -> 314,000 -> 49,298,000). It would also re-price an unchanged USD
+			// payment at today's rate. So: when the row's amount and mode are what Books already has (the Books amount
+			// itself, or the original amount Books keeps in cf_actual_paid_amount), the Books amount is kept as it is.
+			// Only a real change in CRM (another amount or another payment mode) is converted again.
+			try
+			{
+				resyncBooksPayment = zoho.books.getRecordsByID("customerpayments",organizationID,payer.get("Books_Payment_ID"),"zohooauth").get("payment");
+				resyncBooksAmount = ifnull(resyncBooksPayment.get("amount"),0).toString().toDecimal().round(2);
+				resyncBooksMode = ifnull(resyncBooksPayment.get("payment_mode"),"").toString().toLowerCase();
+				resyncBooksHash = ifnull(resyncBooksPayment.get("custom_field_hash"),Map());
+				resyncBooksRaw = ifnull(resyncBooksHash.get("cf_actual_paid_amount_unformatted"),"").toString();
+				if(!isNull(payer.get("Actual_Paid_Amount")))
+				{
+					resyncCrmRaw = payer.get("Actual_Paid_Amount").toString().toDecimal().round(2);
+				}
+				else
+				{
+					resyncCrmRaw = ifnull(payer.get("Amount_Paid"),0).toString().toDecimal().round(2);
+				}
+				resyncKeep = false;
+				if(resyncBooksMode == paymentMode)
+				{
+					if(resyncCrmRaw == resyncBooksAmount)
+					{
+						resyncKeep = true;
+					}
+					else if(resyncBooksRaw != "")
+					{
+						if(resyncBooksRaw.toDecimal().round(2) == resyncCrmRaw)
+						{
+							resyncKeep = true;
+						}
+					}
+				}
+				info "ZP-TBD-110 re-sync check: CRM " + resyncCrmRaw + " / Books " + resyncBooksAmount + " (original " + resyncBooksRaw + ") mode " + resyncBooksMode + " -> keep=" + resyncKeep;
+				if(resyncKeep == true)
+				{
+					resyncRetainerId = ifnull(resyncBooksPayment.get("retainerinvoice_id"),"").toString();
+					if(resyncRetainerId == "")
+					{
+						resyncRetainerId = booksInvoiceID.toString();
+					}
+					totalActualAmountPaid = totalActualAmountPaid - amountPaid.round(2) + resyncBooksAmount;
+					amountPaid = resyncBooksAmount;
+					paymentMap.put("amount",resyncBooksAmount);
+					paymentMap.put("amount_applied",resyncBooksAmount);
+					paymentMap.put("retainerinvoice_id",resyncRetainerId);
+					paymentMap.put("retainerinvoices",{{"retainerinvoice_id":resyncRetainerId,"amount_applied":resyncBooksAmount}});
+					// the original amount already on the Books payment stays as it is
+					resyncFields = list();
+					for each  resyncField in customFieldsListForPayment
+					{
+						if(resyncField.get("api_name") != "cf_actual_paid_amount")
+						{
+							resyncFields.add(resyncField);
+						}
+					}
+					paymentMap.put("custom_fields",resyncFields);
+				}
+			}
+			catch (eResync)
+			{
+				info "ZP-TBD-110: could not compare with Books payment " + payer.get("Books_Payment_ID") + ": " + eResync;
+			}

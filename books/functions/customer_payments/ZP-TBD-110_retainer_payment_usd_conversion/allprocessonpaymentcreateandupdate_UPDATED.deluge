@@ -1,0 +1,571 @@
+
+/*This is a sample function. Uncomment to execute or make changes to this function.*/
+//preventSyncToCRMInvoice start
+paymentID = customer_payment.get("payment_id");
+organizationID = organization.get("organization_id");
+paymentDetails = zoho.books.getRecordsByID("customerpayments",organizationID,paymentID,"zohobooksconnection");
+paymentData = paymentDetails.get("payment");
+invoiceData = paymentData.get("invoices");
+info "paymentData";
+info paymentData;
+//ZP-TBD-110 start -- USD -> JMD conversion for a payment on a RETAINER invoice (amount x Exchange Rate), once
+// iw_updatepaymentamount (called further down, invoice payments only) reads invoices[0] and applies the payment
+// to that invoice, so it can't handle a retainer payment ("invoices": [], "retainerinvoice_id" set). Until now a
+// USD payment on a retainer kept the raw USD figure as its JMD amount (PAY-MB-2026-002720: US$2,000 saved as
+// JMD 2,000 on RET-MB-2026-000005). It is converted here instead:
+//  - only a retainer payment entered in Books, with an Exchange Rate above 1, not yet stamped as converted;
+//  - NOT a payment created from CRM: createPaymentsOnBooksForRetainerInvoice already converts, but it doesn't set
+//    cf_payment_created_from, so its payments also show "Books". They always carry cf_actual_paid_amount -> skipped;
+//  - the new amount and cf_amount_converted = true go in the SAME write, so every later run (the edit this
+//    write triggers, populateprocessedby's edit, a staff edit) sees the stamp and skips -> never converted twice;
+//  - only a payment created TODAY: older retainer payments that were corrected by hand (rate filled in, never
+//    stamped) must not be multiplied again when someone edits them;
+//  - never above the retainer's total: a bigger result means the amount was already typed in JMD -> left as is
+//    and staff are emailed.
+// Runs before the T-24 Deal sync and the CRM Invoice_Payers write, so both carry the JMD amount.
+retainerConvRetainerId = ifnull(paymentData.get("retainerinvoice_id"),"").toString();
+retainerConvInvoices = ifnull(paymentData.get("invoices"),list());
+retainerConvHash = ifnull(paymentData.get("custom_field_hash"),Map());
+retainerConvCreatedFrom = ifnull(retainerConvHash.get("cf_payment_created_from"),"").toString();
+retainerConvAlreadyDone = false;
+if(retainerConvHash.get("cf_amount_converted_unformatted") == true)
+{
+	retainerConvAlreadyDone = true;
+}
+retainerConvFromCrm = false;
+if(retainerConvHash.containKey("cf_actual_paid_amount"))
+{
+	retainerConvFromCrm = true;
+}
+retainerConvRate = 0.0;
+if(retainerConvHash.containKey("cf_exchange_rate_unformatted"))
+{
+	retainerConvRate = ifnull(retainerConvHash.get("cf_exchange_rate_unformatted"),0).toString().toDecimal();
+}
+retainerConvCreatedDate = ifnull(paymentData.get("created_time"),"").toString();
+if(retainerConvCreatedDate.length() >= 10)
+{
+	retainerConvCreatedDate = retainerConvCreatedDate.subString(0,10);
+}
+retainerConvToday = zoho.currentdate.toString("yyyy-MM-dd");
+info "ZP-TBD-110 check: retainer=" + retainerConvRetainerId + " from=" + retainerConvCreatedFrom + " rate=" + retainerConvRate + " converted=" + retainerConvAlreadyDone + " fromCRM=" + retainerConvFromCrm + " created=" + retainerConvCreatedDate + " today=" + retainerConvToday;
+if(retainerConvRetainerId != "" && retainerConvInvoices.size() == 0 && retainerConvCreatedFrom == "Books" && retainerConvFromCrm == false && retainerConvAlreadyDone == false && retainerConvRate > 1 && retainerConvCreatedDate == retainerConvToday)
+{
+	retainerConvOldAmount = ifnull(paymentData.get("amount"),0).toString().toDecimal();
+	retainerConvNewAmount = (retainerConvOldAmount * retainerConvRate).round(2);
+	retainerConvRetainerData = zoho.books.getRecordsByID("retainerinvoices",organizationID,retainerConvRetainerId,"zohobooksconnection").get("retainerinvoice");
+	retainerConvRetainerNumber = ifnull(retainerConvRetainerData.get("retainerinvoice_number"),retainerConvRetainerId).toString();
+	retainerConvRetainerTotal = ifnull(retainerConvRetainerData.get("total"),0).toString().toDecimal();
+	retainerConvProblem = "";
+	if(retainerConvRetainerTotal > 0 && retainerConvNewAmount > retainerConvRetainerTotal)
+	{
+		retainerConvProblem = "It was NOT converted: " + retainerConvOldAmount + " x " + retainerConvRate + " = " + retainerConvNewAmount + " is more than the retainer total of " + retainerConvRetainerTotal + ", so the amount looks like it was already entered in JMD.";
+	}
+	else
+	{
+		retainerConvMap = Map();
+		retainerConvMap.put("amount",retainerConvNewAmount);
+		retainerConvFields = list();
+		retainerConvField = Map();
+		retainerConvField.put("api_name","cf_amount_converted");
+		retainerConvField.put("value",true);
+		retainerConvFields.add(retainerConvField);
+		retainerConvMap.put("custom_fields",retainerConvFields);
+		retainerConvResult = invokeurl
+		[
+			url :"https://www.zohoapis.com/books/v3/customerpayments/" + paymentID + "?organization_id=" + organizationID
+			type :PUT
+			parameters:retainerConvMap.toString()
+			connection:"zohobooksconnection"
+		];
+		info "ZP-TBD-110 conversion " + retainerConvOldAmount + " x " + retainerConvRate + " = " + retainerConvNewAmount + " -> " + retainerConvResult;
+		if(ifnull(retainerConvResult.get("code"),"").toString() != "0")
+		{
+			retainerConvProblem = "Books did not accept the converted amount of " + retainerConvNewAmount + ": " + ifnull(retainerConvResult.get("message"),retainerConvResult.toString());
+		}
+		else
+		{
+			// re-read so everything below works with the JMD amount, and make sure the payment is still on its retainer
+			paymentDetails = zoho.books.getRecordsByID("customerpayments",organizationID,paymentID,"zohobooksconnection");
+			paymentData = paymentDetails.get("payment");
+			invoiceData = paymentData.get("invoices");
+			if(ifnull(paymentData.get("retainerinvoice_id"),"").toString() != retainerConvRetainerId)
+			{
+				retainerConvProblem = "It was converted to " + retainerConvNewAmount + " but is no longer linked to retainer " + retainerConvRetainerNumber + ". Please re-link it.";
+			}
+		}
+	}
+	if(retainerConvProblem != "")
+	{
+		retainerConvSubject = "Retainer payment " + ifnull(paymentData.get("payment_number"),paymentID) + " - check the amount";
+		retainerConvMessage = "Payment " + ifnull(paymentData.get("payment_number"),paymentID) + " for " + ifnull(paymentData.get("customer_name"),"") + " on retainer " + retainerConvRetainerNumber + " (amount " + retainerConvOldAmount + ", exchange rate " + retainerConvRate + "). " + retainerConvProblem;
+		retainerConvTo = ifnull(retainerConvHash.get("cf_processed_by_email"),"").toString();
+		retainerConvCc = "";
+		try
+		{
+			retainerConvCc = ifnull(zoho.crm.getOrgVariable("CCEmailToSendErrorOnBooksPaymentMode"),"").toString();
+		}
+		catch (eConvCc)
+		{
+			retainerConvCc = "";
+		}
+		if(retainerConvTo == "")
+		{
+			retainerConvTo = retainerConvCc;
+			retainerConvCc = "";
+		}
+		info "ZP-TBD-110 problem: " + retainerConvMessage;
+		if(retainerConvTo != "")
+		{
+			try
+			{
+				if(retainerConvCc != "")
+				{
+					sendmail
+					[
+						from :zoho.adminuserid
+						to :retainerConvTo
+						cc :retainerConvCc
+						subject :retainerConvSubject
+						message :retainerConvMessage
+					]
+				}
+				else
+				{
+					sendmail
+					[
+						from :zoho.adminuserid
+						to :retainerConvTo
+						subject :retainerConvSubject
+						message :retainerConvMessage
+					]
+				}
+			}
+			catch (eConvMail)
+			{
+				info eConvMail;
+			}
+		}
+	}
+}
+//ZP-TBD-110 end
+// ==========================================================================
+// T-24 / ZP-TBD-76 -- push the Books master retainer's payment_made to the
+// linked Pre-Need Deal's Amount_Paid_To_Date every time ANY Customer Payment
+// is created or edited in Books (this workflow already fires unconditionally
+// on every payment create/edit -- see metadata.md for why the CRM-side
+// "createretainerinvoiceinbooks" -> "syncretainerinvoicestatusbetweencrmandxero"
+// path was rejected: that one only fires on a retainer's STATUS change, so a
+// second/third payment that stays "partially_paid" would never re-sync).
+//
+// Books is the source of truth here on purpose: this runs for a payment
+// entered directly in Books, not only ones created via the CRM-driven
+// createPaymentsOnBooksForRetainerInvoice flow.
+//
+// A Customer Payment applied to a single retainer invoice carries the target
+// as a direct "retainerinvoice_id" field (this org's own
+// createPaymentsOnBooksForRetainerInvoice sets that field on creation); the
+// "retainerinvoices" list is checked too as a defensive fallback in case a
+// payment ever carries the association only as a list entry.
+// ==========================================================================
+retainerInvoiceIdForDealSync = paymentData.get("retainerinvoice_id");
+if(isNull(retainerInvoiceIdForDealSync) || retainerInvoiceIdForDealSync == "")
+{
+	retainerInvoicesAppliedList = ifnull(paymentData.get("retainerinvoices"),list());
+	if(retainerInvoicesAppliedList.size() > 0)
+	{
+		retainerInvoiceIdForDealSync = retainerInvoicesAppliedList.get(0).get("retainerinvoice_id");
+	}
+}
+if(!isNull(retainerInvoiceIdForDealSync) && retainerInvoiceIdForDealSync != "")
+{
+	retainerInvoiceForDealSync = zoho.books.getRecordsByID("retainerinvoices",organizationID,retainerInvoiceIdForDealSync,"zohobooksconnection");
+	retainerInvoiceDataForDealSync = retainerInvoiceForDealSync.get("retainerinvoice");
+	if(retainerInvoiceDataForDealSync.get("custom_field_hash").containKey("cf_related_crm_deal_id"))
+	{
+		relatedDealIdForSync = retainerInvoiceDataForDealSync.get("custom_field_hash").get("cf_related_crm_deal_id");
+		if(!isNull(relatedDealIdForSync) && relatedDealIdForSync != "" && relatedDealIdForSync != "null")
+		{
+			// ZP-TBD-95: a Pre-Need Deal can have a "Pre-Need top-up" retainer next to its master -> add up the
+			// payment_made of every plan retainer of the Deal (the Books ids on its Deposit / Installment invoices)
+			dealPaidTotal = ifnull(retainerInvoiceDataForDealSync.get("payment_made"),0).toString().toDecimal();
+			countedRetainerIds = list();
+			countedRetainerIds.add(retainerInvoiceIdForDealSync.toString());
+			try
+			{
+				dealInvoicesForPaid = zoho.crm.getRelatedRecords("Invoices","Deals",relatedDealIdForSync.toLong());
+				for each  dealInvoiceForPaid in dealInvoicesForPaid
+				{
+					paidInvoiceFor = ifnull(dealInvoiceForPaid.get("Invoice_For"),"");
+					paidInvoiceStatus = ifnull(dealInvoiceForPaid.get("Status"),"");
+					paidBooksId = ifnull(dealInvoiceForPaid.get("Books_Invoice_ID"),"").toString();
+					if((paidInvoiceFor == "Deposit" || paidInvoiceFor.startsWith("Installment")) && paidInvoiceStatus != "Void" && paidInvoiceStatus != "Cancelled" && paidBooksId != "" && !countedRetainerIds.contains(paidBooksId))
+					{
+						countedRetainerIds.add(paidBooksId);
+						otherRetainerForPaid = zoho.books.getRecordsByID("retainerinvoices",organizationID,paidBooksId,"zohobooksconnection").get("retainerinvoice");
+						if(ifnull(otherRetainerForPaid.get("status"),"") != "void")
+						{
+							dealPaidTotal = dealPaidTotal + ifnull(otherRetainerForPaid.get("payment_made"),0).toString().toDecimal();
+						}
+					}
+				}
+			}
+			catch (ePaidSum)
+			{
+				info "ZP-TBD-95: could not add up the Deal's other retainers: " + ePaidSum;
+			}
+			dealAmountPaidMap = Map();
+			dealAmountPaidMap.put("Amount_Paid_To_Date",dealPaidTotal);
+			zoho.crm.updateRecord("Deals",relatedDealIdForSync,dealAmountPaidMap);
+			info "T-24: synced Amount_Paid_To_Date to Deal " + relatedDealIdForSync + " from retainer " + retainerInvoiceIdForDealSync;
+		}
+	}
+}
+// ==========================================================================
+// T-24 / ZP-TBD-76 block ends
+// ==========================================================================
+try
+{
+	paymentCreatedFrom = paymentData.get("custom_field_hash").get("cf_payment_created_from");
+}
+catch (e)
+{
+	paymentCreatedFrom = null;
+}
+// ZP-TBD-84: invoice payments only -- a retainer invoice payment has "invoices": [] and no cf_updated_from_crm to set
+if((paymentCreatedFrom == "CRM" || paymentCreatedFrom == "Fygaro") && ifnull(invoiceData,list()).size() > 0)
+{
+	info invoiceData.get(0).get("invoice_id");
+	customFieldsList = list();
+	fieldMap4 = Map();
+	fieldMap4.put("api_name","cf_updated_from_crm");
+	fieldMap4.put("value",true);
+	customFieldsList.add(fieldMap4);
+	m = Map();
+	m.put("custom_fields",customFieldsList);
+	m.put("reason","Updated from CRM");
+	updateInvoice = zoho.books.updateRecord("Invoices",organizationID,invoiceData.get(0).get("invoice_id"),m,"zohobooksconnection");
+	info paymentDetails;
+}
+//preventSyncToCRMInvoice end
+//populatepayernameoncreateforanalytics start
+try
+{
+	getUrl("https://www.zohoapis.com/creator/custom/delapenhafuneralhome/Sleep_API?publickey=69fNOfX03TwjyaAgAYyRTJSBd&seconds=30");
+}
+catch (e)
+{
+	info e;
+}
+paymentID = customer_payment.get("payment_id");
+organizationID = organization.get("organization_id");
+try
+{
+	payerID = customer_payment.getJSON("custom_field_hash").get("cf_payer_unformatted");
+	payerDetails = zoho.crm.getRecordById("Contacts",payerID);
+	payerName = payerDetails.get("Full_Name");
+}
+catch (e)
+{
+	try
+	{
+		payerName = customer_payment.getJSON("custom_field_hash").get("cf_new_payer_name_if_not_found");
+	}
+	catch (e)
+	{
+		payerName = null;
+	}
+}
+info customer_payment;
+info "payerDetails";
+info payerDetails;
+finalPayerName = null;
+contactPersons = list();
+if(!isNull(payerName))
+{
+	finalPayerName = payerName;
+}
+else
+{
+	customerDetails = zoho.books.getRecordsByID("contacts",organizationID,customer_payment.get("customer_id"),"zohobooksconnection");
+	try
+	{
+		contactPersons = customerDetails.get("contact").get("contact_persons");
+		if(contactPersons.size() > 0)
+		{
+			for each  contactPerson in contactPersons
+			{
+				if(contactPerson.get("is_primary_contact") == true)
+				{
+					finalPayerName = contactPerson.get("first_name") + " " + contactPerson.get("last_name");
+					break;
+				}
+			}
+		}
+		else
+		{
+			finalPayerName = customer_payment.get("customer_name");
+		}
+	}
+	catch (e)
+	{
+		finalPayerName = customer_payment.get("customer_name");
+	}
+}
+try
+{
+	existingPayerName = ifnull(customer_payment.getJSON("custom_field_hash").get("cf_payer_name"),"");
+}
+catch (e)
+{
+	existingPayerName = "";
+}
+if(!isNull(finalPayerName) && finalPayerName != existingPayerName)
+{
+	paymentMap = Map();
+	customFieldsList = list();
+	fieldMap = Map();
+	fieldMap.put("api_name","cf_payer_name");
+	fieldMap.put("value",finalPayerName);
+	customFieldsList.add(fieldMap);
+	paymentMap.put("custom_fields",customFieldsList);
+	response = zoho.books.updateRecord("customerpayments",organizationID,paymentID,paymentMap,"zohobooksconnection");
+	info response;
+}
+info "contactPersons";
+info contactPersons;
+//populatepayernameoncreateforanalytics end
+//createmanualpaymenttocrminvoice start
+info "paymentCreatedFrom";
+info paymentCreatedFrom;
+if(paymentCreatedFrom == "Books")
+{
+	paymentID = customer_payment.get("payment_id");
+	organizationID = organization.get("organization_id");
+	paymentAccountInfo = invokeurl
+	[
+		url :"https://www.zohoapis.com/books/v3/settings/incomingwebhooks/iw_getpaymentcurrencycode/execute?auth_type=apikey&encapiKey=<BOOKS_WEBHOOK_ENCAPIKEY>&payment_id=" + paymentID
+		type :GET
+	];
+	info paymentAccountInfo;
+	paymentAccountUpdateMap = Map();
+	try
+	{
+		paymentAccountUpdateMap.put("account_id",paymentAccountInfo.get("response").get("account_id"));
+	}
+	catch (e)
+	{
+		paymentAccountUpdateMap.put("account_id","5830143000000594063");
+	}
+	info paymentAccountUpdateMap;
+	if(!isNull(paymentAccountUpdateMap.get("account_id")))
+	{
+		paymentUpdateResult = invokeurl
+		[
+			url :"https://www.zohoapis.com/books/v3/customerpayments/" + paymentID + "?organization_id=" + organizationID
+			type :PUT
+			parameters:paymentAccountUpdateMap.toString()
+			connection:"zohobooksconnection"
+		];
+		info "paymentUpdateResult";
+		info paymentUpdateResult;
+	}
+	paymentDetails = zoho.books.getRecordsByID("customerpayments",organizationID,paymentID,"zohobooksconnection");
+	paymentInvoicesList = ifnull(paymentDetails.get("payment").get("invoices"),list());
+	paymentRetainerId = ifnull(paymentDetails.get("payment").get("retainerinvoice_id"),"");
+	isRetainerPayment = false;
+	crmInvoiceId = "";
+	if(paymentInvoicesList.size() > 0)
+	{
+		invoiceDetails = zoho.books.getRecordsByID("invoices",organizationID,paymentInvoicesList.get(0).get("invoice_id"),"zohobooksconnection");
+		info "invoiceDetails";
+		info invoiceDetails;
+		crmInvoiceId = ifnull(invoiceDetails.get("invoice").get("custom_field_hash").get("cf_crm_invoice_id"),"");
+	}
+	else if(paymentRetainerId != "")
+	{
+		isRetainerPayment = true;
+		retainerInvoiceDetails = zoho.books.getRecordsByID("retainerinvoices",organizationID,paymentRetainerId,"zohobooksconnection");
+		info "retainerInvoiceDetails";
+		info retainerInvoiceDetails;
+		crmInvoiceId = ifnull(retainerInvoiceDetails.get("retainerinvoice").get("custom_field_hash").get("cf_crm_invoice_id"),"");
+	}
+	if(crmInvoiceId != "" && crmInvoiceId != "null")
+	{
+		crmInvoiceDetails = zoho.crm.getRecordById("Invoices",crmInvoiceId);
+		//info crmInvoiceDetails;
+		payerMap = Map();
+		dealMap = Map();
+		payersList = list();
+		alreadyExistInCRMPayerList = false;
+		if(crmInvoiceDetails.get("Invoice_Payers").size() > 0)
+		{
+			payersList = crmInvoiceDetails.get("Invoice_Payers");
+			for each  payerList in payersList
+			{
+				if(payerList.get("Books_Payment_ID") == paymentID)
+				{
+					if(paymentDetails.get("payment").get("custom_field_hash").containKey("cf_payer_unformatted"))
+					{
+						payerList.put("Payer",paymentDetails.get("payment").get("custom_field_hash").get("cf_payer_unformatted"));
+					}
+					payerList.put("Amount_Paid",paymentDetails.get("payment").get("amount"));
+					payerList.put("Paid_Date",paymentDetails.get("payment").get("date"));
+					payerList.put("Payment_Mode",paymentDetails.get("payment").get("payment_mode"));
+					payerList.put("Account_Type",paymentDetails.get("payment").get("account_name"));
+					payerList.put("Books_Payment_ID",paymentID);
+					alreadyExistInCRMPayerList = true;
+					break;
+				}
+			}
+		}
+		// ----------------------------------------------------------------------
+		// IDEMPOTENCY GUARD (NEW): the old guard only checked whether THIS payment
+		// already appears in the CRM Invoice's Invoice_Payers list - a proxy on a
+		// DIFFERENT record, not the payment itself. If this function re-enters for
+		// the same payment before that CRM write lands, the old guard does not
+		// hold and iw_updatepaymentamount fires a second time, double-converting
+		// the amount. This checks a flag stamped directly on the payment record
+		// instead, and stamps it BEFORE calling the webhook so a second pass -
+		// however it is triggered - can never convert this payment again.
+		// ----------------------------------------------------------------------
+		alreadyConverted = false;
+		try
+		{
+			alreadyConverted = paymentDetails.get("payment").get("custom_field_hash").get("cf_amount_converted_unformatted") == true;
+		}
+		catch (eConvCheck)
+		{
+			alreadyConverted = false;
+		}
+		info "alreadyConverted";
+		info alreadyConverted;
+		// ZP-TBD-110 fix: a retainer payment is converted and stamped (cf_amount_converted) at the top of this function,
+		// so for a retainer payment the stamp must not stop its Invoice_Payers row from being added -- only "already in
+		// the list" counts. Invoice payments keep both checks exactly as before.
+		addPayerRow = false;
+		if(alreadyExistInCRMPayerList == false)
+		{
+			if(alreadyConverted == false)
+			{
+				addPayerRow = true;
+			}
+			else if(isRetainerPayment == true)
+			{
+				addPayerRow = true;
+			}
+		}
+		if(addPayerRow == true)
+		{
+			info "alreadyConverted";
+			info alreadyConverted;
+			if(isRetainerPayment == false)
+			{
+				updatePaymentAmountBasedOnExchangeRate = invokeurl
+				[
+					url :"https://www.zohoapis.com/books/v3/settings/incomingwebhooks/iw_updatepaymentamount/execute?auth_type=apikey&encapiKey=<BOOKS_WEBHOOK_ENCAPIKEY>&payment_id=" + paymentID
+					type :GET
+				];
+				stampMap = Map();
+				stampCustomFieldsList = list();
+				stampFieldMap = Map();
+				stampFieldMap.put("api_name","cf_amount_converted");
+				stampFieldMap.put("value",true);
+				stampCustomFieldsList.add(stampFieldMap);
+				stampMap.put("custom_fields",stampCustomFieldsList);
+				try
+				{
+					zoho.books.updateRecord("customerpayments",organizationID,paymentID,stampMap,"zohobooksconnection");
+				}
+				catch (eStamp)
+				{
+					info eStamp;
+				}
+				try
+				{
+					getUrl("https://www.zohoapis.com/creator/custom/delapenhafuneralhome/Sleep_API?publickey=69fNOfX03TwjyaAgAYyRTJSBd&seconds=10");
+				}
+				catch (e)
+				{
+					info e;
+				}
+			}
+			paymentDetails = zoho.books.getRecordsByID("customerpayments",organizationID,paymentID,"zohobooksconnection");
+			if(paymentDetails.get("payment").get("custom_field_hash").containKey("cf_payer_unformatted"))
+			{
+				payerMap.put("Payer",paymentDetails.get("payment").get("custom_field_hash").get("cf_payer_unformatted"));
+			}
+			payerMap.put("Amount_Paid",paymentDetails.get("payment").get("amount"));
+			payerMap.put("Paid_Date",paymentDetails.get("payment").get("date"));
+			payerMap.put("Payment_Mode",paymentDetails.get("payment").get("payment_mode"));
+			payerMap.put("Account_Type",paymentDetails.get("payment").get("account_name"));
+			payerMap.put("Books_Payment_ID",paymentID);
+			payersList.add(payerMap);
+		}
+		info "payersList" + payersList;
+		dealMap.put("Invoice_Payers",payersList);
+		result = zoho.crm.updateRecord("Invoices",crmInvoiceId,dealMap);
+		//  info result;
+	}
+}
+//createmanualpaymenttocrminvoice end
+refundOverpaymentProcessToXero = invokeurl
+[
+	url :"https://www.zohoapis.com/books/v3/settings/incomingwebhooks/iw_createoverpaymentinxerofrom/execute?auth_type=apikey&encapiKey=<BOOKS_WEBHOOK_ENCAPIKEY>&payment_id=" + paymentID
+	type :GET
+];
+info "refundOverpaymentProcessToXero";
+info refundOverpaymentProcessToXero;
+//ZP-TBD-82 start -- after every payment, send the Pre-Need contract the Deal is now due for
+// (1-page once the 50% deposit is paid, full contract once everything is paid / the Lump Sum is paid).
+// Works for every payment route: Fygaro, cash/check entered on the CRM invoice, and payments entered in Books.
+// The CRM function decides and sends; it does nothing for non-Pre-Need Deals or when nothing new is due.
+try
+{
+	contractDealIds = list();
+	contractRetainerIds = list();
+	directRetainerId = ifnull(paymentData.get("retainerinvoice_id"),"");
+	if(directRetainerId != "")
+	{
+		contractRetainerIds.add(directRetainerId);
+	}
+	for each  contractRetainer in ifnull(paymentData.get("retainerinvoices"),list())
+	{
+		if(!contractRetainerIds.contains(contractRetainer.get("retainerinvoice_id")))
+		{
+			contractRetainerIds.add(contractRetainer.get("retainerinvoice_id"));
+		}
+	}
+	for each  contractRetainerId in contractRetainerIds
+	{
+		contractRetainerData = zoho.books.getRecordsByID("retainerinvoices",organizationID,contractRetainerId,"zohobooksconnection").get("retainerinvoice");
+		contractDealId = ifnull(contractRetainerData.get("custom_field_hash").get("cf_related_crm_deal_id"),"");
+		if(contractDealId != "" && contractDealId != "null" && !contractDealIds.contains(contractDealId))
+		{
+			contractDealIds.add(contractDealId);
+		}
+	}
+	for each  contractInvoice in ifnull(paymentData.get("invoices"),list())
+	{
+		contractInvoiceData = zoho.books.getRecordsByID("invoices",organizationID,contractInvoice.get("invoice_id"),"zohobooksconnection").get("invoice");
+		contractDealId = ifnull(contractInvoiceData.get("custom_field_hash").get("cf_related_crm_deal_id"),"");
+		if(contractDealId != "" && contractDealId != "null" && !contractDealIds.contains(contractDealId))
+		{
+			contractDealIds.add(contractDealId);
+		}
+	}
+	for each  dealIdToCheck in contractDealIds
+	{
+		contractResult = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v7/functions/autosendpreneedcontract/actions/execute?auth_type=apikey&zapikey=<CRM_ZAPIKEY>&crmid=" + dealIdToCheck
+			type :GET
+		];
+		info "ZP-TBD-82 contract check for Deal " + dealIdToCheck + ": " + contractResult;
+	}
+}
+catch (eContract)
+{
+	info "ZP-TBD-82 contract check failed: " + eContract;
+}
+//ZP-TBD-82 end

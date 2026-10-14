@@ -1,0 +1,64 @@
+				// ZP-TBD-112: the booking is written through the CRM REST API with "trigger":["workflow"] (the same way this
+				// function already updates the Trip), so CRM's "Add to Calendar" (create) and "On Update - Add to Calendar"
+				// rules run and the booking shows on the Vehicle Booking calendar. zoho.crm.createRecord / updateRecord from
+				// here never fired CRM workflows, so no Trip Manager booking since 30 Sep 2026 reached the calendar.
+				vbNameLabel = ifnull(hearseProduct.get("Product_Name"),"Vehicle") + " " + depFormatted;
+				vbMap = Map();
+				vbMap.put("Name",vbNameLabel);
+				vbMap.put("Vehicle",{"id":newBookingVehicleId});
+				vbMap.put("Deal",{"id":dealIdForBooking});
+				vbMap.put("Start",depFormatted);
+				vbMap.put("End",depFormatted);
+				vbMap.put("Status","Confirmed");
+				vbMap.put("Calendar_View_enabled",true);
+				vbMap.put("Note",vbNameLabel);
+				vbDataList = List();
+				vbDataList.add(vbMap);
+				vbTrigger = List();
+				vbTrigger.add("workflow");
+				vbBody = Map();
+				vbBody.put("data",vbDataList);
+				vbBody.put("trigger",vbTrigger);
+				info "existingBookingId";
+				info existingBookingId;
+				if(existingBookingId != "")
+				{
+					vbResult = invokeurl
+					[
+						url :"https://www.zohoapis.com/crm/v7/Vehicle_Bookings/" + existingBookingId
+						type :PUT
+						parameters:vbBody.toString()
+						headers:{"Content-Type":"application/json"}
+						connection:"zohocrm_connection"
+					];
+					info "vbResult";
+					info vbResult;
+				}
+				else
+				{
+					vbResult = invokeurl
+					[
+						url :"https://www.zohoapis.com/crm/v7/Vehicle_Bookings"
+						type :POST
+						parameters:vbBody.toString()
+						headers:{"Content-Type":"application/json"}
+						connection:"zohocrm_connection"
+					];
+					info "vbResult";
+					info vbResult;
+					newVbId = "";
+					try
+					{
+						newVbId = "" + vbResult.get("data").get(0).get("details").get("id");
+					}
+					catch (eVbId)
+					{
+						newVbId = "";
+					}
+					if(newVbId != "" && newVbId != "null")
+					{
+						tripStamp = Map();
+						tripStamp.put("Vehicle_Booking_ID",newVbId);
+						zoho.crm.updateRecord("Trips",tripId.toLong(),tripStamp,{"connection":"zohocrm_connection"});
+					}
+				}

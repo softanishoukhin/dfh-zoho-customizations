@@ -1,0 +1,84 @@
+string standalone.backfillVehicleBookingCalendar()
+{
+// ZP-TBD-112 one-off: Vehicle Bookings made by Trip Manager since 30 Sep 2026 never got a Zoho Calendar event
+// (the CRM "Add to Calendar" rule didn't fire for them). This runs the existing add_to_calendar function for every
+// upcoming booking that is calendar-enabled, has a Deal and has no Calendar_Event_UID yet. Run once, by hand
+// (CRM > Setup > Developer Hub > Functions > backfillVehicleBookingCalendar > Execute). Safe to run again: a booking
+// that got its event is skipped next time.
+todayText = zoho.currentdate.toString("yyyy-MM-dd");
+doneCount = 0;
+skippedCount = 0;
+failedList = List();
+offsets = {0,200,400,600};
+for each  offsetValue in offsets
+{
+	queryMap = Map();
+	queryMap.put("select_query","select Name, Deal, Start, Calendar_Event_UID from Vehicle_Bookings where (((Calendar_Event_UID is null) and (Calendar_View_enabled = true)) and (Start >= '" + todayText + "T00:00:00-05:00')) limit " + offsetValue + ", 200");
+	coqlResponse = invokeurl
+	[
+		url :"https://www.zohoapis.com/crm/v7/coql"
+		type :POST
+		parameters:queryMap.toString()
+		connection:"zohooauth"
+	];
+	rows = ifnull(coqlResponse.get("data"),List());
+	if(rows.size() == 0)
+	{
+		break;
+	}
+	for each  row in rows
+	{
+		bookingId = ifnull(row.get("id"),"").toString();
+		hasDeal = false;
+		try
+		{
+			if(ifnull(row.get("Deal").get("id"),"").toString() != "")
+			{
+				hasDeal = true;
+			}
+		}
+		catch (eDeal)
+		{
+			hasDeal = false;
+		}
+		if(bookingId == "" || hasDeal == false)
+		{
+			// add_to_calendar needs the Deal (owner = attendee); bookings without one are left for a person to check
+			skippedCount = skippedCount + 1;
+			continue;
+		}
+		try
+		{
+			// ZP-TBD-112: the function argument goes in the URL -- a POST body map is not passed to add_to_calendar
+			// as crmid (it then reads an empty booking: "Value is empty and 'get' function cannot be applied")
+			calendarResult = invokeurl
+			[
+				url :"https://www.zohoapis.com/crm/v7/functions/add_to_calendar/actions/execute?auth_type=oauth&crmid=" + bookingId
+				type :POST
+				connection:"zohooauth"
+			];
+			info bookingId + " -> " + calendarResult;
+			if(ifnull(calendarResult.get("code"),"").toString() == "success")
+			{
+				doneCount = doneCount + 1;
+			}
+			else
+			{
+				failedList.add(bookingId);
+			}
+		}
+		catch (eCalendar)
+		{
+			failedList.add(bookingId);
+			info "ZP-TBD-112: " + bookingId + " failed: " + eCalendar;
+		}
+	}
+	if(rows.size() < 200)
+	{
+		break;
+	}
+}
+summary = "ZP-TBD-112 backfill: sent to calendar " + doneCount + ", skipped (no Deal) " + skippedCount + ", failed " + failedList.size() + " " + failedList.toString();
+info summary;
+return summary;
+}

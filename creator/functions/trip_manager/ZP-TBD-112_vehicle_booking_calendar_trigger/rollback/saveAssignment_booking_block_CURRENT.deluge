@@ -1,0 +1,36 @@
+				vbMap = Map();
+				vbNameLabel = ifnull(hearseProduct.get("Product_Name"),"Vehicle") + " " + depFormatted;
+				vbMap.put("Name",vbNameLabel);
+				vbMap.put("Vehicle",newBookingVehicleId.toLong());
+				vbMap.put("Deal",dealIdForBooking.toLong());
+				vbMap.put("Start",depFormatted);
+				vbMap.put("End",depFormatted);
+				vbMap.put("Status","Confirmed");
+				vbMap.put("Calendar_View_enabled",true);
+				vbMap.put("Note",vbNameLabel);
+				info "existingBookingId";
+				info existingBookingId;
+				if(existingBookingId != "")
+				{
+					zoho.crm.updateRecord("Vehicle_Bookings",existingBookingId.toLong(),vbMap,{"connection":"zohocrm_connection"});
+				}
+				else
+				{
+					vbResult = zoho.crm.createRecord("Vehicle_Bookings",vbMap,{"connection":"zohocrm_connection"});
+					info "vbResult";
+					info vbResult;
+					newVbId = "";
+					try 
+					{
+						newVbId = "" + vbResult.get("id");
+					}					catch (eVbId)
+					{
+						newVbId = "";
+					}
+					if(newVbId != "" && newVbId != "null")
+					{
+						tripStamp = Map();
+						tripStamp.put("Vehicle_Booking_ID",newVbId);
+						zoho.crm.updateRecord("Trips",tripId.toLong(),tripStamp,{"connection":"zohocrm_connection"});
+					}
+				}

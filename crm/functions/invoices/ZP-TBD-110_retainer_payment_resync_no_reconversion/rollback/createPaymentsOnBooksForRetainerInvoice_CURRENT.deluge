@@ -1,0 +1,585 @@
+void automation.createPaymentsOnBooksForRetainerInvoice(Int crmid)
+{
+records = invokeurl
+[
+	url :"https://www.zohoapis.com/crm/v7/Invoices/" + crmid
+	type :GET
+	connection:"zohooauth"
+];
+recordInfo = records.get("data").get(0);
+booksInvoiceID = recordInfo.get("Books_Invoice_ID");
+organizationID = "872327358";
+if(recordInfo.get("Invoice_For") == "Police" || recordInfo.get("Invoice_For") == "Hospital")
+{
+	Contact_id = recordInfo.get("Parent_Account").get("id");
+	relatedContact = zoho.crm.getRelatedRecords("Contacts","Accounts",Contact_id);
+	Contact_person_id = relatedContact.get(0).get("id");
+}
+else
+{
+	Contact_id = recordInfo.get("Account_Name").get("id");
+	Contact_person_id = recordInfo.get("Contact_Name").get("id");
+}
+books_con = zoho.books.getRecords("Contacts",organizationID,"zcrm_account_id=" + Contact_id,"zohooauth");
+books_contact_id = books_con.get("contacts").getJSON("contact_id");
+updateInvoice = "";
+totalActualAmountPaid = 0;
+if(!isNull(recordInfo.get("Invoice_Payers")))
+{
+	invoicePayersUpdatedList = list();
+	for each  payer in recordInfo.get("Invoice_Payers")
+	{
+		booksInvoice = zoho.books.getRecordsByID("retainerinvoices",organizationID,booksInvoiceID,"zohooauth");
+		booksInvoiceDetails = booksInvoice.get("retainerinvoice");
+		amountDueInBooks = booksInvoiceDetails.get("balance");
+		try
+		{
+			payerDetails = zoho.crm.getRecordById("Contacts",payer.get("Payer").get("id"));
+		}
+		catch (e)
+		{
+			payerDetails = null;
+		}
+		paymentMap = Map();
+		paymentMap.put("customer_id",books_contact_id);
+		paymentMap.put("payment_mode",payer.get("Payment_Mode"));
+		paymentMap.put("date",payer.get("Paid_Date"));
+		paymentMap.put("retainerinvoice_id",booksInvoiceID);
+		customFieldsListForPayment = list();
+		if(!isNull(payer.get("Actual_Paid_Amount")))
+		{
+			try
+			{
+				amountActuallyPaid = payer.get("Actual_Paid_Amount").toDecimal();
+			}
+			catch (e)
+			{
+				amountActuallyPaid = payer.get("Amount_Paid").toDecimal();
+			}
+			paymentCustomField4 = Map();
+			paymentCustomField4.put("api_name","cf_actual_paid_amount");
+			paymentCustomField4.put("value",amountActuallyPaid.round(2));
+			customFieldsListForPayment.add(paymentCustomField4);
+		}
+		else
+		{
+			paymentCustomField4 = Map();
+			paymentCustomField4.put("api_name","cf_actual_paid_amount");
+			paymentCustomField4.put("value",payer.get("Amount_Paid"));
+			customFieldsListForPayment.add(paymentCustomField4);
+		}
+		paymentMode = payer.get("Payment_Mode").toLowerCase();
+		if(paymentMode == "bank transfer gbp" || paymentMode == "bank transfer bns gdp")
+		{
+			paymentMadeBy = "gbp";
+		}
+		else if(paymentMode == "bank transfer usd" || paymentMode == "online credit card usd" || paymentMode == "credit card usd kgn" || paymentMode == "bank transfer ncb usd" || paymentMode == "bank transfer bns usd" || paymentMode == "point of sale credit card cibc usd" || paymentMode == "credit card usd mbj")
+		{
+			paymentMadeBy = "usd";
+		}
+		else
+		{
+			paymentMadeBy = "jmd";
+		}
+		try
+		{
+			if(booksInvoiceDetails.get("currency_code") == "USD" || paymentMode == "bank transfer ncb usd")
+			{
+				paymentMap.put("currency_id","5830143000000000097");
+				if(!isNull(payer.get("Actual_Paid_Amount")))
+				{
+					amountPaid = payer.get("Actual_Paid_Amount");
+				}
+				else
+				{
+					amountPaid = payer.get("Amount_Paid");
+				}
+				if(paymentMadeBy == "gbp")
+				{
+					gbpRateResp = invokeurl
+					[
+						url :"https://www.zohoapis.com/books/v3/settings/currencies/5830143000000000103/exchangerates?organization_id=" + organizationID
+						type :GET
+						connection:"zohooauth"
+					];
+					gbpRate = gbpRateResp.get("exchange_rates").get(0).get("rate");
+					usdRateResp = invokeurl
+					[
+						url :"https://www.zohoapis.com/books/v3/settings/currencies/5830143000000000097/exchangerates?organization_id=" + organizationID
+						type :GET
+						connection:"zohooauth"
+					];
+					usdRate = usdRateResp.get("exchange_rates").get(0).get("rate");
+					jmdAmount = amountPaid * gbpRate;
+					usdAmount = jmdAmount / usdRate;
+					amountPaid = usdAmount;
+				}
+				else if(paymentMadeBy == "jmd")
+				{
+					usdRateResp = invokeurl
+					[
+						url :"https://www.zohoapis.com/books/v3/settings/currencies/5830143000000000097/exchangerates?organization_id=" + organizationID
+						type :GET
+						connection:"zohooauth"
+					];
+					usdRate = usdRateResp.get("exchange_rates").get(0).get("rate");
+					amountPaid = amountPaid / usdRate;
+				}
+				paymentMap.put("amount",amountPaid.round(2));
+			}
+			else if(booksInvoiceDetails.get("currency_code") == "GBP")
+			{
+				paymentMap.put("currency_id","5830143000000000103");
+				if(!isNull(payer.get("Actual_Paid_Amount")))
+				{
+					amountPaid = payer.get("Actual_Paid_Amount");
+				}
+				else
+				{
+					amountPaid = payer.get("Amount_Paid");
+				}
+				gbpRateResp = invokeurl
+				[
+					url :"https://www.zohoapis.com/books/v3/settings/currencies/5830143000000000103/exchangerates?organization_id=" + organizationID
+					type :GET
+					connection:"zohooauth"
+				];
+				gbpRate = gbpRateResp.get("exchange_rates").get(0).get("rate");
+				if(paymentMadeBy == "jmd")
+				{
+					amountPaid = amountPaid / gbpRate;
+				}
+				else if(paymentMadeBy == "usd")
+				{
+					usdRateResp = invokeurl
+					[
+						url :"https://www.zohoapis.com/books/v3/settings/currencies/5830143000000000097/exchangerates?organization_id=" + organizationID
+						type :GET
+						connection:"zohooauth"
+					];
+					usdRate = usdRateResp.get("exchange_rates").get(0).get("rate");
+					jmdAmount = amountPaid * usdRate;
+					amountPaid = jmdAmount / gbpRate;
+				}
+				paymentMap.put("amount",amountPaid.round(2));
+			}
+			else
+			{
+				paymentMap.put("currency_id","5830143000000090097");
+				if(!isNull(payer.get("Actual_Paid_Amount")))
+				{
+					amountPaid = payer.get("Actual_Paid_Amount");
+				}
+				else
+				{
+					amountPaid = payer.get("Amount_Paid");
+				}
+				if(paymentMadeBy == "usd")
+				{
+					usdRateResp = invokeurl
+					[
+						url :"https://www.zohoapis.com/books/v3/settings/currencies/5830143000000000097/exchangerates?organization_id=" + organizationID
+						type :GET
+						connection:"zohooauth"
+					];
+					usdRate = usdRateResp.get("exchange_rates").get(0).get("rate");
+					amountPaid = amountPaid * usdRate;
+				}
+				else if(paymentMadeBy == "gbp")
+				{
+					gbpRateResp = invokeurl
+					[
+						url :"https://www.zohoapis.com/books/v3/settings/currencies/5830143000000000103/exchangerates?organization_id=" + organizationID
+						type :GET
+						connection:"zohooauth"
+					];
+					gbpRate = gbpRateResp.get("exchange_rates").get(0).get("rate");
+					amountPaid = amountPaid * gbpRate;
+				}
+				paymentMap.put("amount",amountPaid.round(2));
+			}
+		}
+		catch (e)
+		{
+			amountPaid = payer.get("Amount_Paid");
+			paymentMap.put("amount",amountPaid.round(2));
+		}
+		// ZP-TBD-91: Pre-Need plan invoices are slices of ONE Books retainer and CRM keeps their GCT to 3 decimals
+		// (e.g. 20,020.005), so the payments can add up to a cent or two more than the retainer. Books refuses a
+		// retainer payment above its balance -> when a NEW payment is over the balance by rounding only (<= 1.00),
+		// record exactly the remaining balance and say so on the Books payment.
+		if(isNull(payer.get("Books_Payment_ID")) && amountDueInBooks > 0 && amountPaid > amountDueInBooks && amountPaid - amountDueInBooks <= 1)
+		{
+			paymentMap.put("description","Paid " + amountPaid.round(2) + " - recorded as the remaining retainer balance " + amountDueInBooks + " (rounding)");
+			amountPaid = amountDueInBooks;
+			paymentMap.put("amount",amountPaid.round(2));
+		}
+		totalActualAmountPaid = totalActualAmountPaid + amountPaid.round(2);
+		paymentMap.put("amount_applied",amountPaid);
+		invoicesListForPayment = list();
+		invoicesListForPaymentMap = Map();
+		invoicesListForPaymentMap.put("retainerinvoice_id",booksInvoiceID);
+		if(amountPaid > amountDueInBooks)
+		{
+			invoicesListForPaymentMap.put("amount_applied",amountDueInBooks);
+		}
+		else
+		{
+			invoicesListForPaymentMap.put("amount_applied",amountPaid);
+		}
+		invoicesListForPayment.add(invoicesListForPaymentMap);
+		paymentMap.put("retainerinvoices",invoicesListForPayment);
+		if(!isNull(payerDetails))
+		{
+			paymentCustomField = Map();
+			paymentCustomField.put("api_name","cf_payer");
+			paymentCustomField.put("value",payer.get("Payer").get("id"));
+			paymentCustomField.put("value_formatted",payerDetails.get("Last_Name"));
+			customFieldsListForPayment.add(paymentCustomField);
+		}
+		paymentMap.put("custom_fields",customFieldsListForPayment);
+		if(payer.get("Payment_Mode").toLowerCase() == "bank transfer")
+		{
+			paymentMap.put("account_id","5830143000000594055");
+		}
+		else if(payer.get("Payment_Mode").toLowerCase() == "bank transfer gbp")
+		{
+			paymentMap.put("account_id","5830143000000594051");
+		}
+		else if(payer.get("Payment_Mode").toLowerCase() == "bank transfer usd")
+		{
+			paymentMap.put("account_id","5830143000000594039");
+		}
+		else if(payer.get("Payment_Mode").toLowerCase() == "debit card to cash")
+		{
+			paymentMap.put("account_id","5830143000000594063");
+		}
+		else if(payer.get("Payment_Mode").toLowerCase() == "petty cash mbj")
+		{
+			paymentMap.put("account_id","5830143000000000361");
+		}
+		else if(payer.get("Payment_Mode").toLowerCase() == "petty cash kgn")
+		{
+			paymentMap.put("account_id","5830143000025900621");
+		}
+		else if(payer.get("Payment_Mode").toLowerCase() == "online credit card")
+		{
+			paymentMap.put("account_id","5830143000000594043");
+		}
+		else if(payer.get("Payment_Mode").toLowerCase() == "online credit card usd")
+		{
+			paymentMap.put("account_id","5830143000000594033");
+		}
+		else if(payer.get("Payment_Mode").toLowerCase() == "point of sale jmd")
+		{
+			paymentMap.put("account_id","5830143000000594063");
+		}
+		else if(payer.get("Payment_Mode").toLowerCase() == "point of sale credit card cibc")
+		{
+			paymentMap.put("account_id","5830143000000594043");
+		}
+		else if(payer.get("Payment_Mode").toLowerCase() == "point of sale debit card bns")
+		{
+			paymentMap.put("account_id","5830143000000594063");
+		}
+		else if(payer.get("Payment_Mode").toLowerCase() == "point of sale debit card cibc")
+		{
+			paymentMap.put("account_id","5830143000000594043");
+		}
+		else if(payer.get("Payment_Mode").toLowerCase() == "bank transfer ncb")
+		{
+			paymentMap.put("account_id","5830143000003093122");
+		}
+		else if(payer.get("Payment_Mode").toLowerCase() == "bank remittance")
+		{
+			paymentMap.put("account_id","5830143000000594055");
+		}
+		else if(payer.get("Payment_Mode").toLowerCase() == "bank transfer bns 8811")
+		{
+			paymentMap.put("account_id","5830143000000594063");
+		}
+		else if(payer.get("Payment_Mode").toLowerCase() == "bank transfer bns cons")
+		{
+			paymentMap.put("account_id","5830143000000594055");
+		}
+		else if(payer.get("Payment_Mode").toLowerCase() == "bank transfer bns gdp")
+		{
+			paymentMap.put("account_id","5830143000000594051");
+		}
+		else if(payer.get("Payment_Mode").toLowerCase() == "bank transfer ncb jmd")
+		{
+			paymentMap.put("account_id","5830143000003093122");
+		}
+		else if(payer.get("Payment_Mode").toLowerCase() == "bank transfer ncb usd")
+		{
+			paymentMap.put("account_id","5830143000003093128");
+		}
+		else if(payer.get("Payment_Mode").toLowerCase() == "cash mbj")
+		{
+			paymentMap.put("account_id","5830143000000594063");
+		}
+		else if(payer.get("Payment_Mode").toLowerCase() == "cheque mbj")
+		{
+			paymentMap.put("account_id","5830143000000594063");
+		}
+		else if(payer.get("Payment_Mode").toLowerCase() == "debit card mbj")
+		{
+			paymentMap.put("account_id","5830143000000594063");
+		}
+		else if(payer.get("Payment_Mode").toLowerCase() == "credit card mbj")
+		{
+			paymentMap.put("account_id","5830143000000594063");
+		}
+		else if(payer.get("Payment_Mode").toLowerCase() == "credit card usd mbj")
+		{
+			paymentMap.put("account_id","5830143000000594039");
+		}
+		else if(payer.get("Payment_Mode").toLowerCase() == "cash kgn")
+		{
+			paymentMap.put("account_id","5830143000000594043");
+		}
+		else if(payer.get("Payment_Mode").toLowerCase() == "cheque kgn")
+		{
+			paymentMap.put("account_id","5830143000000594043");
+		}
+		else if(payer.get("Payment_Mode").toLowerCase() == "credit card kgn")
+		{
+			paymentMap.put("account_id","5830143000000594043");
+		}
+		else if(payer.get("Payment_Mode").toLowerCase() == "credit card usd kgn")
+		{
+			paymentMap.put("account_id","5830143000000594033");
+		}
+		else if(payer.get("Payment_Mode").toLowerCase() == "debit card kgn")
+		{
+			paymentMap.put("account_id","5830143000000594043");
+		}
+		else if(payer.get("Payment_Mode").toLowerCase() == "bank transfer bns usd")
+		{
+			paymentMap.put("account_id","5830143000000594039");
+		}
+		else if(payer.get("Payment_Mode").toLowerCase() == "cash")
+		{
+			paymentMap.put("account_id","5830143000000594063");
+		}
+		else if(payer.get("Payment_Mode").toLowerCase() == "cheque")
+		{
+			paymentMap.put("account_id","5830143000000594063");
+		}
+		else if(payer.get("Payment_Mode").toLowerCase() == "online credit card jmd")
+		{
+			paymentMap.put("account_id","5830143000000594043");
+		}
+		else if(payer.get("Payment_Mode").toLowerCase() == "point of sale credit card cibc jmd")
+		{
+			paymentMap.put("account_id","5830143000000594043");
+		}
+		else if(payer.get("Payment_Mode").toLowerCase() == "point of sale credit card cibc usd")
+		{
+			paymentMap.put("account_id","5830143000000594033");
+		}
+		else if(payer.get("Payment_Mode").toLowerCase() == "point of sale credit card bns")
+		{
+			paymentMap.put("account_id","5830143000000594063");
+		}
+		else
+		{
+			paymentMap.put("account_id","5830143000000594063");
+		}
+		// ZP-TBD-95: a Pre-Need Deal can have a "Pre-Need top-up" retainer next to its master (the contract went up
+		// after a payment and Books won't change a paid retainer). When this NEW payment is more than what is left
+		// on this invoice's own retainer, the rest is carried over to the Deal's other plan retainer: two Books
+		// payments, and a second Invoice_Payers row for the carried part. JMD only.
+		if(isNull(payer.get("Books_Payment_ID")) && amountDueInBooks > 0 && amountPaid > amountDueInBooks && paymentMadeBy == "jmd" && ifnull(booksInvoiceDetails.get("currency_code"),"") == "JMD" && !isNull(recordInfo.get("Deal_Name__s")) && (recordInfo.get("Invoice_For") == "Deposit" || ifnull(recordInfo.get("Invoice_For"),"").startsWith("Installment")))
+		{
+			carryRetainerId = "";
+			carryRetainerNumber = "";
+			carryRetainerBalance = 0.0;
+			dealPlanInvoices = zoho.crm.getRelatedRecords("Invoices","Deals",recordInfo.get("Deal_Name__s").get("id"));
+			for each  dealPlanInvoice in dealPlanInvoices
+			{
+				carryBooksId = ifnull(dealPlanInvoice.get("Books_Invoice_ID"),"").toString();
+				carryStatus = ifnull(dealPlanInvoice.get("Status"),"");
+				carryInvoiceFor = ifnull(dealPlanInvoice.get("Invoice_For"),"");
+				if(carryBooksId != "" && carryBooksId != booksInvoiceID.toString() && carryStatus != "Void" && carryStatus != "Cancelled" && (carryInvoiceFor == "Deposit" || carryInvoiceFor.startsWith("Installment")))
+				{
+					carryRetainer = zoho.books.getRecordsByID("retainerinvoices",organizationID,carryBooksId,"zohooauth").get("retainerinvoice");
+					if(ifnull(carryRetainer.get("status"),"") != "void" && ifnull(carryRetainer.get("balance"),0).toString().toDecimal() > 0)
+					{
+						carryRetainerId = carryBooksId;
+						carryRetainerNumber = carryRetainer.get("retainerinvoice_number");
+						carryRetainerBalance = carryRetainer.get("balance").toString().toDecimal();
+						break;
+					}
+				}
+			}
+			carryAmount = (amountPaid - amountDueInBooks).round(2);
+			if(carryRetainerId != "" && carryAmount <= carryRetainerBalance + 1)
+			{
+				// Books rounds retainers to 0.125 -> a carry a few cents over the other retainer's balance is capped
+				if(carryAmount > carryRetainerBalance)
+				{
+					carryAmount = carryRetainerBalance;
+				}
+				firstPartAmount = amountDueInBooks;
+				firstPartFields = list();
+				carryPartFields = list();
+				for each  paymentCustomFieldEntry in customFieldsListForPayment
+				{
+					if(paymentCustomFieldEntry.get("api_name") == "cf_actual_paid_amount")
+					{
+						firstPartFields.add({"api_name":"cf_actual_paid_amount","value":firstPartAmount});
+						carryPartFields.add({"api_name":"cf_actual_paid_amount","value":carryAmount});
+					}
+					else
+					{
+						firstPartFields.add(paymentCustomFieldEntry);
+						carryPartFields.add(paymentCustomFieldEntry);
+					}
+				}
+				// payment 1: what is left on this invoice's own retainer
+				paymentMap.put("amount",firstPartAmount);
+				paymentMap.put("amount_applied",firstPartAmount);
+				paymentMap.put("retainerinvoice_id",booksInvoiceID);
+				paymentMap.put("retainerinvoices",{{"retainerinvoice_id":booksInvoiceID,"amount_applied":firstPartAmount}});
+				paymentMap.put("custom_fields",firstPartFields);
+				paymentMap.put("description","Paid " + amountPaid.round(2) + ": " + firstPartAmount + " on this retainer, " + carryAmount + " carried over to Pre-Need retainer " + carryRetainerNumber);
+				firstPartResult = invokeurl
+				[
+					url :"https://www.zohoapis.com/books/v3/customerpayments?organization_id=" + organizationID
+					type :POST
+					parameters:paymentMap.toString()
+					connection:"zohooauth"
+				];
+				info "ZP-TBD-95 firstPartResult";
+				info firstPartResult;
+				// payment 2: the rest on the Deal's other plan retainer
+				paymentMap.put("amount",carryAmount);
+				paymentMap.put("amount_applied",carryAmount);
+				paymentMap.put("retainerinvoice_id",carryRetainerId);
+				paymentMap.put("retainerinvoices",{{"retainerinvoice_id":carryRetainerId,"amount_applied":carryAmount}});
+				paymentMap.put("custom_fields",carryPartFields);
+				paymentMap.put("description","Carried over from a payment of " + amountPaid.round(2) + " on Pre-Need retainer " + ifnull(booksInvoiceDetails.get("retainerinvoice_number"),booksInvoiceID));
+				carryPartResult = invokeurl
+				[
+					url :"https://www.zohoapis.com/books/v3/customerpayments?organization_id=" + organizationID
+					type :POST
+					parameters:paymentMap.toString()
+					connection:"zohooauth"
+				];
+				info "ZP-TBD-95 carryPartResult";
+				info carryPartResult;
+				if(firstPartResult.containKey("payment"))
+				{
+					payer.put("Books_Payment_ID",firstPartResult.get("payment").get("payment_id"));
+					payer.put("Amount_Paid",firstPartAmount);
+					if(!isNull(payer.get("Actual_Paid_Amount")))
+					{
+						payer.put("Actual_Paid_Amount",firstPartAmount);
+					}
+					invoicePayersUpdatedList.add(payer);
+				}
+				else
+				{
+					standalone.sendEmailOnError(firstPartResult);
+				}
+				if(carryPartResult.containKey("payment"))
+				{
+					carryRow = Map();
+					if(!isNull(payer.get("Payer")))
+					{
+						carryRow.put("Payer",payer.get("Payer").get("id"));
+					}
+					carryRow.put("Payment_Mode",payer.get("Payment_Mode"));
+					carryRow.put("Paid_Date",payer.get("Paid_Date"));
+					carryRow.put("Amount_Paid",carryAmount);
+					carryRow.put("Books_Payment_ID",carryPartResult.get("payment").get("payment_id"));
+					invoicePayersUpdatedList.add(carryRow);
+				}
+				else
+				{
+					standalone.sendEmailOnError(carryPartResult);
+				}
+				continue;
+			}
+		}
+		if(isNull(payer.get("Books_Payment_ID")))
+		{
+			paymentResult = invokeurl
+			[
+				url :"https://www.zohoapis.com/books/v3/customerpayments?organization_id=" + organizationID
+				type :POST
+				parameters:paymentMap.toString()
+				connection:"zohooauth"
+			];
+			info "paymentMap";
+			info paymentMap;
+			info "paymentResult";
+			info paymentResult;
+			if(paymentResult.containKey("payment"))
+			{
+				payer.put("Books_Payment_ID",paymentResult.get("payment").get("payment_id"));
+				invoicePayersUpdatedList.add(payer);
+			}
+			else
+			{
+				standalone.sendEmailOnError(paymentResult);
+			}
+		}
+		else
+		{
+			// ZP-TBD-95: Pre-Need plan invoice -> re-sync the payment to the retainer it is ACTUALLY on (a carried-over
+			// part sits on the Deal's other retainer), at its full amount (not capped at that retainer's current
+			// balance, which already includes this payment and can be 0 once the retainer is used up).
+			if(recordInfo.get("Invoice_For") == "Deposit" || ifnull(recordInfo.get("Invoice_For"),"").startsWith("Installment"))
+			{
+				try
+				{
+					existingBooksPayment = zoho.books.getRecordsByID("customerpayments",organizationID,payer.get("Books_Payment_ID"),"zohooauth").get("payment");
+					existingRetainerId = ifnull(existingBooksPayment.get("retainerinvoice_id"),"").toString();
+					if(existingRetainerId == "")
+					{
+						existingRetainerId = booksInvoiceID.toString();
+					}
+					paymentMap.put("retainerinvoice_id",existingRetainerId);
+					paymentMap.put("amount_applied",amountPaid);
+					paymentMap.put("retainerinvoices",{{"retainerinvoice_id":existingRetainerId,"amount_applied":amountPaid}});
+				}
+				catch (eExistingPayment)
+				{
+					info "ZP-TBD-95: could not read Books payment " + payer.get("Books_Payment_ID") + ": " + eExistingPayment;
+				}
+			}
+			info paymentMap;
+			paymentResult = invokeurl
+			[
+				url :"https://www.zohoapis.com/books/v3/customerpayments/" + payer.get("Books_Payment_ID") + "?organization_id=" + organizationID
+				type :PUT
+				parameters:paymentMap.toString()
+				connection:"zohooauth"
+			];
+			info "paymentResult";
+			info paymentResult;
+			if(!paymentResult.containKey("payment"))
+			{
+				standalone.sendEmailOnError(paymentResult);
+			}
+		}
+	}
+	if(invoicePayersUpdatedList.size() > 0)
+	{
+		invoiceUpdateMap = Map();
+		invoiceUpdateMap.put("data",{{"Invoice_Payers":invoicePayersUpdatedList,"Total_Actual_Paid_Amount":totalActualAmountPaid.round(2)}});
+		invoiceUpdateMap.put("trigger",{});
+		info invoiceUpdateMap;
+		updateInvoiceResult = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v7/Invoices/" + crmid
+			type :PUT
+			parameters:invoiceUpdateMap.toString()
+			connection:"zohooauth"
+		];
+		info updateInvoiceResult;
+	}
+}
+}
