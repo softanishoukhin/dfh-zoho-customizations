@@ -2,7 +2,7 @@
 
 **Folder number is a placeholder** -- rename once a real Zoho Projects task ID exists.
 
-**Status: built 2026-10-15 on live config. NOT applied, NOT tested.** Apply per `guideline.md`.
+**Status: DEPLOYED + tested 2026-10-15** (user confirmed). Applied per `guideline.md`.
 
 **Source:** `projectDocuments/PRENEED_DEV_LIST_2026-10-14.md`, ticket 9 ("Tell the funeral director when a payment
 goes past due"): repoint the task to the Deal owner and confirm it reaches them.
