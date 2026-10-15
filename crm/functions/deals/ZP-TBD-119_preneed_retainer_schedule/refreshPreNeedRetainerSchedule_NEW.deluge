@@ -1,0 +1,13 @@
+void automation.refreshPreNeedRetainerSchedule(Int crmid)
+{
+// ZP-TBD-119: crmid = an INVOICE id. Scheduled action (1 hour after) on the Invoices rule "Pre-Need - Payment Plan
+// Set Up" (ZP-TBD-115), so the new plan is written into the Books retainer once the retainer exists in Books.
+// writePreNeedScheduleToRetainer skips anything that is not a Pre-Need Deal.
+invoiceInfo = zoho.crm.getRecordById("Invoices",crmid);
+dealRef = invoiceInfo.get("Deal_Name__s");
+if(isNull(dealRef))
+{
+	return;
+}
+info standalone.writePreNeedScheduleToRetainer(dealRef.get("id").toString());
+}

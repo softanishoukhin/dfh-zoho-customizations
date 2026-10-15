@@ -1,0 +1,180 @@
+string standalone.writePreNeedScheduleToRetainer(String crmid)
+{
+// ZP-TBD-119 (PRENEED_DEV_LIST_2026-10-14 tickets 6 + 7): the Books retainer shows HOW the family pays, not only
+// what they bought. The plan (each payment, its amount, due date and whether it is paid) and the NEXT PAYMENT go
+// into the master retainer's Notes (printed on the Standard Template retainer PDF / email). Reference number gets
+// "Next due <date> - <payment>" (shown and searchable in the Books retainer list) -- Books retainers have no due
+// date field at all (checked 2026-10-15: no due_date in the API), so this is the cashier's date to work to.
+// crmid = the DEAL id. Called by the Books payment hook after every payment (REST API key), by
+// automation.refreshPreNeedRetainerSchedule 1 hour after the plan invoices are created, and can be run by hand.
+// Source = the CRM plan invoices (their own amount, Payment_Made, Due_Date). A "Pre-Need top-up" retainer keeps its
+// own note. Reference is only written when empty or already ours. Written with X-ZOHO-Execute-CustomFunction=false
+// so no Books retainer workflow (Xero sync etc.) runs for a notes-only edit.
+resultMap = Map();
+organizationID = "872327358";
+newLine = zoho.encryption.urlDecode("%0A");
+dealInfo = zoho.crm.getRecordById("Deals",crmid.toLong());
+if(ifnull(dealInfo.get("Type"),"").toString() != "Pre Need")
+{
+	resultMap.put("status","skipped");
+	resultMap.put("message","not a Pre-Need Deal");
+	return resultMap.toString();
+}
+currencyCode = ifnull(dealInfo.get("Currency_Used_for_this_Deal"),"").toString();
+if(currencyCode == "" || currencyCode == "-None-")
+{
+	currencyCode = "JMD";
+}
+coqlMap = Map();
+coqlMap.put("select_query","select id, Invoice_For, Status, Sub_Total, Adjustment, Payment_Made, Total_Paid_Amount, Due_Date, Books_Invoice_ID, Retainer_Invoice from Invoices where Deal_Name__s = '" + crmid + "' limit 50");
+coqlResp = invokeurl
+[
+	url :"https://www.zohoapis.com/crm/v8/coql"
+	type :POST
+	parameters:coqlMap.toString()
+	connection:"zohooauth"
+];
+invoiceRows = ifnull(coqlResp.get("data"),list());
+slotOrder = {"Deposit","Installment 1","Installment 2","Installment 3","Other"};
+planLines = list();
+booksIds = list();
+nextText = "";
+nextReference = "";
+today = zoho.currentdate;
+for each  slotName in slotOrder
+{
+	for each  invoiceRow in invoiceRows
+	{
+		if(ifnull(invoiceRow.get("Invoice_For"),"").toString() != slotName)
+		{
+			continue;
+		}
+		if(invoiceRow.get("Retainer_Invoice") != true)
+		{
+			continue;
+		}
+		rowStatus = ifnull(invoiceRow.get("Status"),"").toString();
+		if(rowStatus == "Void" || rowStatus == "Cancelled")
+		{
+			continue;
+		}
+		ownTotal = ifnull(invoiceRow.get("Sub_Total"),0).toString().toDecimal() + ifnull(invoiceRow.get("Adjustment"),0).toString().toDecimal();
+		paidOnInvoice = ifnull(invoiceRow.get("Payment_Made"),0).toString().toDecimal();
+		if(paidOnInvoice <= 0)
+		{
+			paidOnInvoice = ifnull(invoiceRow.get("Total_Paid_Amount"),0).toString().toDecimal();
+		}
+		leftToPay = (ownTotal - paidOnInvoice).round(2);
+		if(leftToPay < 0.01)
+		{
+			leftToPay = 0;
+		}
+		paymentLabel = slotName;
+		if(slotName == "Other")
+		{
+			paymentLabel = "Full payment";
+		}
+		dueText = "";
+		dueDateText = "";
+		isOverdue = false;
+		dueValue = ifnull(invoiceRow.get("Due_Date"),"").toString();
+		if(dueValue != "")
+		{
+			dueDate = dueValue.toDate("yyyy-MM-dd");
+			dueDateText = dueDate.toString("dd MMM yyyy");
+			dueText = " - due " + dueDateText;
+			if(dueDate < today)
+			{
+				isOverdue = true;
+			}
+		}
+		if(leftToPay == 0)
+		{
+			paymentState = "PAID";
+		}
+		else if(paidOnInvoice > 0)
+		{
+			paymentState = "PART PAID, " + currencyCode + " " + leftToPay + " still to pay";
+		}
+		else
+		{
+			paymentState = "NOT PAID";
+		}
+		if(leftToPay > 0 && isOverdue)
+		{
+			paymentState = paymentState + " - OVERDUE";
+		}
+		planLines.add(paymentLabel + ": " + currencyCode + " " + ownTotal.round(2) + dueText + " - " + paymentState);
+		if(leftToPay > 0 && nextText == "")
+		{
+			nextText = "NEXT PAYMENT: " + paymentLabel + " - " + currencyCode + " " + leftToPay + dueText;
+			if(dueDateText != "")
+			{
+				nextReference = "Next due " + dueDateText + " - " + paymentLabel;
+			}
+			else
+			{
+				nextReference = "Next payment - " + paymentLabel;
+			}
+		}
+		rowBooksId = ifnull(invoiceRow.get("Books_Invoice_ID"),"").toString();
+		if(rowBooksId != "" && !booksIds.contains(rowBooksId))
+		{
+			booksIds.add(rowBooksId);
+		}
+	}
+}
+if(planLines.size() == 0)
+{
+	resultMap.put("status","skipped");
+	resultMap.put("message","no plan invoices on this Deal yet");
+	return resultMap.toString();
+}
+if(nextText == "")
+{
+	nextText = "ALL PAYMENTS RECEIVED - paid in full.";
+	nextReference = "Paid in full";
+}
+notesText = "PAYMENT PLAN - take only the NEXT PAYMENT amount shown below." + newLine + newLine;
+for each  planLine in planLines
+{
+	notesText = notesText + planLine + newLine;
+}
+notesText = notesText + newLine + nextText + newLine + "(Updated " + today.toString("dd MMM yyyy") + ")";
+headerMap = Map();
+headerMap.put("X-ZOHO-Execute-CustomFunction","false");
+written = list();
+for each  booksId in booksIds
+{
+	retainerData = zoho.books.getRecordsByID("retainerinvoices",organizationID,booksId,"zohooauth").get("retainerinvoice");
+	currentReference = ifnull(retainerData.get("reference_number"),"").toString();
+	if(currentReference.startsWith("Pre-Need top-up"))
+	{
+		continue;
+	}
+	if(ifnull(retainerData.get("status"),"").toString() == "void")
+	{
+		continue;
+	}
+	updateMap = Map();
+	updateMap.put("notes",notesText);
+	if(currentReference == "" || currentReference.startsWith("Next due") || currentReference.startsWith("Next payment") || currentReference == "Paid in full")
+	{
+		updateMap.put("reference_number",nextReference);
+	}
+	updateResp = invokeurl
+	[
+		url :"https://www.zohoapis.com/books/v3/retainerinvoices/" + booksId + "?organization_id=" + organizationID
+		type :PUT
+		parameters:updateMap.toString()
+		headers:headerMap
+		connection:"zohooauth"
+	];
+	info "ZP-TBD-119: " + ifnull(retainerData.get("retainerinvoice_number"),booksId) + " -> " + updateResp.toString();
+	written.add(ifnull(retainerData.get("retainerinvoice_number"),booksId) + ": " + ifnull(updateResp.get("message"),"no reply").toString());
+}
+resultMap.put("status","success");
+resultMap.put("next",nextReference);
+resultMap.put("retainers",written);
+return resultMap.toString();
+}
