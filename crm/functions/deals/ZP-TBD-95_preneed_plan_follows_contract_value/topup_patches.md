@@ -265,6 +265,12 @@ REPLACE WITH:
 > **Dropped 2026-10-02.** ZP-TBD-80 is live: Pre-Need retainers are never applied to the at-need invoice
 > (`getPreNeedInfo` bills prepaid lines at 0 + a Balance line and releases the liability by Xero journal; it
 > already sums master + top-up). Kept below for reference only.
+>
+> **Checked live 2026-10-15: P3a and P3b ARE applied** (sibling-retainer block + "hand-off waits" block present).
+> Harmless -- the function exits at "Not applied to any invoice yet" because retainers are never applied, and with no
+> top-up it behaves exactly like the original. To remove it: paste
+> `rollback/addpreneeddifferenceandcreditnoteonretainerapply_WITHOUT_P3.deluge` over the whole body (= live body with
+> P3a/P3b reversed to their FIND text below) in Books > Settings > Automation > Custom Functions. Save.
 
 Runs when a retainer is applied to the family's at-need invoice. Two problems with a top-up:
 1. The contract price of a product is split over master + top-up, but the "Pre-Need Difference" line was
