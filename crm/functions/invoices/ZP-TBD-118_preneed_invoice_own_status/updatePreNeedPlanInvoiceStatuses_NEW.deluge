@@ -1,0 +1,76 @@
+string standalone.updatePreNeedPlanInvoiceStatuses(String crmid)
+{
+// ZP-TBD-118 (PRENEED_DEV_LIST_2026-10-14 ticket 5): every Pre-Need plan invoice (Deposit / Installment N) gets
+// its OWN status from its own amount and what was paid on it -- not the shared Books retainer's status.
+// All plan invoices of a Deal hang off ONE master retainer that stays "partially_paid" until the last instalment,
+// so copying it made a settled Deposit read "Partially Paid".
+// crmid = the DEAL id. Called by the Books payment hook allprocessonpaymentcreateandupdate after every payment
+// (Fygaro, CRM cash/cheque, Books), through the REST API key. Can also be run by hand for one Deal (backfill).
+//   paid >= own amount (less than 1 cent short) -> Paid
+//   something paid                              -> Partially Paid
+//   nothing paid                                -> unchanged (Created / Sent / Overdue stay); a Paid/Partially Paid
+//                                                  left over from a deleted payment goes back to Sent
+// Paid figure = Payment_Made (formula over the invoice's payer rows; right for every payment route -- the
+// Total_Actual_Paid_Amount field stays empty for payments entered in Books). Own amount = Sub_Total + Adjustment
+// (Grand_Total is the balance after payments). Void / Cancelled / Draft are never touched.
+resultMap = Map();
+changed = list();
+coqlMap = Map();
+coqlMap.put("select_query","select id, Invoice_For, Status, Sub_Total, Adjustment, Payment_Made, Total_Paid_Amount, Retainer_Invoice from Invoices where Deal_Name__s = '" + crmid + "' limit 50");
+coqlResp = invokeurl
+[
+	url :"https://www.zohoapis.com/crm/v8/coql"
+	type :POST
+	parameters:coqlMap.toString()
+	connection:"zohooauth"
+];
+invoiceRows = ifnull(coqlResp.get("data"),list());
+for each  invoiceRow in invoiceRows
+{
+	invoiceFor = ifnull(invoiceRow.get("Invoice_For"),"").toString();
+	if(invoiceFor != "Deposit" && !invoiceFor.startsWith("Installment"))
+	{
+		continue;
+	}
+	if(invoiceRow.get("Retainer_Invoice") != true)
+	{
+		continue;
+	}
+	currentStatus = ifnull(invoiceRow.get("Status"),"").toString();
+	if(currentStatus == "Void" || currentStatus == "Cancelled" || currentStatus == "Draft")
+	{
+		continue;
+	}
+	ownTotal = ifnull(invoiceRow.get("Sub_Total"),0).toString().toDecimal() + ifnull(invoiceRow.get("Adjustment"),0).toString().toDecimal();
+	paidOnInvoice = ifnull(invoiceRow.get("Payment_Made"),0).toString().toDecimal();
+	if(paidOnInvoice <= 0)
+	{
+		paidOnInvoice = ifnull(invoiceRow.get("Total_Paid_Amount"),0).toString().toDecimal();
+	}
+	newStatus = currentStatus;
+	if(ownTotal > 0 && ownTotal - paidOnInvoice < 0.01)
+	{
+		newStatus = "Paid";
+	}
+	else if(paidOnInvoice > 0)
+	{
+		newStatus = "Partially Paid";
+	}
+	else if(currentStatus == "Paid" || currentStatus == "Partially Paid")
+	{
+		newStatus = "Sent";
+	}
+	if(newStatus != currentStatus)
+	{
+		statusMap = Map();
+		statusMap.put("Status",newStatus);
+		updateResult = zoho.crm.updateRecord("Invoices",invoiceRow.get("id").toLong(),statusMap);
+		info "ZP-TBD-118: " + invoiceFor + " " + invoiceRow.get("id") + " " + currentStatus + " -> " + newStatus + " (own " + ownTotal + ", paid " + paidOnInvoice + "): " + updateResult;
+		changed.add(invoiceFor + ": " + currentStatus + " -> " + newStatus);
+	}
+}
+resultMap.put("status","success");
+resultMap.put("deal",crmid);
+resultMap.put("changed",changed);
+return resultMap.toString();
+}
