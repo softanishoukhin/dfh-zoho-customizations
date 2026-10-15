@@ -1,0 +1,72 @@
+void automation.createOverdueTaskForDealOwner(Int crmid)
+{
+// ZP-TBD-116 (PRENEED_DEV_LIST_2026-10-14 ticket 9): an invoice is past due -> a task for the DEAL owner (the
+// funeral director who holds the family relationship), not the Invoice owner.
+// Replaces the workflow Task action "${Invoices.Books Invoice Number} is Overdue" in the Invoices rules
+// "Notify to Owner on Overdue", "Installment Reminder - 3 Days Overdue" and "Installment Reminder - Every 10 Days
+// Overdue". A workflow task can only go to the record owner or a fixed user, never the related Deal's owner.
+// Same subject / priority / status as the old task. Send_Notification_Email = true emails the assignee.
+// One open task per invoice: if an overdue task for this invoice is still open, no second one is created.
+invoiceInfo = zoho.crm.getRecordById("Invoices",crmid);
+invoiceStatus = ifnull(invoiceInfo.get("Status"),"").toString();
+if(invoiceStatus == "Paid" || invoiceStatus == "Void")
+{
+	info "Invoice " + crmid + " is " + invoiceStatus + " - no task";
+	return;
+}
+invoiceLabel = ifnull(invoiceInfo.get("Books_Invoice_Number"),"").toString();
+if(invoiceLabel == "")
+{
+	invoiceLabel = ifnull(invoiceInfo.get("Subject"),"").toString();
+}
+taskSubject = invoiceLabel + " is Overdue";
+// Deal owner; the Invoice owner only when the invoice has no Deal.
+taskOwnerId = invoiceInfo.get("Owner").get("id");
+dealName = "";
+dealRef = invoiceInfo.get("Deal_Name__s");
+if(!isNull(dealRef))
+{
+	dealInfo = zoho.crm.getRecordById("Deals",dealRef.get("id").toLong());
+	dealOwner = dealInfo.get("Owner");
+	if(!isNull(dealOwner))
+	{
+		taskOwnerId = dealOwner.get("id");
+	}
+	dealName = ifnull(dealInfo.get("Deal_Name"),"").toString();
+}
+// Skip if this invoice already has an open overdue task.
+existingTasks = zoho.crm.searchRecords("Tasks","(Subject:equals:" + taskSubject + ")");
+for each  existingTask in existingTasks
+{
+	taskWhat = existingTask.get("What_Id");
+	if(!isNull(taskWhat))
+	{
+		if(taskWhat.get("id").toString() == crmid.toString())
+		{
+			if(ifnull(existingTask.get("Status"),"").toString() != "Completed")
+			{
+				info "Invoice " + crmid + " already has an open overdue task " + existingTask.get("id") + " - no new task";
+				return;
+			}
+		}
+	}
+}
+taskDescription = "Payment is past due.";
+if(dealName != "")
+{
+	taskDescription = taskDescription + " Deal: " + dealName + ".";
+}
+taskDescription = taskDescription + " Invoice: " + ifnull(invoiceInfo.get("Invoice_For"),"").toString() + ", due " + ifnull(invoiceInfo.get("Due_Date"),"").toString() + ".";
+taskMap = Map();
+taskMap.put("Subject",taskSubject);
+taskMap.put("Owner",taskOwnerId);
+taskMap.put("What_Id",crmid.toString());
+taskMap.put("$se_module","Invoices");
+taskMap.put("Due_Date",zoho.currentdate.toString("yyyy-MM-dd"));
+taskMap.put("Status","Not Started");
+taskMap.put("Priority","High");
+taskMap.put("Send_Notification_Email",true);
+taskMap.put("Description",taskDescription);
+taskResult = zoho.crm.createRecord("Tasks",taskMap);
+info "ZP-TBD-116: overdue task for invoice " + crmid + " to user " + taskOwnerId + ": " + taskResult;
+}
