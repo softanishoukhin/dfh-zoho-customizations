@@ -1,0 +1,57 @@
+string standalone.markInvoiceSent(String invoiceId)
+{
+// ZP-TBD-96 (PN-04): mark a CRM Invoice as "Sent" once it has gone to the family.
+// Called by:
+//   - button.ButtonSendEmailForPaymentByPotentialPayers (email send) for Pre-Need plan invoices, and
+//   - the Pre-Need screen's WhatsApp button (Andrea's Canvas), right after WhatsApp opens.
+// Only an invoice that has not moved on yet is changed: Created / Draft / Ready / Approved / blank -> Sent.
+// Paid, Partially Paid, Overdue, Void, Cancelled, Delivered and Sent are left as they are.
+// No workflow trigger: nothing downstream reacts to Sent today.
+// Returns a JSON string: {"status":"success"|"error","changed":true|false,"message":"..."} -- callers use .toMap().
+result = Map();
+result.put("status","error");
+result.put("changed",false);
+result.put("message","");
+invId = ifnull(invoiceId,"").toString().trim();
+if(invId == "")
+{
+	result.put("message","No invoice id was given.");
+	return result.toString();
+}
+try
+{
+	invoiceInfo = zoho.crm.getRecordById("Invoices",invId.toLong());
+	if(isNull(invoiceInfo) || ifnull(invoiceInfo.get("id"),"").toString() == "")
+	{
+		result.put("message","Invoice " + invId + " was not found.");
+		return result.toString();
+	}
+	currentStatus = ifnull(invoiceInfo.get("Status"),"").toString();
+	if(currentStatus == "" || currentStatus == "Created" || currentStatus == "Draft" || currentStatus == "Ready" || currentStatus == "Approved")
+	{
+		updateMap = Map();
+		updateMap.put("Status","Sent");
+		updateResult = zoho.crm.updateRecord("Invoices",invId.toLong(),updateMap);
+		if(ifnull(updateResult.get("id"),"").toString() != "")
+		{
+			result.put("status","success");
+			result.put("changed",true);
+			result.put("message","Invoice marked as Sent.");
+		}
+		else
+		{
+			result.put("message","Could not mark the invoice as Sent: " + updateResult.toString());
+		}
+	}
+	else
+	{
+		result.put("status","success");
+		result.put("message","Invoice left as '" + currentStatus + "' (only an invoice that is still Created or Draft is changed to Sent).");
+	}
+}
+catch (e)
+{
+	result.put("message","Could not mark the invoice as Sent: " + e.toString());
+}
+return result.toString();
+}

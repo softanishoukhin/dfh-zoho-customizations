@@ -1,0 +1,40 @@
+void automation.markPaymentPlanSetUp(Int crmid)
+{
+// ZP-TBD-115 (ticket 1): a Pre-Need plan invoice was created -> the Deal's "Payment Plan Set Up" pill = Yes.
+// Rule agreed with Andrea: Yes when the plan's invoices are created. Called by the Invoices workflow rule
+// "Pre-Need - Payment Plan Set Up" (On Create).
+// Done from Invoices (not from setupPreNeedPaymentPlan): that function saves the Deal without firing workflows on
+// purpose, and Andrea prefers to keep pill writes out of it.
+// "Other" counts too -- it is the Lump Sum plan invoice -- but "Other" is ALSO the type of every ordinary funeral
+// invoice, so the Deal must be a Pre-Need Deal. Only ever sets Yes; never clears it.
+invoiceInfo = zoho.crm.getRecordById("Invoices",crmid);
+invoiceFor = ifnull(invoiceInfo.get("Invoice_For"),"").toString();
+planInvoiceTypes = {"Deposit","Installment 1","Installment 2","Installment 3","Other"};
+if(!planInvoiceTypes.contains(invoiceFor))
+{
+	info "Invoice " + crmid + " is '" + invoiceFor + "' - not a plan invoice";
+	return;
+}
+dealRef = invoiceInfo.get("Deal_Name__s");
+if(isNull(dealRef))
+{
+	info "Invoice " + crmid + " has no Deal";
+	return;
+}
+dealId = dealRef.get("id").toLong();
+dealInfo = zoho.crm.getRecordById("Deals",dealId);
+if(ifnull(dealInfo.get("Type"),"").toString() != "Pre Need")
+{
+	info "Deal " + dealId + " is not a Pre-Need Deal - pill not touched";
+	return;
+}
+if(ifnull(dealInfo.get("Payment_Plan_Set_Up"),"").toString() == "Yes")
+{
+	info "Deal " + dealId + " already has Payment Plan Set Up = Yes";
+	return;
+}
+pillMap = Map();
+pillMap.put("Payment_Plan_Set_Up","Yes");
+pillResult = zoho.crm.updateRecord("Deals",dealId,pillMap);
+info "ZP-TBD-115: Payment Plan Set Up = Yes on Deal " + dealId + ": " + pillResult;
+}
