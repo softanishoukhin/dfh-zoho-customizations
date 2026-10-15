@@ -2,7 +2,7 @@
 
 **Folder number is a placeholder** -- rename once a real Zoho Projects task ID exists.
 
-**Status: built 2026-10-15 on live code. NOT applied, NOT tested.** Apply per `guideline.md` (field first).
+**Status: DEPLOYED + tested 2026-10-15** (user confirmed).
 
 **Source:** `projectDocuments/PRENEED_DEV_LIST_2026-10-14.md`, ticket 10. Andrea's decision 14 Oct: the payment
 link as a field (`Payment_URL`, website type) on each invoice, filled when the link is generated.

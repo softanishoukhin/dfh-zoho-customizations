@@ -2,8 +2,11 @@
 
 **Folder number is a placeholder** -- rename once a real Zoho Projects task ID exists.
 
-**Status: checked 2026-10-02. Recommendation below. Nothing removed yet** (field deletion is done by hand in
-Setup and can't be undone -- see `guideline.md`).
+**Status: checked 2026-10-02. Andrea decided 2026-10-14 (PRENEED_DEV_LIST_2026-10-14, PN-08 answer): delete
+Commencement Date + Day of Month, HIDE Number_of_Installments (live data on 2 Deals), keep Create_Installment_Invoice
+1/2/3. Re-checked 2026-10-15 against all 10 live Pre-Need widgets (PN Invoices, Payment Plan, Plan Editor, Payment
+Status, Products Editor/View, Contacts Editor, Wishes View, Payer Emails, Start a Preneed): no reference.
+Guideline rewritten; NOT applied yet** (manual Setup steps -- see `guideline.md`).
 
 **Source:** `projectDocuments/PRENEED_DEV_TICKETS_2026-10-01.md`, PN-08 -- "not read or written by any of the eight
 functions ... Confirm nothing else uses them, then remove -- or tell Andrea which are still needed and why."
