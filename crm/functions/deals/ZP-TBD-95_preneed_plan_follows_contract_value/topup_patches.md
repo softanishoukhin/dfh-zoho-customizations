@@ -271,6 +271,7 @@ REPLACE WITH:
 > top-up it behaves exactly like the original. To remove it: paste
 > `rollback/addpreneeddifferenceandcreditnoteonretainerapply_WITHOUT_P3.deluge` over the whole body (= live body with
 > P3a/P3b reversed to their FIND text below) in Books > Settings > Automation > Custom Functions. Save.
+> **Rolled back by the user 2026-10-15** -- live body = the WITHOUT_P3 file.
 
 Runs when a retainer is applied to the family's at-need invoice. Two problems with a top-up:
 1. The contract price of a product is split over master + top-up, but the "Pre-Need Difference" line was
