@@ -2,7 +2,7 @@
 
 **Folder number is a placeholder** -- rename once a real Zoho Projects task ID exists.
 
-**Status: built 2026-10-15 on live code. NOT applied, NOT tested.** Apply per `guideline.md`.
+**Status: DEPLOYED + tested 2026-10-15** (user confirmed).
 
 **Source:** `projectDocuments/PRENEED_DEV_LIST_2026-10-14.md`, ticket 4: a Scheduled Function once a day that applies
 the `wfUpdatePreNeedPaymentStatus` calculation; Andrea asked that it CALL the same function, not copy it.
