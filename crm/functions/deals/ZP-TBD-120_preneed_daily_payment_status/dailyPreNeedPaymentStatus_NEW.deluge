@@ -1,0 +1,73 @@
+void schedule.dailyPreNeedPaymentStatus()
+{
+// ZP-TBD-120 (PRENEED_DEV_LIST_2026-10-14 ticket 4): "Past due" happens because a DATE passes -- no record
+// changes, so no workflow fires. This runs once a day (CRM Schedule, 06:00) for every Pre-Need Deal that is not
+// "Paid in full" and:
+//  1) calls Andrea's wfUpdatePreNeedPaymentStatus -- the SAME function the Invoices rule "Pre-Need - Update
+//     Payment Status on the Deal" calls (no second copy of the money logic). It takes an invoice id and walks up to
+//     the Deal; it only writes when the value changes and writes with trigger [] (its own guards).
+//     It is an Automation function -> called through its REST execute endpoint (OAuth), like setupPreNeedPaymentPlan
+//     calls createPreNeedDepositRetainerInvoice.
+//  2) refreshes the Books retainer's plan notes (ZP-TBD-119) so OVERDUE marks and the next due date stay current
+//     between payments.
+// Deals without any invoice yet are skipped (nothing to show, and the status function needs an invoice id).
+offsetList = {0,200,400,600,800};
+dealsChecked = 0;
+statusCalls = 0;
+for each  offsetValue in offsetList
+{
+	coqlMap = Map();
+	coqlMap.put("select_query","select id, Deal_Name, Payment_Status from Deals where (Type = 'Pre Need' and (Payment_Status is null or Payment_Status != 'Paid in full')) limit 200 offset " + offsetValue);
+	coqlResp = invokeurl
+	[
+		url :"https://www.zohoapis.com/crm/v8/coql"
+		type :POST
+		parameters:coqlMap.toString()
+		connection:"zohooauth"
+	];
+	dealRows = ifnull(coqlResp.get("data"),list());
+	for each  dealRow in dealRows
+	{
+		dealId = dealRow.get("id").toString();
+		dealsChecked = dealsChecked + 1;
+		invoiceCoqlMap = Map();
+		invoiceCoqlMap.put("select_query","select id from Invoices where Deal_Name__s = '" + dealId + "' limit 1");
+		invoiceResp = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v8/coql"
+			type :POST
+			parameters:invoiceCoqlMap.toString()
+			connection:"zohooauth"
+		];
+		invoiceRows = ifnull(invoiceResp.get("data"),list());
+		if(invoiceRows.size() == 0)
+		{
+			continue;
+		}
+		statusArgs = Map();
+		statusArgs.put("invoiceid",invoiceRows.get(0).get("id"));
+		statusResp = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v7/functions/wfupdatepreneedpaymentstatus/actions/execute?auth_type=oauth"
+			type :GET
+			parameters:statusArgs
+			connection:"zohooauth"
+		];
+		statusCalls = statusCalls + 1;
+		info "ZP-TBD-120 " + ifnull(dealRow.get("Deal_Name"),dealId) + " (was " + ifnull(dealRow.get("Payment_Status"),"empty") + "): " + statusResp.get("code");
+		try
+		{
+			info standalone.writePreNeedScheduleToRetainer(dealId);
+		}
+		catch (eSchedule)
+		{
+			info "ZP-TBD-120: retainer notes failed for Deal " + dealId + ": " + eSchedule;
+		}
+	}
+	if(dealRows.size() < 200)
+	{
+		break;
+	}
+}
+info "ZP-TBD-120 done: " + dealsChecked + " open Pre-Need Deals, " + statusCalls + " status checks";
+}

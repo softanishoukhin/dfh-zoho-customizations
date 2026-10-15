@@ -2,7 +2,7 @@
 
 **Folder number is a placeholder** -- rename once a real Zoho Projects task ID exists.
 
-**Status: built 2026-10-15 on live data. NOT applied, NOT tested.** Apply per `guideline.md`.
+**Status: DEPLOYED + tested 2026-10-15** (user confirmed).
 
 **Source:** `projectDocuments/PRENEED_DEV_LIST_2026-10-14.md`, tickets 6 (retainer does not show the payment
 plan) and 7 (retainer has no due date).
