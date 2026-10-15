@@ -1,0 +1,21 @@
+# ZP-TBD-122 -- PN-07 receipts for pre-1-October payments, nothing emailed
+
+**Folder number is a placeholder** -- rename once a real Zoho Projects task ID exists.
+
+**Status: built 2026-10-15. NOT applied, NOT tested.** Apply per `guideline.md`.
+
+**Source:** PRENEED_DEV_TICKETS_2026-10-01 PN-07 + Andrea's answer in PRENEED_DEV_LIST_2026-10-14 ("Yes -- but only
+if nothing is emailed to anyone ... If generating them sends anything, leave them").
+
+## Findings (2026-10-15)
+- Receipt functions (ZP-TBD-92 rollback copies = live bodies): `loadreceiptlink` email block is inside `/* ... */`;
+  the receipt button function has no email. Neither sends anything itself.
+- Both end with `zoho.books.updateRecord("customerpayments", ...)` -> a payment edit -> Books rules on payment edit:
+  `paymentWorkflowTriggerOnAnyCreateOrUpdate` (allprocessonpaymentcreateandupdate: autosendpreneedcontract = contract
+  email to the family, Amount_Paid_To_Date, Xero overpayment webhook, ZP-TBD-118/119 calls) and
+  `GenerateReceiptOnEdit` (loadreceiptlink). `Send Payment Receipt - On Edit` is inactive.
+- Correction to ZP-TBD-92 guideline: its "Edit > Save to regenerate ... doesn't email the payer" is true for the
+  receipt itself, but the edit can still trigger the contract email -> not to be used for the backfill.
+- Fix: the button saves the link via PUT with `X-ZOHO-Execute-CustomFunction: false` (same header the email button
+  uses), so no payment automation runs.
+- Custom buttons aren't listed by the Books API -> the user pastes/edits the button function in the UI.

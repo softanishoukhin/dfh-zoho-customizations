@@ -2,7 +2,7 @@
 
 **Folder number is a placeholder** -- rename once a real Zoho Projects task ID exists.
 
-**Status: analysed 2026-10-15. Tolerance fix built (guideline.md), NOT applied. Root-cause option needs Andrea /
+**Status: tolerance fix DEPLOYED + tested 2026-10-15 (user confirmed). Root-cause option (A/B/C) still needs Andrea /
 accountant decision.**
 
 **Source:** `projectDocuments/PRENEED_DEV_LIST_2026-10-14.md`, ticket 8 ("CRM and Books disagree by six cents").
