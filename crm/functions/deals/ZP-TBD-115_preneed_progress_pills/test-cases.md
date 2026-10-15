@@ -33,7 +33,7 @@
 | Step | Where | Do this | You should see | Pass / Fail |
 |---|---|---|---|---|
 | 1 | New Deal C | Create it, add products, set Payment Type = Installments. | Payment Plan Set Up green, Invoice(s) Sent grey. |  |
-| 2 | Deal C > Pre-Need screen | Click WhatsApp on the Deposit invoice. | Invoice(s) Sent pill turns green. |  |
+| 2 | Deal C > Pre-Need screen > Invoices list | Click WhatsApp on the Deposit invoice, then click 'Open WhatsApp' in the panel. | Invoice(s) Sent pill turns green (refresh the screen). It does NOT change on the first WhatsApp click alone. |  |
 | 3 | Deal C > Send Links via WhatsApp | Click 'Add contract link'. | Contract Status pill shows Sent. |  |
 
 ## Journey 4 - Must not change

@@ -50,9 +50,13 @@ if(isPreNeedPlanInvoice || ifnull(dealInfo.get("Type"),"") == "Pre Need")
 ```
 Save.
 
-WhatsApp: the Pre-Need screen's WhatsApp button already calls `markinvoicesent` (PN-04), so it turns the pill
-green with no further change. Andrea's widget that writes this field when the invoices tab is opened can be
-removed once this is live.
+WhatsApp: **no change needed.** The Pre-Need screen's invoice list is the related-list widget **PN Invoices**
+(`PN_Invoices`, Dale's, v10 of 2026-10-02). Its per-invoice WhatsApp button builds the link and opens a send panel;
+clicking **Open WhatsApp** in that panel calls its own `markInvoicesSent()`, which writes `Invoice_s_Sent = Yes` on
+the Deal (Trigger []). Its Email button does the same after the email function succeeds. Confirmed working
+2026-10-15 on test Deal "DFH Test Test 1015202603" -- the pill turns green only after **Open WhatsApp**, not on the
+first WhatsApp click. Note: that widget does not mark the invoice itself Sent (only the Deal pill) -- per-invoice
+status is ticket 5.
 
 Why not Andrea's suggested "Status = Sent" rule on Invoices: `markInvoiceSent` (and the email button) save the
 invoice without firing workflows, so a rule watching Status would never run.
