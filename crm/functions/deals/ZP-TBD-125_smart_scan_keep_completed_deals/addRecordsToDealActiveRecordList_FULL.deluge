@@ -1,0 +1,76 @@
+string standalone.addRecordsToDealActiveRecordList(int crmid)
+{
+recordInfo = zoho.crm.getRecordById("Deals",crmid);
+stages = invokeurl
+[
+	url :"https://www.zohoapis.com/crm/v3/settings/fields?module=Deals"
+	type :GET
+	connection:"zohooauth"
+];
+fields = stages.get("fields");
+stageList = list();
+for each  field in fields
+{
+	if(field.get("field_label") == "Stage")
+	{
+		for each  stageValue in field.get("pick_list_values")
+		{
+			// ZP-TBD-125: keep completed Deals (Closed Won) on the Smart Scan list too -- only lost Deals drop off
+			if(stageValue.get("deal_category") == "Open" || stageValue.get("deal_category") == "Closed Won")
+			{
+				stageList.add(stageValue.get("display_value"));
+			}
+		}
+		break;
+	}
+}
+recordInTheModuleAlreadyCheck = standalone.COQLQuery("select Name, Deal_ID from Deals_Active_Record_List where Deal_ID = '" + crmid + "' limit 1");
+alreadyExist = recordInTheModuleAlreadyCheck.toMap();
+if(alreadyExist.size() == 0)
+{
+	if(stageList.contains(recordInfo.get("Stage")))
+	{
+		recordMap = Map();
+		if(!isNull(recordInfo.get("Contact_Name")))
+		{
+			recordMap.put("Name",recordInfo.get("Deal_Name") + " ( " + recordInfo.get("Contact_Name").get("name") + " )");
+		}
+		else
+		{
+			recordMap.put("Name",recordInfo.get("Deal_Name"));
+		}
+		recordMap.put("Deal_ID",crmid.toString());
+		result = zoho.crm.createRecord("Deals_Active_Record_List",recordMap);
+		info result;
+	}
+}
+else
+{
+	if(!stageList.contains(recordInfo.get("Stage")))
+	{
+		response = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v8/Deals_Active_Record_List?ids=" + alreadyExist.get("id") + "&wf_trigger=false"
+			type :DELETE
+			connection:"zohooauth"
+		];
+		info response;
+	}
+	else
+	{
+		recordMap = Map();
+		if(!isNull(recordInfo.get("Contact_Name")))
+		{
+			recordMap.put("Name",recordInfo.get("Deal_Name") + " ( " + recordInfo.get("Contact_Name").get("name") + " )");
+		}
+		else
+		{
+			recordMap.put("Name",recordInfo.get("Deal_Name"));
+		}
+		recordMap.put("Deal_ID",crmid.toString());
+		result = zoho.crm.updateRecord("Deals_Active_Record_List",alreadyExist.get("id"),recordMap);
+		info result;
+	}
+}
+return "";
+}

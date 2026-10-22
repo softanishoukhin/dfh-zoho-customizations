@@ -1,0 +1,206 @@
+string standalone.backfillDealActiveRecordList(string dryRun)
+{
+// ZP-TBD-125 one-time backfill: add every Deal that is NOT lost (Open or Closed Won stage)
+// and is missing from Deals_Active_Record_List, so completed Deals show in Smart Scan again.
+// Run first with dryRun = "true" (counts only), then with dryRun = "false" to create the records.
+isDryRun = true;
+if(ifnull(dryRun,"").trim().toLowerCase() == "false")
+{
+	isDryRun = false;
+}
+// 1. Stage categories: keep = Open + Closed Won; lost = Closed Lost
+stagesResp = invokeurl
+[
+	url :"https://www.zohoapis.com/crm/v3/settings/fields?module=Deals"
+	type :GET
+	connection:"zohooauth"
+];
+fields = stagesResp.get("fields");
+keepStages = List();
+lostStages = List();
+for each  field in fields
+{
+	if(field.get("api_name") == "Stage")
+	{
+		pickValues = field.get("pick_list_values");
+		for each  stageValue in pickValues
+		{
+			category = ifnull(stageValue.get("deal_category"),"");
+			if(category == "Open" || category == "Closed Won")
+			{
+				keepStages.add(stageValue.get("display_value"));
+			}
+			if(category == "Closed Lost")
+			{
+				lostStages.add("'" + stageValue.get("display_value") + "'");
+			}
+		}
+		break;
+	}
+}
+if(keepStages.size() == 0)
+{
+	return "Stopped: could not read the Deal Stage picklist.";
+}
+// 2. Deal IDs already on the list
+existing = Map();
+offsets = {0,2000,4000,6000,8000};
+for each  off in offsets
+{
+	q = Map();
+	q.put("select_query","select Deal_ID from Deals_Active_Record_List where Deal_ID is not null order by id asc limit " + off + ", 2000");
+	listResp = invokeurl
+	[
+		url :"https://www.zohoapis.com/crm/v7/coql"
+		type :POST
+		parameters:q.toString()
+		connection:"zohooauth"
+	];
+	rows = List();
+	if(listResp.containKey("data"))
+	{
+		rows = listResp.get("data");
+	}
+	for each  row in rows
+	{
+		existing.put(ifnull(row.get("Deal_ID"),"") + "",true);
+	}
+	if(rows.size() < 2000)
+	{
+		break;
+	}
+}
+// 3. Deals that are not lost and not on the list yet
+whereClause = "where id is not null";
+if(lostStages.size() > 0)
+{
+	whereClause = "where Stage not in (" + lostStages.toString(",") + ")";
+}
+toCreate = List();
+scanned = 0;
+for each  off in offsets
+{
+	q = Map();
+	q.put("select_query","select Deal_Name, Stage, Contact_Name.First_Name, Contact_Name.Last_Name from Deals " + whereClause + " order by id asc limit " + off + ", 2000");
+	dealResp = invokeurl
+	[
+		url :"https://www.zohoapis.com/crm/v7/coql"
+		type :POST
+		parameters:q.toString()
+		connection:"zohooauth"
+	];
+	deals = List();
+	if(dealResp.containKey("data"))
+	{
+		deals = dealResp.get("data");
+	}
+	for each  d in deals
+	{
+		scanned = scanned + 1;
+		dealId = d.get("id") + "";
+		if(!existing.containKey(dealId))
+		{
+			if(keepStages.contains(d.get("Stage")))
+			{
+				contactName = (ifnull(d.get("Contact_Name.First_Name"),"") + " " + ifnull(d.get("Contact_Name.Last_Name"),"")).trim();
+				recordMap = Map();
+				if(contactName != "")
+				{
+					recordMap.put("Name",d.get("Deal_Name") + " ( " + contactName + " )");
+				}
+				else
+				{
+					recordMap.put("Name",d.get("Deal_Name"));
+				}
+				recordMap.put("Deal_ID",dealId);
+				toCreate.add(recordMap);
+				existing.put(dealId,true);
+			}
+		}
+	}
+	if(deals.size() < 2000)
+	{
+		break;
+	}
+}
+alreadyOnList = scanned - toCreate.size();
+summary = "Deals scanned (not lost): " + scanned + " | already on list: " + alreadyOnList + " | to add: " + toCreate.size();
+if(isDryRun)
+{
+	info summary;
+	return "DRY RUN -- " + summary;
+}
+// 4. Create in batches of 100, without triggering workflows (same as zoho.crm.createRecord in the live function)
+created = 0;
+failed = 0;
+batch = List();
+batchNo = 0;
+for each  rec in toCreate
+{
+	batch.add(rec);
+	if(batch.size() == 100)
+	{
+		body = Map();
+		body.put("data",batch);
+		body.put("trigger",List());
+		createResp = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v8/Deals_Active_Record_List"
+			type :POST
+			parameters:body.toString()
+			connection:"zohooauth"
+		];
+		results = List();
+		if(createResp.containKey("data"))
+		{
+			results = createResp.get("data");
+		}
+		for each  r in results
+		{
+			if(r.get("status") == "success")
+			{
+				created = created + 1;
+			}
+			else
+			{
+				failed = failed + 1;
+				info r;
+			}
+		}
+		batch = List();
+	}
+}
+if(batch.size() > 0)
+{
+	body = Map();
+	body.put("data",batch);
+	body.put("trigger",List());
+	createResp = invokeurl
+	[
+		url :"https://www.zohoapis.com/crm/v8/Deals_Active_Record_List"
+		type :POST
+		parameters:body.toString()
+		connection:"zohooauth"
+	];
+	results = List();
+	if(createResp.containKey("data"))
+	{
+		results = createResp.get("data");
+	}
+	for each  r in results
+	{
+		if(r.get("status") == "success")
+		{
+			created = created + 1;
+		}
+		else
+		{
+			failed = failed + 1;
+			info r;
+		}
+	}
+}
+result = summary + " | created: " + created + " | failed: " + failed;
+info result;
+return result;
+}
