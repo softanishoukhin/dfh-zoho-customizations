@@ -2,8 +2,10 @@
 
 **Folder number is a placeholder** -- rename once a real Zoho Projects task ID exists.
 
-**Status: built 2026-10-22, NOT applied.** Steps 1-4 ready (account, one-payment test, CRM patch, Books safety net).
-Part B (212 old payments) ON HOLD -- impacted-payments CSV not provided by Andrea.
+**Status: Steps 1-5 DEPLOYED + tested 2026-10-22** (user confirmed). 824 Customer Advances account id
+`5830143000039584002`. Test payment PAY-K-2026-000706 verified live: advance account Customer Advances; amount, bank,
+invoice and Xero payment id unchanged.
+Part B (212 old payments) ON HOLD -- impacted-payments CSV not provided by Andrea; Books vs Xero question open.
 
 **Source:** `projectDocuments/DEV_DOC_PRENEED_CUSTOMER_ADVANCES_FIX_2026-10-21.md` (client / CC-written, approach
 approved by Andrea); our review `projectDocuments/REVIEW_PRENEED_ADVANCES_AND_DEPOSIT_SYNC_2026-10-22.md`.
