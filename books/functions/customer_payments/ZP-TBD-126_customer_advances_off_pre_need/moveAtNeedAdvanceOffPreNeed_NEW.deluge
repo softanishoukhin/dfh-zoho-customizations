@@ -1,0 +1,43 @@
+// Books custom function -- module: Customer Payments. Workflow rule "At-need advances off PRE NEED" (On Create).
+// Arguments (Books defaults): customer_payment, organization.
+// ZP-TBD-126 (DEV_DOC_PRENEED_CUSTOMER_ADVANCES_FIX_2026-10-21, Part A safety net): a payment that is NOT on a
+// retainer invoice (not a pre-need plan payment) must not hold its unused money in 823 PRE NEED -> move its advance
+// account to Customer Advances.
+// Only acts when the advance account is PRE NEED: a cashier's deliberate choice (Accounts Receivable, CONTRA
+// ACCOUNT, ...) is never overwritten. A payment whose description or reference mentions pre-need is left in PRE NEED
+// (older pre-need money recorded as a plain payment, e.g. Lena Walker 2022). Saved with
+// X-ZOHO-Execute-CustomFunction=false so no other payment automation runs a second time.
+PRE_NEED_ACCOUNT_ID = "5830143000000594557";
+CUSTOMER_ADVANCES_ACCOUNT_ID = "PUT_824_ACCOUNT_ID_HERE";
+paymentID = customer_payment.get("payment_id");
+organizationID = organization.get("organization_id");
+payment = zoho.books.getRecordsByID("customerpayments",organizationID,paymentID,"zohobooksconnection").get("payment");
+if(ifnull(payment.get("retainerinvoice_id"),"").toString() != "")
+{
+	info "Retainer (pre-need plan) payment - stays in PRE NEED";
+	return;
+}
+if(ifnull(payment.get("customer_advance_account_id"),"").toString() != PRE_NEED_ACCOUNT_ID)
+{
+	info "Advance account is " + payment.get("customer_advance_account_name") + " - not touched";
+	return;
+}
+noteText = (ifnull(payment.get("description"),"").toString() + " " + ifnull(payment.get("reference_number"),"").toString()).toLowerCase();
+if(noteText.contains("pre-need") || noteText.contains("pre need") || noteText.contains("preneed"))
+{
+	info "Payment notes mention pre-need - left in PRE NEED";
+	return;
+}
+headerMap = Map();
+headerMap.put("X-ZOHO-Execute-CustomFunction","false");
+updateMap = Map();
+updateMap.put("customer_advance_account_id",CUSTOMER_ADVANCES_ACCOUNT_ID);
+updateResp = invokeurl
+[
+	url :"https://www.zohoapis.com/books/v3/customerpayments/" + paymentID + "?organization_id=" + organizationID
+	type :PUT
+	parameters:updateMap.toString()
+	headers:headerMap
+	connection:"zohobooksconnection"
+];
+info "ZP-TBD-126: " + payment.get("payment_number") + " advance account PRE NEED -> Customer Advances: " + updateResp.get("message");

@@ -1,0 +1,113 @@
+string standalone.setPaymentAdvanceAccount(String paymentIds, String newAdvanceAccountId)
+{
+// ZP-TBD-126 (DEV_DOC_PRENEED_CUSTOMER_ADVANCES_FIX_2026-10-21, Step 2 test + Part B): move at-need payments' advance
+// account (customer_advance_account_id) from 823 PRE NEED to the new Customer Advances account.
+// paymentIds = one Books payment id, or several separated by commas. Run by hand (Save & Execute).
+// Safe by design:
+//  - never touches a retainer (pre-need plan) payment; moves TO another account only from PRE NEED; moving back TO
+//    PRE NEED (newAdvanceAccountId = 5830143000000594557) is the undo;
+//  - changes ONLY customer_advance_account_id, sent with X-ZOHO-Execute-CustomFunction=false so no Books payment
+//    automation runs (no Xero overpayment sync, no contract check, no receipt / bank-account reset);
+//  - reads the payment before and after and reports amount, bank account, invoices applied and refunds, so any
+//    unexpected change is visible. Keep the returned text as the before/after record.
+organizationID = "872327358";
+PRE_NEED_ACCOUNT_ID = "5830143000000594557";
+headerMap = Map();
+headerMap.put("X-ZOHO-Execute-CustomFunction","false");
+results = list();
+idList = paymentIds.toList(",");
+for each  rawId in idList
+{
+	paymentId = rawId.trim();
+	if(paymentId == "")
+	{
+		continue;
+	}
+	row = Map();
+	row.put("payment_id",paymentId);
+	before = zoho.books.getRecordsByID("customerpayments",organizationID,paymentId,"zohooauth").get("payment");
+	if(isNull(before))
+	{
+		row.put("result","not found");
+		results.add(row);
+		continue;
+	}
+	row.put("number",before.get("payment_number"));
+	row.put("customer",before.get("customer_name"));
+	row.put("before_advance_account",before.get("customer_advance_account_name"));
+	if(ifnull(before.get("retainerinvoice_id"),"").toString() != "")
+	{
+		row.put("result","SKIPPED - retainer (pre-need plan) payment");
+		results.add(row);
+		continue;
+	}
+	currentAdvanceId = ifnull(before.get("customer_advance_account_id"),"").toString();
+	if(currentAdvanceId == newAdvanceAccountId)
+	{
+		row.put("result","SKIPPED - already on that account");
+		results.add(row);
+		continue;
+	}
+	// moving TO Customer Advances: only from PRE NEED. Moving back TO PRE NEED (undo): from any account.
+	if(currentAdvanceId != PRE_NEED_ACCOUNT_ID && newAdvanceAccountId != PRE_NEED_ACCOUNT_ID)
+	{
+		row.put("result","SKIPPED - advance account is not PRE NEED");
+		results.add(row);
+		continue;
+	}
+	updateMap = Map();
+	updateMap.put("customer_advance_account_id",newAdvanceAccountId);
+	updateResp = invokeurl
+	[
+		url :"https://www.zohoapis.com/books/v3/customerpayments/" + paymentId + "?organization_id=" + organizationID
+		type :PUT
+		parameters:updateMap.toString()
+		headers:headerMap
+		connection:"zohooauth"
+	];
+	row.put("books_reply",ifnull(updateResp.get("message"),"no reply").toString());
+	after = zoho.books.getRecordsByID("customerpayments",organizationID,paymentId,"zohooauth").get("payment");
+	row.put("after_advance_account",after.get("customer_advance_account_name"));
+	// what must NOT change
+	checks = list();
+	if(before.get("amount") != after.get("amount"))
+	{
+		checks.add("AMOUNT CHANGED " + before.get("amount") + " -> " + after.get("amount"));
+	}
+	if(before.get("account_id") != after.get("account_id"))
+	{
+		checks.add("BANK ACCOUNT CHANGED " + before.get("account_name") + " -> " + after.get("account_name"));
+	}
+	if(before.get("unused_amount") != after.get("unused_amount"))
+	{
+		checks.add("UNUSED CHANGED " + before.get("unused_amount") + " -> " + after.get("unused_amount"));
+	}
+	if(ifnull(before.get("invoices"),list()).toString() != ifnull(after.get("invoices"),list()).toString())
+	{
+		checks.add("INVOICES APPLIED CHANGED");
+	}
+	if(ifnull(before.get("payment_refunds"),list()).toString() != ifnull(after.get("payment_refunds"),list()).toString())
+	{
+		checks.add("REFUNDS CHANGED");
+	}
+	if(checks.size() == 0)
+	{
+		row.put("unchanged_check","OK - amount, bank account, unused, invoices and refunds unchanged");
+	}
+	else
+	{
+		row.put("unchanged_check",checks.toString());
+	}
+	if(ifnull(after.get("customer_advance_account_id"),"").toString() == newAdvanceAccountId)
+	{
+		row.put("result","MOVED");
+	}
+	else
+	{
+		row.put("result","NOT MOVED - see books_reply");
+	}
+	results.add(row);
+	info row;
+}
+return results.toString();
+}
