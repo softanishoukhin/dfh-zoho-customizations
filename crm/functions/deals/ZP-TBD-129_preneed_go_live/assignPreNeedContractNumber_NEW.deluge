@@ -1,0 +1,128 @@
+void automation.assignPreNeedContractNumber(Int crmid)
+{
+// ZP-TBD-129 (Pre-Need Sync Spec v2 go-live): give a Pre-Need Deal its contract / policy number
+//   CON-<branch>-<year>-<6 digits>, e.g. CON-MB-2026-000001, CON-KNG-2026-000042
+// Branch comes from the Deal's Case Location (Montego Bay -> MB, Kingston -> KNG); year from the Contract Signing
+// Date (today if blank). One running number per branch per year: the next number is the highest existing one + 1,
+// so after Sunday's legacy import (which brings the final assigned numbers) new Deals simply continue from there.
+// Called by the Deals rule "Pre-Need - Contract Number" (create or edit, Type = Pre Need, Contract Number empty,
+// Case Location not empty). Never overwrites an existing number. Written without workflow trigger.
+// Also copies the number to the Books customer's "Policy Number" when that customer already exists in Books.
+dealResp = invokeurl
+[
+	url :"https://www.zohoapis.com/crm/v8/Deals/" + crmid + "?fields=Type,Case_Location,Contract_Number,Contract_Signing_Date,Account_Name"
+	type :GET
+	connection:"zohooauth"
+];
+dealRows = ifnull(dealResp.get("data"),list());
+if(dealRows.size() == 0)
+{
+	info "Deal " + crmid + " not found";
+	return;
+}
+deal = dealRows.get(0);
+if(ifnull(deal.get("Type"),"").toString() != "Pre Need")
+{
+	return;
+}
+if(ifnull(deal.get("Contract_Number"),"").toString() != "")
+{
+	info "Deal " + crmid + " already has " + deal.get("Contract_Number");
+	return;
+}
+caseLocation = ifnull(deal.get("Case_Location"),"").toString();
+branch = "";
+if(caseLocation.contains("Montego Bay"))
+{
+	branch = "MB";
+}
+else if(caseLocation.contains("Kingston"))
+{
+	branch = "KNG";
+}
+if(branch == "")
+{
+	info "Deal " + crmid + ": Case Location not set - contract number waits";
+	return;
+}
+contractYear = zoho.currentdate.toString("yyyy");
+signingDate = ifnull(deal.get("Contract_Signing_Date"),"").toString();
+if(signingDate.length() >= 4)
+{
+	contractYear = signingDate.subString(0,4);
+}
+prefix = "CON-" + branch + "-" + contractYear + "-";
+coqlMap = Map();
+coqlMap.put("select_query","select Contract_Number from Deals where Contract_Number like '" + prefix + "%' order by Contract_Number desc limit 1");
+coqlResp = invokeurl
+[
+	url :"https://www.zohoapis.com/crm/v8/coql"
+	type :POST
+	parameters:coqlMap.toString()
+	connection:"zohooauth"
+];
+lastNumber = 0;
+coqlRows = ifnull(coqlResp.get("data"),list());
+if(coqlRows.size() > 0)
+{
+	lastText = ifnull(coqlRows.get(0).get("Contract_Number"),"").toString();
+	if(lastText.length() >= 6)
+	{
+		lastNumber = lastText.subString(lastText.length() - 6).toLong();
+	}
+}
+// try the next number; if the unique field refuses it (two Deals at the same moment), take the one after
+attemptList = {1,2,3};
+assigned = "";
+for each  attempt in attemptList
+{
+	padded = "000000" + (lastNumber + attempt).toString();
+	candidate = prefix + padded.subString(padded.length() - 6);
+	updateMap = Map();
+	updateMap.put("Contract_Number",candidate);
+	updateResp = zoho.crm.updateRecord("Deals",crmid,updateMap);
+	if(!isNull(updateResp.get("id")))
+	{
+		assigned = candidate;
+		break;
+	}
+	info "Contract number " + candidate + " refused: " + updateResp;
+}
+if(assigned == "")
+{
+	info "Deal " + crmid + ": could not assign a contract number";
+	return;
+}
+info "ZP-TBD-129: Deal " + crmid + " contract number " + assigned;
+// Books customer "Policy Number" (cf_policy_number), only if the customer already exists in Books
+accountRef = deal.get("Account_Name");
+if(!isNull(accountRef))
+{
+	try
+	{
+		organizationID = "872327358";
+		booksContacts = zoho.books.getRecords("Contacts",organizationID,"zcrm_account_id=" + accountRef.get("id"),"zohooauth");
+		booksContactList = ifnull(booksContacts.get("contacts"),list());
+		if(booksContactList.size() > 0)
+		{
+			headerMap = Map();
+			headerMap.put("X-ZOHO-Execute-CustomFunction","false");
+			policyMap = Map();
+			policyMap.put("custom_fields",{{"api_name":"cf_policy_number","value":assigned}});
+			policyResp = invokeurl
+			[
+				url :"https://www.zohoapis.com/books/v3/contacts/" + booksContactList.get(0).get("contact_id") + "?organization_id=" + organizationID
+				type :PUT
+				parameters:policyMap.toString()
+				headers:headerMap
+				connection:"zohooauth"
+			];
+			info "Books Policy Number: " + policyResp.get("message");
+		}
+	}
+	catch (ePolicy)
+	{
+		info "Books Policy Number not set: " + ePolicy;
+	}
+}
+}

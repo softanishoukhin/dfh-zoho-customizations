@@ -1,0 +1,521 @@
+string standalone.runPreNeedImport(String mode)
+{
+// ZP-TBD-129 (Pre-Need Sync Spec v2, "Historical load"): load the merged pre-need register into CRM + Books.
+// The register is first imported into the CRM staging module "Pre-Need Imports" (one row per contract). This function
+// then works through the rows, 20 at a time:
+//   mode "dry"     -> rows with Import Status = New: checks everything, writes what WOULD happen, nothing created.
+//                     Status -> "Dry Run OK" or "Dry Run Problem" (+ Import Message).
+//   mode "commit1" -> ONE "Dry Run OK" row for real (the pilot).   mode "commit" -> up to 20 "Dry Run OK" rows.
+//                     Status -> "Imported" or "Failed".
+// Every run also returns register totals for the spec's tie-out (open legacy pre-need money = Xero PRE NEED at
+// 1 Nov 2025).
+// Per row (commit):
+//   CRM  - Pre-Need Deal with this Contract Number already there -> reused. Else a Pre-Need Deal for the same person
+//          covered without a number -> number added to it. Else new Account (person covered) + payer Contact + Pre-Need
+//          Deal (Contract Number, Contract Value, Amount Paid To Date, Signing Date, Case Location, currency, Contract
+//          Status Signed, Stage Contract Signed). Created WITHOUT workflow triggers, and without Payment Type, so no
+//          payment plan / invoices / emails are created. A Note records the import.
+//   Books- legacy (contract date before 1 Nov 2025) with money paid: the customer's Policy Number + ONE DRAFT credit
+//          note for the total collected (line account PRE NEED, Zero Rated, Reference = Pre-Need <contract #>).
+//          A draft has no ledger effect. Sent with X-ZOHO-Execute-CustomFunction=false so no credit-note automation
+//          (e.g. the contra-account rule) runs. If Books does not keep it as a draft, the row Fails and the run STOPS.
+//          Contracts from 1 Nov 2025 get nothing in Books here -- their retainers already exist; the row only reports.
+//   At-Need legacy rows also get the draft; applying it to the at-need invoice is left for Accounts (decision D1).
+MODULE = "Pre_Need_Imports";
+organizationID = "872327358";
+PRE_NEED_ACCOUNT_ID = "5830143000000594557";
+ZERO_RATED_TAX_ID = "5830143000000594721";
+PRE_NEED_LAYOUT_ID = "6503357000000091023";
+CUTOFF = "2025-11-01".toDate("yyyy-MM-dd");
+LOCATION_MB = "Delapenha Funeral Home - 45 Union St., Montego Bay";
+LOCATION_KNG = "Delapenha Funeral Home - 20A W. Kings House Rd., Kingston";
+isCommit = false;
+batchSize = 20;
+statusToRead = "New";
+if(mode == "commit" || mode == "commit1")
+{
+	isCommit = true;
+	statusToRead = "Dry Run OK";
+	if(mode == "commit1")
+	{
+		batchSize = 1;
+	}
+}
+else if(mode != "dry")
+{
+	return "mode must be dry, commit1 or commit";
+}
+headerMap = Map();
+headerMap.put("X-ZOHO-Execute-CustomFunction","false");
+// ---------- rows to process ----------
+coqlMap = Map();
+coqlMap.put("select_query","select id, Name, Branch, Payer_Name, Payer_Email, Payer_Phone, Covered_Name, Covered_DOB, Contract_Date, Currency, Contract_Amount, Paid_To_Date, First_Deposit_Date, Deposit_Dates, Plan_Status, At_Need_Date, At_Need_Invoice_Number from " + MODULE + " where Import_Status = '" + statusToRead + "' order by Name asc limit " + batchSize);
+coqlResp = invokeurl
+[
+	url :"https://www.zohoapis.com/crm/v8/coql"
+	type :POST
+	parameters:coqlMap.toString()
+	connection:"zohooauth"
+];
+rows = ifnull(coqlResp.get("data"),list());
+processed = list();
+stopRun = false;
+for each  row in rows
+{
+	if(stopRun)
+	{
+		break;
+	}
+	rowId = row.get("id");
+	contractNo = ifnull(row.get("Name"),"").toString().trim();
+	branch = ifnull(row.get("Branch"),"").toString().trim();
+	coveredName = ifnull(row.get("Covered_Name"),"").toString().trim();
+	payerName = ifnull(row.get("Payer_Name"),"").toString().trim();
+	if(payerName == "")
+	{
+		payerName = coveredName;
+	}
+	currency = ifnull(row.get("Currency"),"JMD").toString().trim();
+	if(currency == "" || currency == "-None-")
+	{
+		currency = "JMD";
+	}
+	planStatus = ifnull(row.get("Plan_Status"),"Pre-Need").toString();
+	amount = ifnull(row.get("Contract_Amount"),0).toString().toDecimal();
+	paid = ifnull(row.get("Paid_To_Date"),0).toString().toDecimal();
+	contractDateText = ifnull(row.get("Contract_Date"),"").toString();
+	problems = list();
+	warnings = list();
+	plan = list();
+	// ---------- checks ----------
+	if(!contractNo.matches("CON-(MB|KNG)-[0-9]{4}-[0-9]{6}"))
+	{
+		problems.add("Contract Number must look like CON-MB-2026-000001");
+	}
+	else if(!contractNo.startsWith("CON-" + branch + "-"))
+	{
+		problems.add("Branch " + branch + " does not match the Contract Number");
+	}
+	if(coveredName == "")
+	{
+		problems.add("Person covered is empty");
+	}
+	if(contractDateText == "")
+	{
+		problems.add("Contract date is empty");
+	}
+	if(amount <= 0)
+	{
+		problems.add("Contract amount must be more than 0");
+	}
+	if(paid < 0 || paid > amount + 1)
+	{
+		problems.add("Paid to date must be between 0 and the contract amount");
+	}
+	if(currency != "JMD" && currency != "USD" && currency != "GBP")
+	{
+		problems.add("Currency must be JMD, USD or GBP");
+	}
+	if(currency != "JMD")
+	{
+		warnings.add(currency + " contract: check the Books customer is in " + currency + " before commit");
+	}
+	isLegacy = false;
+	if(contractDateText != "")
+	{
+		if(contractDateText.toDate("yyyy-MM-dd") < CUTOFF)
+		{
+			isLegacy = true;
+		}
+	}
+	// ---------- existing CRM Deal ----------
+	existingDealId = "";
+	matchedByName = false;
+	if(contractNo != "")
+	{
+		byNumber = zoho.crm.searchRecords("Deals","(Contract_Number:equals:" + contractNo + ")");
+		if(byNumber.size() > 0)
+		{
+			existingDealId = byNumber.get(0).get("id");
+			plan.add("Deal already has this number (" + existingDealId + ") - reused");
+		}
+	}
+	if(existingDealId == "" && coveredName != "")
+	{
+		byName = zoho.crm.searchRecords("Deals","(Deal_Name:equals:" + coveredName + ")");
+		preNeedMatches = list();
+		for each  candidate in byName
+		{
+			if(ifnull(candidate.get("Type"),"").toString() == "Pre Need" && ifnull(candidate.get("Contract_Number"),"").toString() == "")
+			{
+				preNeedMatches.add(candidate.get("id"));
+			}
+		}
+		if(preNeedMatches.size() == 1)
+		{
+			existingDealId = preNeedMatches.get(0);
+			matchedByName = true;
+			plan.add("Existing Pre-Need Deal " + existingDealId + " for " + coveredName + " gets the number");
+		}
+		else if(preNeedMatches.size() > 1)
+		{
+			problems.add(preNeedMatches.size() + " Pre-Need Deals named " + coveredName + " without a number - link by hand (put the number on the right one)");
+		}
+	}
+	if(existingDealId == "")
+	{
+		plan.add("New Account '" + coveredName + "', payer Contact '" + payerName + "', Pre-Need Deal " + contractNo);
+	}
+	if(isLegacy && paid > 0)
+	{
+		plan.add("Books draft credit note " + currency + " " + paid.round(2) + " (PRE NEED)");
+	}
+	else if(isLegacy)
+	{
+		plan.add("Legacy, nothing paid - no Books entry");
+	}
+	else
+	{
+		plan.add("From 1 Nov 2025 - Books retainer expected to exist already (not created here)");
+	}
+	if(planStatus == "At-Need")
+	{
+		warnings.add("At-need: the draft credit note is NOT applied to the at-need invoice " + ifnull(row.get("At_Need_Invoice_Number"),"") + " - Accounts (decision D1)");
+	}
+	rowResult = Map();
+	rowResult.put("contract",contractNo);
+	rowUpdate = Map();
+	// ---------- dry run ----------
+	if(!isCommit)
+	{
+		message = "";
+		if(problems.size() > 0)
+		{
+			rowUpdate.put("Import_Status","Dry Run Problem");
+			message = "PROBLEM: " + problems.toString(" | ");
+		}
+		else
+		{
+			rowUpdate.put("Import_Status","Dry Run OK");
+			message = "WILL DO: " + plan.toString(" | ");
+		}
+		if(warnings.size() > 0)
+		{
+			message = message + " || NOTE: " + warnings.toString(" | ");
+		}
+		rowUpdate.put("Import_Message",message);
+		zoho.crm.updateRecord(MODULE,rowId.toLong(),rowUpdate);
+		rowResult.put("status",rowUpdate.get("Import_Status"));
+		processed.add(rowResult);
+		continue;
+	}
+	// ---------- commit ----------
+	if(problems.size() > 0)
+	{
+		rowUpdate.put("Import_Status","Dry Run Problem");
+		rowUpdate.put("Import_Message","PROBLEM (found again at commit): " + problems.toString(" | "));
+		zoho.crm.updateRecord(MODULE,rowId.toLong(),rowUpdate);
+		rowResult.put("status","Dry Run Problem");
+		processed.add(rowResult);
+		continue;
+	}
+	done = list();
+	failure = "";
+	dealId = existingDealId;
+	accountId = "";
+	caseLocation = LOCATION_KNG;
+	if(branch == "MB")
+	{
+		caseLocation = LOCATION_MB;
+	}
+	try
+	{
+		if(dealId != "")
+		{
+			linkMap = Map();
+			linkMap.put("Contract_Number",contractNo);
+			existingDeal = zoho.crm.getRecordById("Deals",dealId.toLong());
+			if(ifnull(existingDeal.get("Case_Location"),"").toString() == "")
+			{
+				linkMap.put("Case_Location",caseLocation);
+			}
+			if(matchedByName)
+			{
+				zoho.crm.updateRecord("Deals",dealId.toLong(),linkMap);
+				done.add("number put on Deal " + dealId);
+			}
+			if(!isNull(existingDeal.get("Account_Name")))
+			{
+				accountId = existingDeal.get("Account_Name").get("id");
+			}
+		}
+		else
+		{
+			// person covered -> Account
+			coveredParts = coveredName.toList(" ");
+			coveredLast = coveredParts.get(coveredParts.size() - 1);
+			coveredFirst = coveredName.subString(0,coveredName.length() - coveredLast.length()).trim();
+			accountMap = Map();
+			accountMap.put("Account_Name",coveredName);
+			accountMap.put("Account_Type","Deceased");
+			accountMap.put("Deceased_First_Name",coveredFirst);
+			accountMap.put("Deceased_Last_Name",coveredLast);
+			coveredDob = ifnull(row.get("Covered_DOB"),"").toString();
+			if(coveredDob != "")
+			{
+				accountMap.put("Date_of_Birth",coveredDob);
+			}
+			accountResult = zoho.crm.createRecord("Accounts",accountMap);
+			accountId = ifnull(accountResult.get("id"),"").toString();
+			if(accountId == "")
+			{
+				failure = "Account not created: " + accountResult;
+			}
+			// payer -> Contact (linked to the Account only when payer = person covered)
+			payerContactId = "";
+			if(failure == "")
+			{
+				payerParts = payerName.toList(" ");
+				payerLast = payerParts.get(payerParts.size() - 1);
+				payerFirst = payerName.subString(0,payerName.length() - payerLast.length()).trim();
+				contactMap = Map();
+				contactMap.put("First_Name",payerFirst);
+				contactMap.put("Last_Name",payerLast);
+				contactMap.put("Email",ifnull(row.get("Payer_Email"),"").toString());
+				contactMap.put("Phone",ifnull(row.get("Payer_Phone"),"").toString());
+				contactMap.put("Contact_Type","Payer");
+				if(payerName == coveredName)
+				{
+					contactMap.put("Account_Name",accountId);
+				}
+				contactResult = zoho.crm.createRecord("Contacts",contactMap);
+				payerContactId = ifnull(contactResult.get("id"),"").toString();
+				if(payerContactId == "")
+				{
+					failure = "Payer Contact not created: " + contactResult;
+				}
+			}
+			if(failure == "")
+			{
+				dealMap = Map();
+				dealMap.put("Deal_Name",coveredName);
+				dealMap.put("Name_of_Deceased",coveredName);
+				dealMap.put("Layout",PRE_NEED_LAYOUT_ID);
+				dealMap.put("Pipeline","Pre Need");
+				dealMap.put("Stage","Contract Signed");
+				dealMap.put("Type","Pre Need");
+				dealMap.put("Account_Name",{"id":accountId});
+				dealMap.put("Contact_Name",{"id":payerContactId});
+				dealMap.put("Contract_Number",contractNo);
+				dealMap.put("Contract_Value",amount);
+				dealMap.put("Amount_Paid_To_Date",paid);
+				dealMap.put("Contract_Signing_Date",contractDateText);
+				dealMap.put("Case_Location",caseLocation);
+				dealMap.put("Currency_Used_for_this_Deal",currency);
+				dealMap.put("Contract_Status","Signed");
+				dealBody = Map();
+				dealBody.put("data",{dealMap});
+				dealBody.put("trigger",list());
+				dealResp = invokeurl
+				[
+					url :"https://www.zohoapis.com/crm/v7/Deals"
+					type :POST
+					parameters:dealBody.toString()
+					connection:"zohooauth"
+				];
+				dealRow = dealResp.get("data").get(0);
+				if(dealRow.get("code") == "SUCCESS")
+				{
+					dealId = dealRow.get("details").get("id");
+					done.add("Deal " + dealId + " created");
+				}
+				else
+				{
+					failure = "Deal not created: " + dealRow;
+				}
+			}
+		}
+		if(failure == "" && dealId != "")
+		{
+			noteMap = Map();
+			noteMap.put("Parent_Id",dealId);
+			noteMap.put("se_module","Deals");
+			noteMap.put("Note_Title","Imported pre-need contract " + contractNo);
+			noteMap.put("Note_Content","Imported " + zoho.currentdate.toString("dd MMM yyyy") + " from the pre-need register. Contract date " + contractDateText + ", amount " + currency + " " + amount + ", paid to date " + paid + ", deposits: " + ifnull(row.get("Deposit_Dates"),"") + ", status " + planStatus + ".");
+			zoho.crm.createRecord("Notes",noteMap);
+		}
+		// ---------- Books (legacy, money paid) ----------
+		if(failure == "" && isLegacy && paid > 0 && accountId != "")
+		{
+			booksCustomerId = "";
+			found = zoho.books.getRecords("Contacts",organizationID,"zcrm_account_id=" + accountId,"zohooauth");
+			foundList = ifnull(found.get("contacts"),list());
+			if(foundList.size() == 0)
+			{
+				// creates the Books customer from the CRM Account (same call the Fygaro walk-in uses)
+				importResp = invokeurl
+				[
+					url :"https://www.zohoapis.com/books/v3/crm/account/" + accountId + "/import?organization_id=" + organizationID
+					type :POST
+					connection:"zohooauth"
+				];
+				found = zoho.books.getRecords("Contacts",organizationID,"zcrm_account_id=" + accountId,"zohooauth");
+				foundList = ifnull(found.get("contacts"),list());
+			}
+			if(foundList.size() == 0)
+			{
+				failure = "Books customer not found / not imported for Account " + accountId;
+			}
+			else
+			{
+				booksCustomerId = foundList.get(0).get("contact_id");
+				policyMap = Map();
+				policyMap.put("custom_fields",{{"api_name":"cf_policy_number","value":contractNo}});
+				policyResp = invokeurl
+				[
+					url :"https://www.zohoapis.com/books/v3/contacts/" + booksCustomerId + "?organization_id=" + organizationID
+					type :PUT
+					parameters:policyMap.toString()
+					headers:headerMap
+					connection:"zohooauth"
+				];
+				// one draft credit note per contract -- skip if one already carries this reference
+				existingNotes = zoho.books.getRecords("creditnotes",organizationID,"reference_number=" + zoho.encryption.urlEncode("Pre-Need " + contractNo),"zohooauth");
+				existingNoteList = ifnull(existingNotes.get("creditnotes"),list());
+				if(existingNoteList.size() > 0)
+				{
+					rowUpdate.put("Books_Credit_Note_ID",existingNoteList.get(0).get("creditnote_id"));
+					done.add("credit note already in Books");
+				}
+				else
+				{
+					noteDate = ifnull(row.get("First_Deposit_Date"),"").toString();
+					if(noteDate == "")
+					{
+						noteDate = contractDateText;
+					}
+					lineItem = Map();
+					lineItem.put("description","Pre-Need deposit (legacy) " + contractNo + " - " + coveredName);
+					lineItem.put("account_id",PRE_NEED_ACCOUNT_ID);
+					lineItem.put("rate",paid.round(2));
+					lineItem.put("quantity",1);
+					lineItem.put("tax_id",ZERO_RATED_TAX_ID);
+					creditMap = Map();
+					creditMap.put("customer_id",booksCustomerId);
+					creditMap.put("date",noteDate);
+					creditMap.put("reference_number","Pre-Need " + contractNo);
+					creditMap.put("line_items",{lineItem});
+					creditMap.put("notes","Legacy pre-need deposit. Deposits: " + ifnull(row.get("Deposit_Dates"),"") + ". Stays a DRAFT until the at-need invoice.");
+					creditResp = invokeurl
+					[
+						url :"https://www.zohoapis.com/books/v3/creditnotes?organization_id=" + organizationID
+						type :POST
+						parameters:creditMap.toString()
+						headers:headerMap
+						connection:"zohooauth"
+					];
+					creditNote = ifnull(creditResp.get("creditnote"),Map());
+					creditNoteId = ifnull(creditNote.get("creditnote_id"),"").toString();
+					if(creditNoteId == "")
+					{
+						failure = "Credit note not created: " + creditResp.get("message");
+					}
+					else
+					{
+						rowUpdate.put("Books_Credit_Note_ID",creditNoteId);
+						if(ifnull(creditNote.get("status"),"").toString() != "draft")
+						{
+							draftResp = invokeurl
+							[
+								url :"https://www.zohoapis.com/books/v3/creditnotes/" + creditNoteId + "/status/draft?organization_id=" + organizationID
+								type :POST
+								headers:headerMap
+								connection:"zohooauth"
+							];
+							recheck = zoho.books.getRecordsByID("creditnotes",organizationID,creditNoteId,"zohooauth").get("creditnote");
+							if(ifnull(recheck.get("status"),"").toString() != "draft")
+							{
+								failure = "Credit note " + creditNote.get("creditnote_number") + " is " + recheck.get("status") + ", NOT draft - void it in Books. Run stopped.";
+								stopRun = true;
+							}
+						}
+						if(failure == "")
+						{
+							done.add("draft credit note " + creditNote.get("creditnote_number"));
+						}
+					}
+				}
+			}
+		}
+	}
+	catch (eRow)
+	{
+		failure = "Error: " + eRow;
+	}
+	if(dealId != "")
+	{
+		rowUpdate.put("CRM_Deal_ID",dealId);
+	}
+	if(failure == "")
+	{
+		rowUpdate.put("Import_Status","Imported");
+		message = "DONE: " + done.toString(" | ");
+		if(warnings.size() > 0)
+		{
+			message = message + " || NOTE: " + warnings.toString(" | ");
+		}
+		rowUpdate.put("Import_Message",message);
+	}
+	else
+	{
+		rowUpdate.put("Import_Status","Failed");
+		rowUpdate.put("Import_Message","FAILED: " + failure + " || done before the failure: " + done.toString(" | "));
+	}
+	zoho.crm.updateRecord(MODULE,rowId.toLong(),rowUpdate);
+	rowResult.put("status",rowUpdate.get("Import_Status"));
+	processed.add(rowResult);
+}
+// ---------- register totals (tie-out) ----------
+totals = Map();
+totalQueries = Map();
+totalQueries.put("all_rows","select COUNT(id) from " + MODULE + " where id is not null");
+totalQueries.put("legacy_open_paid","select SUM(Paid_To_Date) from " + MODULE + " where (Contract_Date < '2025-11-01' and Plan_Status = 'Pre-Need')");
+totalQueries.put("not_yet_imported","select COUNT(id) from " + MODULE + " where Import_Status != 'Imported'");
+totalKeyList = totalQueries.keys();
+for each  totalKey in totalKeyList
+{
+	try
+	{
+		tMap = Map();
+		tMap.put("select_query",totalQueries.get(totalKey));
+		tResp = invokeurl
+		[
+			url :"https://www.zohoapis.com/crm/v8/coql"
+			type :POST
+			parameters:tMap.toString()
+			connection:"zohooauth"
+		];
+		tRow = tResp.get("data").get(0);
+		tRowKeys = tRow.keys();
+		for each  tRowKey in tRowKeys
+		{
+			totals.put(totalKey,tRow.get(tRowKey));
+		}
+	}
+	catch (eTotal)
+	{
+		totals.put(totalKey,"n/a");
+	}
+}
+result = Map();
+result.put("mode",mode);
+result.put("rows_this_run",processed.size());
+result.put("rows",processed);
+result.put("register_totals",totals);
+result.put("tie_out","legacy_open_paid should equal Xero PRE NEED at 1 Nov 2025 (workbook: 8,450,364.50) once the register is complete");
+if(stopRun)
+{
+	result.put("STOPPED","A credit note did not stay a draft - see the Failed row");
+}
+return result.toString();
+}
