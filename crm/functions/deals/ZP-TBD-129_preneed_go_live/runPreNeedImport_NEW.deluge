@@ -17,8 +17,10 @@ string standalone.runPreNeedImport(String mode)
 //          payment plan / invoices / emails are created. A Note records the import.
 //   Books- legacy (contract date before 1 Nov 2025) with money paid: the customer's Policy Number + ONE DRAFT credit
 //          note for the total collected (line account PRE NEED, Zero Rated, Reference = Pre-Need <contract #>).
-//          A draft has no ledger effect. Sent with X-ZOHO-Execute-CustomFunction=false so no credit-note automation
-//          (e.g. the contra-account rule) runs. If Books does not keep it as a draft, the row Fails and the run STOPS.
+//          A draft has no ledger effect. Books creates API credit notes as OPEN and only lets a VOIDED one go back to
+//          draft, so the note is created, voided, then converted to draft. Sent with X-ZOHO-Execute-CustomFunction=false
+//          so no credit-note automation (e.g. the contra-account rule) runs. If it does not end up as a draft, the row
+//          Fails and the run STOPS.
 //          Contracts from 1 Nov 2025 get nothing in Books here -- their retainers already exist; the row only reports.
 //   At-Need legacy rows also get the draft; applying it to the at-need invoice is left for Accounts (decision D1).
 MODULE = "Pre_Need_Imports";
@@ -384,8 +386,30 @@ for each  row in rows
 				existingNoteList = ifnull(existingNotes.get("creditnotes"),list());
 				if(existingNoteList.size() > 0)
 				{
-					rowUpdate.put("Books_Credit_Note_ID",existingNoteList.get(0).get("creditnote_id"));
-					done.add("credit note already in Books");
+					existingNoteId = existingNoteList.get(0).get("creditnote_id");
+					existingNoteStatus = ifnull(existingNoteList.get(0).get("status"),"").toString();
+					rowUpdate.put("Books_Credit_Note_ID",existingNoteId);
+					if(existingNoteStatus == "void")
+					{
+						// left voided by an earlier run -> back to draft
+						redraftResp = invokeurl
+						[
+							url :"https://www.zohoapis.com/books/v3/creditnotes/" + existingNoteId + "/status/draft?organization_id=" + organizationID
+							type :POST
+							headers:headerMap
+							connection:"zohooauth"
+						];
+						existingNoteStatus = ifnull(zoho.books.getRecordsByID("creditnotes",organizationID,existingNoteId,"zohooauth").get("creditnote").get("status"),"").toString();
+					}
+					if(existingNoteStatus == "draft")
+					{
+						done.add("draft credit note already in Books");
+					}
+					else
+					{
+						failure = "Credit note " + existingNoteList.get(0).get("creditnote_number") + " for this contract is " + existingNoteStatus + ", not draft - void it in Books. Run stopped.";
+						stopRun = true;
+					}
 				}
 				else
 				{
@@ -425,6 +449,15 @@ for each  row in rows
 						rowUpdate.put("Books_Credit_Note_ID",creditNoteId);
 						if(ifnull(creditNote.get("status"),"").toString() != "draft")
 						{
+							// Books creates API credit notes as OPEN and only lets a VOIDED one go back to draft
+							// (tested 2026-10-23): void it (removes the ledger entry), then convert to draft.
+							voidResp = invokeurl
+							[
+								url :"https://www.zohoapis.com/books/v3/creditnotes/" + creditNoteId + "/status/void?organization_id=" + organizationID
+								type :POST
+								headers:headerMap
+								connection:"zohooauth"
+							];
 							draftResp = invokeurl
 							[
 								url :"https://www.zohoapis.com/books/v3/creditnotes/" + creditNoteId + "/status/draft?organization_id=" + organizationID
@@ -435,7 +468,7 @@ for each  row in rows
 							recheck = zoho.books.getRecordsByID("creditnotes",organizationID,creditNoteId,"zohooauth").get("creditnote");
 							if(ifnull(recheck.get("status"),"").toString() != "draft")
 							{
-								failure = "Credit note " + creditNote.get("creditnote_number") + " is " + recheck.get("status") + ", NOT draft - void it in Books. Run stopped.";
+								failure = "Credit note " + creditNote.get("creditnote_number") + " is " + recheck.get("status") + ", NOT draft (void: " + voidResp.get("message") + "; draft: " + draftResp.get("message") + ") - void it in Books. Run stopped.";
 								stopRun = true;
 							}
 						}
