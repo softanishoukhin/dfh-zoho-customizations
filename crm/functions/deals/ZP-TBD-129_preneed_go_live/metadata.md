@@ -2,7 +2,8 @@
 
 **Folder number is a placeholder** -- rename once a real Zoho Projects task ID exists.
 
-**Status: built 2026-10-23, NOT applied.** A1-A5 per `guideline.md`. The Xero sync rebuild (spec E1-E7) is the next
+**Status: A1-A4 DEPLOYED + tested 2026-10-23 (user); test data cleaned up and verified. Contract-number rule
+DEACTIVATED until the real register is imported. Waiting for DFH's register file.** A1-A5 per `guideline.md`. The Xero sync rebuild (spec E1-E7) is the next
 ticket. Plan: `projectDocuments/PRENEED_GO_LIVE_PLAN_2026-10-25.md`.
 
 **Source:** Andrea 23 Oct (`projectDocuments/preNeed workflow changes 10232026.txt`), `Pre-Need Sync Spec v2.docx`
