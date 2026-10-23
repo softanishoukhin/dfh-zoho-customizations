@@ -48,7 +48,7 @@ name field to **Contract Number** (API `Name`). Add:
 | Covered Name | Single Line (person the plan is for) | `Covered_Name` |
 | Covered DOB | Date | `Covered_DOB` |
 | Contract Date | Date | `Contract_Date` |
-| Currency | Pick list: JMD, USD, GBP | `Currency` |
+| Contract Currency | Pick list: JMD, USD, GBP ("Currency" is a reserved CRM label) | `Contract_Currency` |
 | Contract Amount | Decimal (2 places) | `Contract_Amount` |
 | Paid To Date | Decimal (2 places) | `Paid_To_Date` |
 | First Deposit Date | Date | `First_Deposit_Date` |

@@ -49,7 +49,7 @@ headerMap = Map();
 headerMap.put("X-ZOHO-Execute-CustomFunction","false");
 // ---------- rows to process ----------
 coqlMap = Map();
-coqlMap.put("select_query","select id, Name, Branch, Payer_Name, Payer_Email, Payer_Phone, Covered_Name, Covered_DOB, Contract_Date, Currency, Contract_Amount, Paid_To_Date, First_Deposit_Date, Deposit_Dates, Plan_Status, At_Need_Date, At_Need_Invoice_Number from " + MODULE + " where Import_Status = '" + statusToRead + "' order by Name asc limit " + batchSize);
+coqlMap.put("select_query","select id, Name, Branch, Payer_Name, Payer_Email, Payer_Phone, Covered_Name, Covered_DOB, Contract_Date, Contract_Currency, Contract_Amount, Paid_To_Date, First_Deposit_Date, Deposit_Dates, Plan_Status, At_Need_Date, At_Need_Invoice_Number from " + MODULE + " where Import_Status = '" + statusToRead + "' order by Name asc limit " + batchSize);
 coqlResp = invokeurl
 [
 	url :"https://www.zohoapis.com/crm/v8/coql"
@@ -75,7 +75,7 @@ for each  row in rows
 	{
 		payerName = coveredName;
 	}
-	currency = ifnull(row.get("Currency"),"JMD").toString().trim();
+	currency = ifnull(row.get("Contract_Currency"),"JMD").toString().trim();
 	if(currency == "" || currency == "-None-")
 	{
 		currency = "JMD";
